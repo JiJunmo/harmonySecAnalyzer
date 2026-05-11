@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "harmony-project-metadata",
+  "title": "鸿蒙项目元数据 Schema",
+  "description": "project_scanner.py 输出的标准项目元数据结构",
+  "type": "object",
+  "required": ["_meta", "project", "build", "modules", "dependencies", "files", "security_surface"],
+  "properties": {
+    "_meta": {
+      "type": "object",
+      "properties": {
+        "scanner_version": { "type": "string" },
+        "scan_time": { "type": "string", "format": "date-time" },
+        "project_path": { "type": "string" },
+        "parse_errors": { "type": "array", "items": { "type": "string" } },
+        "parse_warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "project": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "package_name": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "properties": {
+        "compile_sdk_version": { "type": "string" },
+        "compile_sdk_api": { "type": ["integer", "null"] },
+        "compatible_sdk_version": { "type": "string" },
+        "compatible_sdk_api": { "type": ["integer", "null"] },
+        "target_sdk_version": { "type": "string" },
+        "target_sdk_api": { "type": ["integer", "null"] },
+        "version_name": { "type": "string" },
+        "version_code": { "type": "string" },
+        "build_mode": { "type": "string" }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string", "enum": ["entry", "feature", "hsp", "har"] },
+          "main_element": { "type": "string" },
+          "device_types": { "type": "array", "items": { "type": "string" } },
+          "abilities": { "type": "array" },
+          "extension_abilities": { "type": "array" },
+          "permissions": { "type": "array" },
+          "pages": { "type": "array", "items": { "type": "string" } },
+          "network_config": { "type": "object" }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "properties": {
+        "production": { "type": "array", "items": { "type": "object" } },
+        "dev": { "type": "array", "items": { "type": "object" } },
+        "third_party_count": { "type": "integer" },
+        "third_party_deps": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "files": {
+      "type": "object",
+      "properties": {
+        "total_ets_files": { "type": "integer" },
+        "total_ts_files": { "type": "integer" },
+        "total_json5_files": { "type": "integer" },
+        "total_lines": { "type": "integer" },
+        "ets_sources": { "type": "array", "items": { "type": "object" } },
+        "ts_sources": { "type": "array", "items": { "type": "object" } },
+        "json5_configs": { "type": "array", "items": { "type": "string" } },
+        "certificates": { "type": "array", "items": { "type": "string" } },
+        "capabilities": { "type": "object" }
+      }
+    },
+    "security_surface": {
+      "type": "object",
+      "properties": {
+        "total_permissions": { "type": "integer" },
+        "total_dangerous_permissions": { "type": "integer" },
+        "total_high_risk_permissions": { "type": "integer" },
+        "exported_abilities": { "type": "array", "items": { "type": "string" } },
+        "exported_abilities_count": { "type": "integer" },
+        "has_cleartext_traffic": { "type": "boolean" },
+        "network_domains": { "type": "array", "items": { "type": "string" } },
+        "network_domains_count": { "type": "integer" },
+        "has_webview": { "type": "boolean" },
+        "has_database": { "type": "boolean" },
+        "has_distributed": { "type": "boolean" },
+        "has_napi": { "type": "boolean" },
+        "uses_crypto": { "type": "boolean" },
+        "uses_http": { "type": "boolean" },
+        "uses_bluetooth": { "type": "boolean" },
+        "uses_location": { "type": "boolean" },
+        "uses_nfc": { "type": "boolean" }
+      }
+    }
+  }
+}
