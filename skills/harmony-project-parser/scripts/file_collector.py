@@ -31,6 +31,10 @@ IMPORT_PATTERNS = {
     "uses_bluetooth": "bluetooth",
     "uses_location": "geoLocationManager",
     "uses_nfc": "nfc",
+    "uses_ipc": "ohos.rpc",
+    "uses_ipc_kit": "IPCKit",
+    "uses_service_extension": "connectServiceExtensionAbility",
+    "uses_ipc_stub": "onRemoteMessageRequest",
 }
 
 

@@ -1,0 +1,49 @@
+{
+  "rules": [
+    {
+      "id": "IPC-005",
+      "severity": "medium",
+      "cwe": "CWE-319",
+      "owasp": "M3",
+      "title": "IPC 数据传输未经加密",
+      "description": "Parcelable 和 ArrayBuffer 中的数据以明文方式通过 IPC 传输。虽然鸿蒙沙箱提供进程隔离，但在系统应用或同设备场景下，其他进程可能通过系统调用或调试接口截获 IPC 通信数据。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["writeParcelable", "writeArrayBuffer", "writeString"]
+      },
+      "remediation": "对敏感数据在写入 MessageSequence 之前使用 cryptoFramework 加密。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+    },
+    {
+      "id": "IPC-002",
+      "severity": "medium",
+      "cwe": "CWE-862",
+      "owasp": "M1",
+      "title": "extensionAbilities 缺少 permissions 权限守卫",
+      "description": "extensionAbilities 配置中未设置 permissions 字段。建议通过 permissions 要求调用方持有特定权限以增加攻击难度。",
+      "detection": {
+        "type": "config_pattern",
+        "file_pattern": "**/module.json5"
+      },
+      "remediation": "在 extensionAbilities 项中添加 permissions 字段：\"permissions\": [\"ohos.permission.xxx\"]",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/serviceextensionability"
+    },
+    {
+      "id": "IPC-012-CLEANUP",
+      "severity": "medium",
+      "cwe": "CWE-404",
+      "owasp": "M7",
+      "title": "IPC 连接断开后未正确清理 proxy 引用",
+      "description": "客户端断开 IPC 连接后，未将 proxy 引用置为 undefined/null，可能导致悬垂引用或重复连接时的状态混乱。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["disconnectServiceExtensionAbility"],
+        "negative_patterns": ["proxy = undefined", "proxy = null"]
+      },
+      "remediation": "在断开连接后立即清理：context.disconnectServiceExtensionAbility(connectid); proxy = undefined;",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+    }
+  ]
+}

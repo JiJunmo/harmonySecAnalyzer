@@ -1,0 +1,76 @@
+{
+  "rules": [
+    {
+      "id": "IPC-010-RETURN",
+      "severity": "low",
+      "cwe": "CWE-252",
+      "owasp": "M8",
+      "title": "onRemoteMessageRequest 返回值恒为 true",
+      "description": "onRemoteMessageRequest 方法无论请求处理成功与否都返回 true，客户端无法根据返回值判断请求是否被正确处理。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["onRemoteMessageRequest"]
+      },
+      "remediation": "根据处理结果正确设置返回值：数据校验失败或权限不足时返回 false，未知操作码时返回 false。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+    },
+    {
+      "id": "IPC-014",
+      "severity": "low",
+      "cwe": "CWE-1104",
+      "owasp": "M9",
+      "title": "ServiceExtensionAbility 过度导出",
+      "description": "ServiceExtensionAbility 导出 (exported: true) 但未设置任何访问控制措施（permissions）。不必要的组件导出增加了攻击面。",
+      "detection": {
+        "type": "config_pattern",
+        "file_pattern": "**/module.json5"
+      },
+      "remediation": "如 IPC 仅在应用内使用，设置 exported: false。如需跨应用 IPC，建议配置 permissions 守卫。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/serviceextensionability"
+    },
+    {
+      "id": "IPC-015",
+      "severity": "low",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "descriptor 字符串硬编码且可预测",
+      "description": "RemoteObject 的 descriptor 字符串在代码中硬编码为固定值，可能在不同应用中重复使用。虽然 descriptor 安全性有限，但应避免使用可预测的简单字符串。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["super("]
+      },
+      "remediation": "使用包含随机数或 UUID 的 descriptor：super('com.example.service.' + util.generateRandomUUID())",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+    },
+    {
+      "id": "IPC-016",
+      "severity": "low",
+      "cwe": "CWE-778",
+      "owasp": "M7",
+      "title": "IPC 连接缺少超时处理",
+      "description": "connectServiceExtensionAbility 未设置连接超时。恶意服务端可无限期不响应 onConnect，导致客户端一直阻塞。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["connectServiceExtensionAbility"],
+        "negative_patterns": []
+      },
+      "remediation": "使用定时器实现连接超时保护：setTimeout(() => { if (!connected) { /* 超时处理 */ } }, CONNECT_TIMEOUT);",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+    },
+    {
+      "id": "IPC-INFO-ALL",
+      "severity": "info",
+      "title": "项目使用了 IPC 通信机制",
+      "description": "检测到项目使用了 @ohos.rpc 或 @kit.IPCKit 进行跨进程通信。此发现为通知性质，提醒审计人员关注 IPC 相关的安全配置和代码实现。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["@ohos.rpc", "@kit.IPCKit"]
+      },
+      "remediation": "无需修复。此为信息提示，请确保上述 IPC 审计规则已覆盖。"
+    }
+  ]
+}

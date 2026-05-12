@@ -96,6 +96,9 @@ def _compute_security_surface(modules: list[dict], dependencies: dict, files: di
     has_database = False
     has_distributed = False
     has_napi = bool(files.get("cpp_sources") or files.get("cmake_files"))
+    has_ipc_service = False
+    has_service_extension = False
+    icp_service_count = 0
 
     for mod in modules:
         if mod.get("_parse_error"):
@@ -119,6 +122,13 @@ def _compute_security_surface(modules: list[dict], dependencies: dict, files: di
         for ext in mod.get("extension_abilities", []):
             if ext.get("exported"):
                 exported_extensions.append(ext.get("name", ""))
+            ext_type = ext.get("type", "").lower()
+            if ext_type == "service":
+                has_ipc_service = True
+                has_service_extension = True
+                icp_service_count += 1
+            elif ext_type:
+                has_service_extension = True
 
         nc = mod.get("network_config", {})
         if nc.get("cleartext_traffic"):
@@ -142,6 +152,9 @@ def _compute_security_surface(modules: list[dict], dependencies: dict, files: di
         has_database = True
     if not has_distributed and (capabilities.get("uses_distributed_data") or capabilities.get("uses_distributed_object")):
         has_distributed = True
+    if not has_ipc_service and (capabilities.get("uses_ipc") or capabilities.get("uses_ipc_kit") or capabilities.get("uses_ipc_stub") or capabilities.get("uses_service_extension")):
+        has_ipc_service = True
+        has_service_extension = True
 
     return {
         "total_permissions": len(set(all_permissions)),
@@ -159,6 +172,9 @@ def _compute_security_surface(modules: list[dict], dependencies: dict, files: di
         "has_database": has_database,
         "has_distributed": has_distributed,
         "has_napi": has_napi,
+        "has_ipc_service": has_ipc_service,
+        "has_service_extension": has_service_extension,
+        "ipc_service_count": icp_service_count,
         "uses_crypto": capabilities.get("uses_crypto", False),
         "uses_http": capabilities.get("uses_http", False),
         "uses_bluetooth": capabilities.get("uses_bluetooth", False),
