@@ -24,7 +24,13 @@
       "description": "ServiceExtensionAbility 导出 (exported: true) 但未设置任何访问控制措施（permissions）。不必要的组件导出增加了攻击面。",
       "detection": {
         "type": "config_pattern",
-        "file_pattern": "**/module.json5"
+        "file_pattern": "**/module.json5",
+        "config_check": {
+          "scope": "extension_abilities",
+          "condition": "true_without_guard",
+          "field": "exported",
+          "guard_fields": ["permissions", "visible"]
+        }
       },
       "remediation": "如 IPC 仅在应用内使用，设置 exported: false。如需跨应用 IPC，建议配置 permissions 守卫。",
       "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/serviceextensionability"

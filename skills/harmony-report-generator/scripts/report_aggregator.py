@@ -35,9 +35,21 @@ def find_skill_dirs(root: Path) -> list[str]:
     return result
 
 
+def _dedup_key(item: dict) -> tuple:
+    """生成去重 key：优先用 id 字段，回退到 title+file+line."""
+    fid = item.get("id")
+    if fid:
+        return (fid,)
+    return (
+        item.get("title", ""),
+        item.get("location", {}).get("file", "")
+        or (item.get("evidence", [{}])[0].get("file", "") if item.get("evidence") else ""),
+        item.get("location", {}).get("line"),
+    )
+
+
 def merge_findings(audit_dir: Path) -> list[dict]:
     """从审计目录读取所有 *-findings.json，合并、去重、排序。"""
-    all_findings: list[dict] = []
     json_files = sorted(audit_dir.glob("*-findings.json"))
 
     seen: dict[tuple, dict] = {}
@@ -52,11 +64,7 @@ def merge_findings(audit_dir: Path) -> list[dict]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            key = (
-                item.get("title", ""),
-                item.get("location", {}).get("file", ""),
-                item.get("location", {}).get("line"),
-            )
+            key = _dedup_key(item)
             cur_rank = SEVERITY_RANK.get(item.get("severity", "info"), 1)
             if key in seen:
                 exist_rank = SEVERITY_RANK.get(seen[key].get("severity", "info"), 1)
@@ -76,6 +84,9 @@ def compute_statistics(findings: list[dict]) -> dict:
     by_skill: dict[str, int] = {}
     by_cwe: dict[str, int] = {}
     by_owasp: dict[str, int] = {}
+    by_rule: dict[str, int] = {}
+    rule_files: dict[str, set] = {}
+    rule_details: dict[str, dict] = {}
 
     for f in findings:
         sev = f.get("severity", "info")
@@ -92,11 +103,50 @@ def compute_statistics(findings: list[dict]) -> dict:
         if owasp:
             by_owasp[owasp] = by_owasp.get(owasp, 0) + 1
 
+        # 规则级别统计
+        rule_id = f.get("rule_id")
+        if rule_id:
+            by_rule[rule_id] = by_rule.get(rule_id, 0) + 1
+            if rule_id not in rule_files:
+                rule_files[rule_id] = set()
+                rule_details[rule_id] = {
+                    "title": f.get("title", ""),
+                    "severity": f.get("severity", "info"),
+                }
+            else:
+                # 取最高 severity
+                cur_sev = SEVERITY_RANK.get(rule_details[rule_id]["severity"], 1)
+                new_sev = SEVERITY_RANK.get(f.get("severity", "info"), 1)
+                if new_sev > cur_sev:
+                    rule_details[rule_id]["severity"] = f.get("severity", "info")
+            # 收集涉及文件
+            for ev in f.get("evidence", []):
+                rule_files[rule_id].add(ev.get("file", ""))
+            loc = f.get("location", {})
+            if loc.get("file"):
+                rule_files[rule_id].add(loc["file"])
+        elif f.get("location") or f.get("evidence"):
+            # 无 rule_id 但有实际发现 — 归为 N/A
+            by_rule["N/A"] = by_rule.get("N/A", 0) + 1
+
+    # 转换 set 为 count
+    rule_details_out: list[dict] = []
+    for rid in sorted(by_rule.keys()):
+        detail = rule_details.get(rid, {"title": "", "severity": "info"})
+        rule_details_out.append({
+            "rule_id": rid,
+            "title": detail.get("title", ""),
+            "severity": detail.get("severity", "info"),
+            "count": by_rule[rid],
+            "files": len(rule_files.get(rid, set())),
+        })
+
     return {
         "by_severity": dict(sorted(by_severity.items(), key=lambda x: SEVERITY_RANK.get(x[0], 0), reverse=True)),
         "by_skill": dict(sorted(by_skill.items(), key=lambda x: x[1], reverse=True)),
         "by_cwe": dict(sorted(by_cwe.items(), key=lambda x: x[1], reverse=True)),
         "by_owasp": dict(sorted(by_owasp.items())),
+        "by_rule": rule_details_out,
     }
 
 
@@ -126,6 +176,15 @@ def aggregate(audit_dir: str, project_root_path: str | None = None) -> dict:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     elif meta_fallback.exists():
         metadata = json.loads(meta_fallback.read_text(encoding="utf-8"))
+
+    # 读取调用链分析（若存在）
+    call_chain_analysis: dict | None = None
+    cca_path = audit_path / "call_chain_analysis.json"
+    if cca_path.exists():
+        try:
+            call_chain_analysis = json.loads(cca_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
 
     # 合并 findings
     findings = merge_findings(audit_path)
@@ -179,6 +238,7 @@ def aggregate(audit_dir: str, project_root_path: str | None = None) -> dict:
             "skills_executed": executed_skills,
             "skills_pending": pending_audit,
         },
+        "call_chain_analysis": call_chain_analysis,
         "findings": {
             "total": len(findings),
             **stats,

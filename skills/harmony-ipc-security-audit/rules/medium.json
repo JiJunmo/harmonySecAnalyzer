@@ -24,7 +24,12 @@
       "description": "extensionAbilities 配置中未设置 permissions 字段。建议通过 permissions 要求调用方持有特定权限以增加攻击难度。",
       "detection": {
         "type": "config_pattern",
-        "file_pattern": "**/module.json5"
+        "file_pattern": "**/module.json5",
+        "config_check": {
+          "scope": "extension_abilities",
+          "condition": "field_missing",
+          "field": "permissions"
+        }
       },
       "remediation": "在 extensionAbilities 项中添加 permissions 字段：\"permissions\": [\"ohos.permission.xxx\"]",
       "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/serviceextensionability"

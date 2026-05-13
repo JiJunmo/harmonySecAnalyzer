@@ -16,15 +16,20 @@
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Phase 1: 项目发现 (harmony-project-parser)                       │
-│  → 输出: project-metadata.json                                   │
+│  → 输出: metadata.json + harmony-project-parser-findings.json    │
 ├──────────────────────────────────────────────────────────────────┤
-│  Phase 2: 并行审计 (9 个 audit skill 同时执行)                      │
-│  → 输出: 各 skill 的 findings.json                                │
+│  Phase 2: 并行审计 (各 audit skill 同时执行)                       │
+│  → IPC skill 输出: call_chain_analysis.json + findings_raw.json  │
+│                     + harmony-ipc-security-audit-findings.json    │
+│  → 其他 skill 输出: {skill}-findings.json                         │
 ├──────────────────────────────────────────────────────────────────┤
 │  Phase 3: 聚合去重 + 风险评估                                       │
-│  → 输出: aggregated-findings.json                                │
+│  → 合并所有 findings + 读取 call_chain_analysis.json              │
+│  → 输出: aggregated_data.json                                    │
 ├──────────────────────────────────────────────────────────────────┤
 │  Phase 4: 报告生成 (harmony-report-generator)                    │
+│  → 读取 aggregated_data.json + call_chain_analysis.json          │
+│  → 生成含调用链分析和漏洞详情的完整报告                              │
 │  → 输出: audit-report.md + audit-report.json                     │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -130,6 +135,8 @@ if metadata.security_surface.has_database:
 
 if metadata.security_surface.has_ipc_service or metadata.security_surface.has_service_extension:
     dispatch_list.append("harmony-ipc-security-audit")
+    # IPC audit 特殊要求：输出 call_chain_analysis.json + findings_raw.json
+    # 这两个文件供 Phase 3 聚合器和 Phase 4 报告生成器使用
 
 if metadata.files.total_ets_files > 0:
     dispatch_list.append("harmony-code-quality-audit")
@@ -160,11 +167,12 @@ python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir>
 
 聚合脚本自动：
 - 扫描 `<audit_dir>` 中所有 `*-findings.json`
-- 按 (title, file, line) 去重，保留 severity 更高的
+- 按 (id, title, file, line) 去重，保留 severity 更高的
+- 读取 `call_chain_analysis.json`（若 IPC audit 已输出）
 - 计算按 severity / skill / CWE / OWASP 的分组统计
 - 计算风险评分
 - 自动发现已执行的 skill 和待实现的 skill
-- 输出 `aggregated_data.json`
+- 输出 `aggregated_data.json`（含调用链分析数据）
 
 ### Step 2: 呈现摘要给用户
 ```
@@ -186,6 +194,21 @@ python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir>
 ### 加载 skill
 加载 `skills/harmony-report-generator/SKILL.md`，按照其模板和指令生成最终报告。
 
+### 报告结构
+
+```
+1. 项目总览              ← harmony-project-parser 输出（摘要、基本信息、攻击面、模块结构）
+2. IPC 跨进程通信安全审计  ← harmony-ipc-security-audit 输出（调用链分析 + 漏洞详情 + 统计）
+3. (未来 skill)           ← 动态展开，每个 skill 独立成章
+N. 审计总结               ← 风险总览 + 自定义规则命中 + CWE/OWASP 覆盖 + 修复优先级建议
+附录                      ← 审计范围 / 待实现 skill
+```
+
+### 核心原则
+- 每个审计 skill 独立成章，包含完整分析过程和发现
+- 汇总章节必须列出**自定义规则 ID**命中统计（非仅 OWASP/CWE）
+- 代码证据原样展示，不可改写
+
 ### 报告文件
 
 | 文件 | 路径 |
@@ -195,7 +218,12 @@ python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir>
 | 聚合数据 | `<audit_dir>/aggregated_data.json` |
 
 ### 执行
-AI 读取 `aggregated_data.json` 后，按 SKILL.md 中的模板生成 Markdown 和 JSON 报告。
+1. 加载 `skills/harmony-report-generator/SKILL.md`
+2. 读取 `<audit_dir>/aggregated_data.json`
+3. 按模板生成完整 Markdown 报告
+4. **使用 Write 工具将报告内容写入 `<audit_dir>/audit-report.md`**
+5. 将 `aggregated_data.json` 也写入 `<audit_dir>/audit-report.json`
+6. 告知用户报告已生成，输出文件路径
 
 ---
 
@@ -203,9 +231,11 @@ AI 读取 `aggregated_data.json` 后，按 SKILL.md 中的模板生成 Markdown 
 
 ### Finding（所有 skill 输出格式）
 
+基础格式（向后兼容）：
 ```json
 {
   "id": "HM-2026-0001",
+  "rule_id": "optional-rule-id",
   "skill": "harmony-secrets-audit",
   "severity": "high",
   "title": "硬编码 API Key",
@@ -222,6 +252,37 @@ AI 读取 `aggregated_data.json` 后，按 SKILL.md 中的模板生成 Markdown 
   "reference": "https://developer.huawei.com/..."
 }
 ```
+
+增强格式（IPC audit skill 输出，含完整诊断）：
+```json
+{
+  "id": "IPC-003-001",
+  "rule_id": "IPC-003",
+  "skill": "harmony-ipc-security-audit",
+  "severity": "critical",
+  "title": "onRemoteMessageRequest 未校验调用方身份",
+  "description": "项目具体描述",
+  "call_chain_id": "chain-001",
+  "layer": "3-服务请求处理层",
+  "root_cause": "根本原因分析",
+  "attack_scenario": "攻击者如何利用此漏洞的逐步描述",
+  "impact": "成功利用后的影响",
+  "evidence": [
+    {
+      "file": "entry/src/main/ets/IPC_Service.ets",
+      "line_range": "80-120",
+      "snippet": "onRemoteMessageRequest(...)",
+      "description": "getCallingUid() 返回值被丢弃"
+    }
+  ],
+  "cwe": "CWE-862",
+  "owasp": "M1",
+  "remediation": "可操作的修复建议",
+  "reference": "https://developer.huawei.com/..."
+}
+```
+
+报告生成器会识别两种格式：有 root_cause/attack_scenario/impact/evidence 时使用完整模板，否则使用基础模板。
 
 ### Severity 等级定义
 
