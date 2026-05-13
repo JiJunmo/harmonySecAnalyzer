@@ -29,7 +29,7 @@
 
 ---
 
-## 二、Skill 拆解（共 10 个核心 Skill）
+## 二、Skill 拆解（共 11 个核心 Skill）
 
 | # | Skill 名称 | 职责 | 关键检测项 |
 |---|-----------|------|-----------|
@@ -42,7 +42,8 @@
 | 7 | `harmony-crypto-audit` | 密码学安全 | 弱算法 (MD5/SHA1/DES/RC4)；`cryptoFramework` API 不安全用法；硬编码 IV/Salt；不安全的随机数 (`Math.random`)；密钥长度不足 |
 | 8 | `harmony-data-storage-audit` | 数据存储安全 | `relationalStore` / `preferences` 明文存储敏感数据；数据库加密 (`encrypt: false`)；`distributedObject` 跨设备同步泄露；文件路径遍历；`BackupExtension` 备份泄露 |
 | 9 | `harmony-code-quality-audit` | 代码质量/漏洞 | SQL 注入 (`rdbStore.executeSql` 拼接)；XSS；路径遍历；日志泄露 (`hilog.info` 打印敏感数据)；输入校验缺失；WebSocket/HTTP 请求参数注入 |
-| 10 | `harmony-report-generator` | 报告生成 | 汇总所有发现；风险分级 (Critical/High/Medium/Low/Info)；CWE 映射；OWASP Mobile Top 10 对标；修复建议；生成 Markdown + JSON 双格式报告 |
+| 10 | `harmony-ipc-security-audit` | IPC 通信安全 | ServiceExtensionAbility 导出配置审计；调用方身份校验 (`getCallingUid`)；InterfaceToken 认证强度；Parcelable/ArrayBuffer 数据校验；Stub 实例隔离；IPC 日志泄露 |
+| 11 | `harmony-report-generator` | 报告生成 | 汇总所有发现；风险分级 (Critical/High/Medium/Low/Info)；CWE 映射；OWASP Mobile Top 10 对标；修复建议；生成 Markdown + JSON 双格式报告 |
 
 ---
 
@@ -219,6 +220,17 @@ harmony-security-auditor/
 │   ├── harmony-code-quality-audit/
 │   │   ├── SKILL.md
 │   │   └── rules/
+│   ├── harmony-ipc-security-audit/
+│   │   ├── SKILL.md
+│   │   ├── PLAN.md
+│   │   ├── IPC_REFERENCE.md
+│   │   ├── scripts/
+│   │   │   └── ipc_auditor.py
+│   │   └── rules/
+│   │       ├── critical.yaml
+│   │       ├── high.yaml
+│   │       ├── medium.yaml
+│   │       └── low.yaml
 │   └── harmony-report-generator/
 │       ├── SKILL.md
 │       └── templates/
@@ -238,13 +250,15 @@ harmony-security-auditor/
 
 ## 七、实现优先级
 
-| 优先级 | 内容 | 理由 |
-|--------|------|------|
-| P0 | `harmony-project-parser` + `harmony-report-generator` | 骨架，先跑通全流程 |
-| P1 | `harmony-permission-audit` + `harmony-secrets-audit` | 覆盖面最广，最容易出高危发现 |
-| P2 | `harmony-network-audit` + `harmony-component-audit` | 网络和组件是常见攻击面 |
-| P3 | `harmony-data-storage-audit` + `harmony-webview-audit` | 本地数据泄露与 WebView 风险 |
-| P4 | `harmony-crypto-audit` + `harmony-code-quality-audit` | 密码学与代码层漏洞 |
+| 优先级 | 内容 | 理由 | 状态 |
+|--------|------|------|------|
+| P0 | `harmony-project-parser` | 骨架，先跑通全流程 | ✅ 已完成 |
+| P0 | `harmony-ipc-security-audit` | IPC 攻击面独立，与组件审计互补 | ✅ 已完成 |
+| P0 | `harmony-report-generator` | 报告生成，完成全流程闭环 | ✅ 已完成 |
+| P1 | `harmony-permission-audit` + `harmony-secrets-audit` | 覆盖面最广，最容易出高危发现 | 🔜 待实现 |
+| P2 | `harmony-network-audit` + `harmony-component-audit` | 网络和组件是常见攻击面 | 🔜 待实现 |
+| P3 | `harmony-data-storage-audit` + `harmony-webview-audit` | 本地数据泄露与 WebView 风险 | 🔜 待实现 |
+| P4 | `harmony-crypto-audit` + `harmony-code-quality-audit` | 密码学与代码层漏洞 | 🔜 待实现 |
 
 ---
 

@@ -1,3 +1,8 @@
+---
+name: harmony-project-parser
+description: 解析鸿蒙应用项目结构，提取模块、权限、组件、依赖等安全审计元数据，输出标准化JSON供下游skill使用
+---
+
 # harmony-project-parser
 
 HarmonyOS 应用项目结构解析器。扫描鸿蒙项目目录，解析所有配置文件（module.json5、build-profile.json5、oh-package.json5），收集源文件信息，输出标准化的项目元数据 JSON，供下游安全审计 skill 使用。

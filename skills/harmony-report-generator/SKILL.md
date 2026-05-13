@@ -1,3 +1,8 @@
+---
+name: harmony-report-generator
+description: 聚合审计发现，生成包含风险评分、发现详情、OWASP对标的安全审计报告（Markdown+JSON双格式）
+---
+
 # harmony-report-generator
 
 安全审计报告生成器。读取聚合后的审计数据，生成 Markdown 和 JSON 双格式报告。

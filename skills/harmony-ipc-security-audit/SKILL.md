@@ -1,3 +1,8 @@
+---
+name: harmony-ipc-security-audit
+description: 审计鸿蒙IPC跨进程通信安全，检查ServiceExtensionAbility导出配置、调用方身份校验、数据传输加密、反序列化校验等
+---
+
 # harmony-ipc-security-audit
 
 HarmonyOS IPC 跨进程通信安全审计 Skill。**以 AI 代码理解为主**，先梳理完整 IPC 通信逻辑链路，再对照规则库筛查威胁。
