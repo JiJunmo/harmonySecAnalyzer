@@ -142,6 +142,8 @@ if metadata.files.total_ets_files > 0:
     dispatch_list.append("harmony-code-quality-audit")
 
 # 并行执行每个 skill（使用 Task tool）
+# 注意：每个参数必须用关键字指定（subagent_type=、description=、prompt=），不可省略参数名。
+# task_id 不指定则自动创建新 session。
 for skill in dispatch_list:
     Task(
         subagent_type="general",
