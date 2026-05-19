@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-审计发现聚合器。扫描审计目录中所有 skill 的 findings.json，合并去重，计算统计量。
+审计发现聚合器。扫描审计目录中所有 skill 的 findings.json 和分析分片，合并去重，计算统计量。
 
 用法:
     python report_aggregator.py <audit_dir> [-o aggregated_data.json]
 
-输入: 审计工作目录（含 metadata.json 和各个 *-findings.json）
-输出: aggregated_data.json（供 AI 润色生成报告）
+输入: 审计工作目录（含 metadata.json、*-findings.json、*-analysis-*.json、*-instances.json）
+输出: aggregated_data.json（供报告生成器使用）
 """
 
 import argparse
@@ -161,6 +161,97 @@ def compute_risk_score(findings: list[dict]) -> int:
     return min(100, round(total / max_possible * 100))
 
 
+def collect_analysis_reports(audit_path: Path) -> tuple[dict[str, dict], list[str]]:
+    """
+    自动发现所有 *-analysis-*.json 分片文件，按 skill 合并。
+
+    返回 (analysis_reports, warnings)。
+    """
+    analysis_reports: dict[str, dict] = {}
+    warnings: list[str] = []
+
+    # 收集所有分片，按 skill 分组
+    shards: dict[str, list[dict]] = {}
+    for fpath in sorted(audit_path.glob("*-analysis-*.json")):
+        skill = fpath.name.split("-analysis-")[0]
+        try:
+            data = json.loads(fpath.read_text(encoding="utf-8"))
+            if skill not in shards:
+                shards[skill] = []
+            shards[skill].append(data)
+        except (json.JSONDecodeError, OSError):
+            warnings.append(f"分析分片 {fpath.name} 读取失败")
+
+    # 按 skill 合并
+    for skill, items in shards.items():
+        merged: dict = {}
+
+        # 检测分片数据结构类型
+        # IPC 使用 call_chains，WebView 使用 webview_instances
+        all_chains = []
+        all_instances = []
+        for item in items:
+            if "call_chains" in item:
+                all_chains.extend(item.get("call_chains", []))
+            elif "call_chain" in item:
+                # 单个 call_chain（可能是嵌套结构）
+                chain = item.get("call_chain", item)
+                if isinstance(chain, dict):
+                    all_chains.append(chain)
+            if "webview_instances" in item:
+                all_instances.extend(item.get("webview_instances", []))
+            elif "webview_instance" in item:
+                inst = item.get("webview_instance", item)
+                if isinstance(inst, dict):
+                    all_instances.append(inst)
+            elif "layers" in item:
+                # 顶层的 layers（可能是 webview 或通用结构）
+                if "component_name" in item:
+                    all_instances.append(item)
+                elif "service_name" in item:
+                    all_chains.append(item)
+
+        if all_chains:
+            merged["call_chains"] = all_chains
+            merged["total"] = len(all_chains)
+        if all_instances:
+            merged["webview_instances"] = all_instances
+            merged["total"] = len(all_instances)
+
+        if merged:
+            analysis_reports[skill] = merged
+
+    # 读取 *-instances.json 做计数校验
+    for fpath in sorted(audit_path.glob("*-instances.json")):
+        skill = fpath.name.replace("-instances.json", "")
+        try:
+            inst_data = json.loads(fpath.read_text(encoding="utf-8"))
+            expected = inst_data.get("_meta", {}).get("total_instances", 0)
+
+            if skill in analysis_reports:
+                report = analysis_reports[skill]
+                actual = report.get("total", 0)
+                report["expected"] = expected
+                report["analyzed"] = actual
+                if actual < expected:
+                    missing = expected - actual
+                    warnings.append(
+                        f"{skill}: 共 {expected} 个实例，仅分析了 {actual} 个，缺少 {missing} 个"
+                    )
+                elif actual > expected:
+                    warnings.append(
+                        f"{skill}: 预期 {expected} 个实例，实际分析了 {actual} 个（可能含残留数据）"
+                    )
+            else:
+                if expected > 0:
+                    warnings.append(f"{skill}: 共 {expected} 个实例，但未找到任何分析分片")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return analysis_reports, warnings
+
+
+
 def aggregate(audit_dir: str, project_root_path: str | None = None) -> dict:
     """执行聚合，返回 aggregated_data 字典。"""
     audit_path = Path(audit_dir)
@@ -177,14 +268,8 @@ def aggregate(audit_dir: str, project_root_path: str | None = None) -> dict:
     elif meta_fallback.exists():
         metadata = json.loads(meta_fallback.read_text(encoding="utf-8"))
 
-    # 读取调用链分析（若存在）
-    call_chain_analysis: dict | None = None
-    cca_path = audit_path / "call_chain_analysis.json"
-    if cca_path.exists():
-        try:
-            call_chain_analysis = json.loads(cca_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
+    # 收集分析报告（自动发现 + 合并分片 + 计数校验）
+    analysis_reports, warnings = collect_analysis_reports(audit_path)
 
     # 合并 findings
     findings = merge_findings(audit_path)
@@ -205,7 +290,6 @@ def aggregate(audit_dir: str, project_root_path: str | None = None) -> dict:
         if name.startswith("harmony-"):
             executed_skills.append(name)
 
-    # parser skill 已执行但 audit_skills 中排除
     audit_skills = [s for s in all_skills if s not in ("harmony-project-parser", "harmony-report-generator")]
     executed_audit = [s for s in audit_skills if s in executed_skills]
     pending_audit = [s for s in audit_skills if s not in executed_skills]
@@ -238,13 +322,14 @@ def aggregate(audit_dir: str, project_root_path: str | None = None) -> dict:
             "skills_executed": executed_skills,
             "skills_pending": pending_audit,
         },
-        "call_chain_analysis": call_chain_analysis,
+        "analysis_reports": analysis_reports,
         "findings": {
             "total": len(findings),
             **stats,
         },
         "risk_score": risk_score,
         "items": findings,
+        "warnings": warnings,
     }
 
 

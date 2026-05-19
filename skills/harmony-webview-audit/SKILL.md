@@ -22,32 +22,36 @@ Agent 读取 metadata 后，若以下任一条件为 true 则调度本 Skill：
 | 规则知识库 | `skills/harmony-webview-audit/rules/*.json` |
 | WebView 领域知识 | `skills/harmony-webview-audit/WEBVIEW_REFERENCE.md` |
 
-## 输出产物（三个文件）
+## 输出产物
 
 | 文件 | 内容 | 用途 |
 |------|------|------|
-| `webview_analysis_report.json` | 每个 WebView 实例的 6 层分析报告 | **报告中的思考过程** |
-| `findings_raw.json` | 逐漏洞详细诊断（含成因、攻击场景、证据） | 供聚合器使用 |
+| `harmony-webview-audit-instances.json` | 所有 WebView 实例列表 + Layer 1 骨架 | 供 agent.md 按实例派发 Task |
+| `harmony-webview-audit-analysis-{id}.json` | 单个 WebView 实例的 6 层分析分片 | 最终由聚合器合并 |
+| `harmony-webview-audit-analysis.json` | 合并后的完整分析报告 | 供报告生成器使用 |
 | `harmony-webview-audit-findings.json` | 按 severity 排序的标准格式发现列表 | 供报告生成器使用 |
+
+> **注意**：每个 WebView 实例的分析是独立的 Task。脚本 `--list-instances` 预填 Layer 1 骨架，AI Task 补充 Layer 2-6 并写分片文件。Phase 3 聚合器负责合并和计数校验。
 
 ---
 
-## Step 1: 运行配置级脚本
+## Step 1: 脚本预处理（agent.md 在派发 Task 前执行）
 
-使用 Bash 工具执行 webview_auditor.py，对源文件做初步的模式匹配和配置提取：
+Agent 在派发 AI Task 之前，先运行脚本获取实例列表和运行配置级检查：
 
 ```bash
+# 实例发现
+python3 <skill_dir>/scripts/webview_auditor.py --list-instances <metadata_path> <project_path> -o <audit_dir>/harmony-webview-audit-instances.json --pretty
+
+# 配置级规则检查
 python3 <skill_dir>/scripts/webview_auditor.py <metadata_path> <project_path> -o <audit_dir>/harmony-webview-audit-findings.json --pretty
 ```
-若 `python3` 不可用（如 Windows），改为 `python`。
-
-参数说明：
-- `<metadata_path>`: Phase 1 输出的 metadata JSON 路径
-- `<project_path>`: 项目根目录路径
-- `<skill_dir>`: 本 skill 所在目录 (`skills/harmony-webview-audit/`)
-- `<audit_dir>`: 审计工作目录
 
 脚本自动完成：
+- 搜索所有 .ets 源文件中 WebView 组件使用点
+- 提取每个 WebView 的 src URL、安全配置开关、JS Bridge 注册情况
+- 预填 Layer 1（组件初始化配置）骨架
+- 按 rules/*.json 做配置级和代码级模式匹配，生成初步 findings
 - 搜索所有 .ets 源文件中 WebView 相关 API 调用
 - 按 rules/*.json 中所有规则做 code_pattern 和 config_pattern 检查
 - 检测 `registerJavaScriptProxy` 是否缺少 `allowedOriginRules`
@@ -58,18 +62,32 @@ python3 <skill_dir>/scripts/webview_auditor.py <metadata_path> <project_path> -o
 
 ---
 
-## Step 2: AI 深入分析（6 层代码分析模型）
+## Step 2: AI 深入分析单个实例（6 层代码分析模型）
 
-脚本完成初步筛查后，AI 对每个检测到的 WebView 实例进行 **6 层深度分析**。**这是报告中展示的思考过程，必须详尽**。
+**重要：每次 Task 调用只分析一个 WebView 实例。Agent 会传入该实例的骨架 JSON（含 Layer 1 预填分析）。你只需围绕这一个实例，补充 Layer 2-6。**
 
-### 2.0 识别所有 WebView 实例
+### 输入
 
-从脚本输出和源文件内容中识别项目中所有的 WebView 实例：
-- 搜索 `import { webview } from '@kit.ArkWeb'`
-- 搜索 `new webview.WebviewController()`
-- 搜索 `Web({ src:`
-
-对每个 WebView 实例，按以下 6 层执行分析：
+Agent 传入的实例骨架：
+```json
+{
+  "instance_id": "webview-001",
+  "name": "WebView_Index",
+  "file": "entry/src/main/ets/pages/Index.ets",
+  "src_url": "https://example.com",
+  "config_summary": "JS=true, File=true, DOM=true, JSBridge=yes",
+  "skeleton": {
+    "id": "webview-001",
+    "component_name": "WebView_on_Index",
+    "layers": [
+      {
+        "layer": "1-组件初始化配置",  ← 已预填
+        "_source": "script"
+      }
+    ]
+  }
+}
+```
 
 ### 2.1 Layer 1 — 组件初始化配置
 
@@ -130,67 +148,11 @@ python3 <skill_dir>/scripts/webview_auditor.py <metadata_path> <project_path> -o
 - `onPageVisible` 是否为敏感页面做了切后台遮罩？
 - `onErrorReceive` 是否向 Web 页面泄露了内部错误信息？
 
-### 2.7 输出 webview_analysis_report.json
+### 2.7 输出分析分片
 
-每读完一层，立即写出该层的结构化分析。格式：
+**保存路径**：`<audit_dir>/harmony-webview-audit-analysis-{instance_id}.json`。**必须使用 Write 工具写入磁盘。**
 
-```json
-{
-  "_meta": {
-    "auditor": "harmony-webview-audit",
-    "project_path": "<project_path>",
-    "total_webview_instances": 2
-  },
-  "webview_instances": [
-    {
-      "id": "webview-001",
-      "component_name": "WebView_on_Index",
-      "file": "entry/src/main/ets/pages/Index.ets",
-      "overview": "Index 页面的主 WebView，加载外部 HTTPS URL，注册了 1 个 JS Bridge 对象",
-      "layers": [
-        {
-          "layer": "1-组件初始化配置",
-          "order": 1,
-          "file": "entry/src/main/ets/pages/Index.ets",
-          "analysis": "该 WebView 开启了 javaScriptAccess: true 且 mixedMode 为 MixedMode.Allowed，未配置 CSP 或沙箱。加载了外部 URL https://example.com，整体配置偏危险。",
-          "code_references": [
-            {
-              "file": "entry/src/main/ets/pages/Index.ets",
-              "line_range": "30-45",
-              "snippet": "Web({ src: 'https://example.com', controller: this.controller })\n  .javaScriptAccess(true)\n  .mixedMode(webview.MixedMode.All)",
-              "description": "WebView 初始化配置，JS 开启、混合内容未限制"
-            }
-          ],
-          "issues_identified": ["javaScriptAccess 为 true 但无 CSP", "mixedMode 为 All 存在 MITM 风险"]
-        },
-        {
-          "layer": "2-JS Bridge 接口层",
-          "order": 2,
-          "file": "entry/src/main/ets/pages/Index.ets",
-          "analysis": "registerJavaScriptProxy 注册了 nativeObj 对象，暴露了 readFile 和 writeFile 方法，这两个方法内部调用了 @ohos.file.fs。未设置 allowedOriginRules，也未在方法内校验调用方 URL。攻击者通过 XSS 可调用这些方法读写应用沙箱内的任意文件。",
-          "code_references": [
-            {
-              "file": "entry/src/main/ets/pages/Index.ets",
-              "line_range": "50-55",
-              "snippet": "this.controller.registerJavaScriptProxy(nativeObj, 'nativeBridge', ['readFile', 'writeFile']);",
-              "description": "JS Bridge 注册，暴露了文件读写方法，无 origin 限制"
-            }
-          ],
-          "issues_identified": ["JS Bridge 暴露了文件 IO API", "无 allowedOriginRules 限制", "Native 方法未校验调用方身份和参数"]
-        }
-      ]
-    }
-  ]
-}
-```
-
-**关键要求**：
-- 每层 `analysis` 必须包含 AI 对该层代码的**理解和判断**
-- `issues_identified` 列出该层发现的所有（潜在）问题
-- `code_references[*].snippet` 必须是代码原文，行号正确
-- 如果某层不存在对应代码，`analysis` 写 "该项目未发现 XXX"，`issues_identified` 为空
-
-**保存路径**：`<audit_dir>/webview_analysis_report.json`。必须使用 Write 工具写入磁盘。
+> 分片文件由 Phase 3 聚合器自动合并为 `harmony-webview-audit-analysis.json`。
 
 ---
 

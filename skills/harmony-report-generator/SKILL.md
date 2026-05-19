@@ -15,19 +15,32 @@ Phase 3 聚合完成后，Agent 自动调度本 Skill。
 
 | 数据 | 来源 |
 |------|------|
-| `aggregated_data.json` | Phase 3 聚合脚本输出（含所有按 skill 分组的 findings + 调用链分析） |
-| 审计工作目录 | Phase 0 创建，含额外 `findings_raw.json` / `call_chain_analysis.json` |
-| `skills/` 目录 | 用于读取各 skill 的名称和基本信息 |
+| `aggregated_data.json` | Phase 3 聚合脚本输出（含 `analysis_reports` 字典 + `warnings` + findings 统计） |
+| 审计工作目录 | 用于读取各 skill 的完整分析报告 |
 
 ## 报告结构
 
 ```
 1. 项目总览                ← harmony-project-parser 输出
-2. IPC 跨进程通信安全审计    ← harmony-ipc-security-audit 输出
-3. (未来 skill)            ← 动态展开
-N. 审计总结                ← 所有发现汇总 + 规则/CWE/OWASP 覆盖 + 修复优先级
-附录                        ← 审计范围 / 待实现 skill
+2-N. 各审计 skill 章节      ← 遍历 analysis_reports 字典动态生成（按发现统计排序）
+  N.1 总览统计              ← 表：所有被审计实例 + 发现数 + 最高严重度
+  N.2 详细分析 (Critical/High) ← 仅展开 Critical/High 实例的全层分析 + 漏洞详情
+  N.3 摘要 (Medium)          ← 表格：Medium 实例的问题汇总
+N+1. 审计总结               ← 风险总览 + rules/CWE/OWASP 覆盖 + 修复优先级 + 校验 warnings
+附录 A                      ← 审计范围 / 待实现 skill
+附录 B                      ← 完整分析（→ audit-report-appendix.md）
 ```
+
+## 报告渲染规则
+
+审计分析保持完整（全部实例全层存入各 skill 的 analysis.json 和附录），但报告正文按发现严重度**分级渲染**：
+
+| 实例最高 severity | 报告正文 | 附录 |
+|------------------|---------|------|
+| Critical / High | 完整展开：所有 Layer + code_references + 完整漏洞诊断 | 同正文 |
+| Medium | 表格摘要：每层一行 + 漏洞名（不展开 code_references） | 完整展开 |
+| Low / Info | 不渲染：仅在总览统计表中出现 | 完整展开 |
+| 无发现 | 不渲染：统计表中标记 ✅ | 不渲染 |
 
 ---
 
@@ -36,12 +49,42 @@ N. 审计总结                ← 所有发现汇总 + 规则/CWE/OWASP 覆盖 
 ### Step 1: 读取所有输入
 
 1. 读取 `<audit_dir>/aggregated_data.json` 获取聚合统计数据
-2. 读取 `<audit_dir>/call_chain_analysis.json`（若存在）
-3. 按 `skill` 字段将 `items` 中的 findings 分组
+2. 从 `analysis_reports` 字典获取各 skill 的分析报告（含 call_chains / webview_instances）
+3. 检查 `warnings` 数组，如有计数校验警告需在报告中展示
+4. 按 `skill` 字段将 `items` 中的 findings 分组
 
-### Step 2: 生成 Markdown 报告
+### Step 2: 生成报告
 
-按以下模板生成 `<audit_dir>/audit-report.md`。
+生成三个文件：正文（分级渲染）+ 附录（完整分析）+ JSON。
+
+**正文生成顺序**：
+
+1. **项目总览**（固定模板，从 metadata 提取数据）
+2. **遍历 `analysis_reports` 字典**：对每个有分析数据的 skill，动态生成章节
+3. **审计总结**：风险总览 + 自定义规则命中 + CWE/OWASP 覆盖 + 修复优先级 + warnings
+4. **附录 A**：审计范围 + 待实现 skill
+5. **附录 B**：完整分析 → 写入 `audit-report-appendix.md`
+
+**动态章节生成规则**：
+
+```
+对 analysis_reports 中的每个 skill:
+  # N. {skill 中文名}
+  > 审计 Skill: {skill_name} | 分析: {expected} 个实例 | 发现: {n} 项
+
+  ## N.1 总览统计
+  | 实例名 | 关键配置 | 发现数 | 最高严重度 |
+  |--------|---------|--------|-----------|
+
+  ## N.2 详细分析（仅 Critical/High 实例）
+  仅渲染 highest_severity ∈ {critical, high} 的实例，完整展开所有 Layer
+
+  ## N.3 摘要（仅 Medium 实例）
+  | 实例名 | 层 | 问题 |
+  表格形式，不展开 code_references
+
+  # 注意：Low / Info / 无发现 实例不出现在正文中
+```
 
 **通用要求**：
 - 所有代码片段从 `evidence` / `code_references` / `location.snippet` 字段原样复制
@@ -122,13 +165,47 @@ N. 审计总结                ← 所有发现汇总 + 规则/CWE/OWASP 覆盖 
 ---
 
 
-# 2. IPC 跨进程通信安全审计
+# 2-N. 各审计 Skill 章节（动态生成，遍历 analysis_reports 字典）
 
-> **审计 Skill**: harmony-ipc-security-audit | **发现**: `<n>` 项
+> 对 `aggregated_data.json` 的 `analysis_reports` 字典中的每个 skill，按以下结构生成章节。没有分析数据的 skill（仅有 findings 无 analysis）使用简化模板。
 
-<本节的 findings 从 items 中筛选 skill="harmony-ipc-security-audit" 的条目。若没有，显示 "该项目未启用 IPC 通信，无需此审计项。">
+## <N>.1 {skill} 总览统计
 
-## 2.1 IPC 调用链分析
+| 实例名 | 模块/文件 | 关键配置 | 发现数 | 最高严重度 |
+|--------|----------|---------|--------|-----------|
+| <实例名> | <位置> | <配置摘要> | <n> | <severity 色标> |
+
+<无 findings 的实例标记为 ✅>
+
+## <N>.2 详细分析（仅 Critical/High 实例）
+
+<对 highest_severity ∈ {critical, high} 的实例，使用完整模板展开。优先使用增强格式字段（root_cause / attack_scenario / impact / evidence），不存在则回退到基础格式。>
+
+### <实例名> (<实例ID>) [<severity 色标>]
+
+#### Layer 1: <layer_name>
+
+- **分析**: <analysis 原文>
+- **代码引用**: ...
+- **识别到的潜在问题**: ...
+
+<每个有发现且 severity ∈ {critical, high} 的 Layer 展开>
+
+#### 漏洞详情
+
+<按 severity 分组的 findings，参考下方模板>
+
+## <N>.3 摘要（仅 Medium 实例）
+
+<对 highest_severity == "medium" 的实例，表格形式呈现：>
+
+| 实例名 | 层 | 问题 |
+|--------|-----|------|
+| <实例名> | <层> | <问题摘要> |
+
+---
+
+# 2. IPC 跨进程通信安全审计 (示例：旧模板保留作为参考)
 
 <如果 call_chain_analysis.json 存在且 call_chains 非空，对每个 call_chain 输出。这部分是 AI 的思考过程。>
 
@@ -394,23 +471,25 @@ N. 审计总结                ← 所有发现汇总 + 规则/CWE/OWASP 覆盖 
 
 | 文件 | 路径 | 内容 |
 |------|------|------|
-| Markdown 报告 | `<audit_dir>/audit-report.md` | Step 2 生成的完整 Markdown |
-| JSON 数据 | `<audit_dir>/audit-report.json` | `aggregated_data.json` 的完整内容（含 findings 数组） |
+| Markdown 报告（正文） | `<audit_dir>/audit-report.md` | 分级渲染后的正文 |
+| JSON 数据 | `<audit_dir>/audit-report.json` | `aggregated_data.json` 完整内容 |
+| 完整分析附录 | `<audit_dir>/audit-report-appendix.md` | 全部实例全层完整分析 |
 
-> **严禁只把报告内容写在对话回复中。必须调用 Write 工具写入上述两个文件。**
+> **严禁只把报告内容写在对话回复中。必须调用 Write 工具写入上述三个文件。**
 
 ---
 
 ## 生成注意事项
 
-0. **必须写入文件** — 调用 Write 工具，将报告写入 `<audit_dir>/audit-report.md`，不要仅打印在对话中
+0. **必须写入文件** — 调用 Write 工具将所有报告写入磁盘，不要仅打印在对话中
 1. **代码片段严禁改写** — 从 evidence/code_references/location.snippet 逐字复制
 2. **行号必须准确** — 从 line_range/line 字段原样引用
-3. **按 skill 分章** — 每个已执行且有 findings 的 skill 独立成章
-4. **调用链分析要完整** — IPC skill 的 call_chain_analysis 必须逐层展示
-5. **漏洞详情要深入** — root_cause/attack_scenario/impact 缺一则 AI 推断并标注
-6. **规则命中统计** — 汇总章节必须列出所有命中的自定义规则 ID
-7. **修复建议因人而施** — Critical/High 给代码级建议，Medium/Low 可以简略
+3. **按 skill 独立成章** — 遍历 `analysis_reports` 字典动态生成，有 findings 的 skill 独立成章
+4. **分级渲染** — 正文仅展开 Critical/High 实例的全层分析，Medium 表格摘要，Low/Info 不进入正文
+5. **完整分析入附录** — 全部实例的全层完整分析写入 `audit-report-appendix.md`
+6. **漏洞详情要深入** — root_cause/attack_scenario/impact 缺一则 AI 推断并标注
+7. **规则命中统计** — 汇总章节必须列出所有命中的自定义规则 ID
+8. **修复建议因人而施** — Critical/High 给代码级建议，Medium/Low 可以简略
 
 ## 依赖关系
 

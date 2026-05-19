@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-HarmonyOS ArkWeb WebView 安全审计器 —— 配置级与代码级规则检查。
+HarmonyOS ArkWeb WebView 安全审计器 —— 配置级与代码级规则检查 + 实例发现。
 
 用法:
+    # 配置级 + 代码级审计
     python webview_auditor.py <metadata_json> <project_path> [-o findings.json]
+
+    # 列出所有 WebView 实例（供 agent.md Phase 2 按实例派发 Task）
+    python webview_auditor.py --list-instances <metadata_json> <project_path> [-o instances.json]
 
 功能:
     1. 读取 Phase 1 输出的项目元数据 JSON
     2. 加载 WebView 安全审计规则 JSON
     3. 搜索 .ets 源文件中的 WebView 配置和 API 调用
-    4. 按规则逐条筛查，输出标准化的 findings.json
+    4. --list-instances: 列出所有 WebView 使用点 + 预填 Layer 1 骨架
+    5. 输出标准化的 findings.json / instances.json
 
 说明:
     深层逻辑分析（JS Bridge 暴露面评估、拦截器绕过分析等）由 AI 执行（见 SKILL.md），
@@ -353,14 +358,137 @@ def run_webview_audit(
     }
 
 
+def list_webview_instances(metadata_path: str, project_path: str) -> list[dict]:
+    """
+    列出所有 WebView 使用点并预填 Layer 1（组件初始化配置）骨架。
+
+    扫描 .ets 源文件中的 Web 组件使用点，提取安全配置参数，
+    为每个实例生成包含 instance_id 和 Layer 1 预填分析的骨架。
+    """
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+
+    source_files = _search_source_files(metadata, project_path)
+    instances: list[dict] = []
+    counter = 0
+
+    for sf in source_files:
+        content = _read_file_content(sf["path"])
+        if not content:
+            continue
+
+        # 检测 ArkWeb / webview 使用
+        if "@kit.ArkWeb" not in content and "web_webview" not in content and "webview" not in content:
+            continue
+
+        # 查找 Web({ ... }) 或 Web({ src: ... }) 模式
+        # 简化策略：找到 Web({ 出现的位置
+        idx = 0
+        while True:
+            idx = content.find("Web({", idx)
+            if idx == -1:
+                break
+
+            counter += 1
+            instance_id = f"webview-{counter:03d}"
+
+            # 提取 src URL
+            line_no = content[:idx].count("\n") + 1
+            src_match = re.search(r"src:\s*['\"]([^'\"]+)['\"]", content[idx:idx + 200])
+            src_url = src_match.group(1) if src_match else "未知"
+
+            # 提取安全配置摘要
+            config_bools = []
+            checks = [
+                ("javaScriptAccess", "JS"),
+                ("fileAccess", "File"),
+                ("fileFromUrlAccess", "FileFromUrl"),
+                ("domStorageAccess", "DOM"),
+                ("databaseAccess", "DB"),
+                ("overviewModeEnabled", "Overview"),
+            ]
+            for pattern, label in checks:
+                m = re.search(rf"\.?{pattern}\s*\(\s*true\s*\)", content[idx:idx + 1000])
+                if m:
+                    config_bools.append(f"{label}=true")
+
+            has_proxy = "registerJavaScriptProxy" in content[idx:idx + 1000]
+            if has_proxy:
+                config_bools.append("JSBridge=yes")
+
+            config_summary = ", ".join(config_bools) if config_bools else "全部默认"
+
+            # 检测 mixedMode
+            mixed = re.search(r"mixedMode\s*\(\s*(.+?)\)", content[idx:idx + 500])
+            mixed_val = mixed.group(1).strip() if mixed else "未知"
+
+            # 生成 issues
+            issues = []
+            if "JS=true" in ", ".join(config_bools):
+                issues.append("javaScriptAccess: true 但未检查是否配置了 CSP")
+            if "File=true" in ", ".join(config_bools):
+                issues.append("fileAccess: true 允许 file:// 协议")
+            if "JSBridge=yes" in ", ".join(config_bools):
+                issues.append("检测到 registerJavaScriptProxy，需检查暴露面和鉴权")
+            if "All" in mixed_val:
+                issues.append(f"mixedMode 为 {mixed_val}，允许混合内容")
+
+            analysis_text = (
+                f"WebView 组件位于 {sf['rel']} 第 {line_no} 行附近。"
+                f"加载源: {src_url}。"
+                f"安全配置: {config_summary}, mixedMode={mixed_val}。"
+            )
+
+            skeleton = {
+                "id": instance_id,
+                "component_name": f"WebView_in_{sf['rel'].split('/')[-1].replace('.ets', '')}",
+                "file": sf["rel"],
+                "overview": f"位于 {sf['rel']} 的 WebView 组件，加载 {src_url}",
+                "layers": [
+                    {
+                        "layer": "1-组件初始化配置",
+                        "order": 1,
+                        "file": sf["rel"],
+                        "analysis": analysis_text,
+                        "code_references": [
+                            {
+                                "file": sf["rel"],
+                                "line_range": f"{line_no}-{line_no + 15}",
+                                "snippet": content[idx:idx + 500].strip() if len(content) > idx + 500 else content[idx:].strip(),
+                                "description": f"WebView 组件定义及配置（{sf['rel']}:{line_no}）"
+                            }
+                        ],
+                        "issues_identified": issues,
+                        "_source": "script"
+                    }
+                ]
+            }
+
+            instances.append({
+                "instance_id": instance_id,
+                "name": f"WebView_{sf['rel'].split('/')[-1].replace('.ets', '')}_{src_url[:30]}",
+                "file": sf["rel"],
+                "line": line_no,
+                "src_url": src_url,
+                "config_summary": config_summary,
+                "has_js_bridge": has_proxy,
+                "skeleton": skeleton,
+            })
+
+            idx += 5  # 前进避免死循环
+
+    return instances
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="HarmonyOS ArkWeb WebView 安全审计器（配置级与代码级规则检查）",
+        description="HarmonyOS ArkWeb WebView 安全审计器（配置级与代码级规则检查 + 实例发现）",
     )
     parser.add_argument("metadata_path", help="Phase 1 输出的 metadata JSON 文件路径")
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")
-    parser.add_argument("-o", "--output", default=None, help="输出 findings JSON 文件路径")
+    parser.add_argument("-o", "--output", default=None, help="输出文件路径")
     parser.add_argument("--rules-dir", default=None, help="规则文件目录")
+    parser.add_argument("--list-instances", action="store_true", help="列出所有 WebView 实例并预填 Layer 1 骨架")
     parser.add_argument("--pretty", action="store_true", help="格式化 JSON 输出")
 
     args = parser.parse_args()
@@ -370,7 +498,22 @@ def main():
         sys.exit(1)
 
     try:
-        output = run_webview_audit(args.metadata_path, args.project_path, args.rules_dir)
+        if args.list_instances:
+            # 实例发现模式
+            instances = list_webview_instances(args.metadata_path, args.project_path)
+            output = {
+                "_meta": {
+                    "auditor": "harmony-webview-audit",
+                    "scan_time": datetime.now(timezone.utc).isoformat(),
+                    "project_path": args.project_path,
+                    "total_instances": len(instances),
+                    "note": "WebView 实例列表，每个实例含 Layer 1 预填骨架。代码级深度分析由 AI 执行。",
+                },
+                "instances": instances,
+            }
+        else:
+            # 审计模式
+            output = run_webview_audit(args.metadata_path, args.project_path, args.rules_dir)
     except Exception as e:
         print(f"[ERROR] 审计失败: {e}", file=sys.stderr)
         import traceback
@@ -384,7 +527,10 @@ def main():
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json_output, encoding="utf-8")
-        print(f"[DONE] WebView 安全审计完成，共 {output['_meta']['total_findings']} 个发现，输出: {output_path}")
+        if args.list_instances:
+            print(f"[DONE] WebView 实例发现完成，共 {output['_meta']['total_instances']} 个实例，输出: {output_path}")
+        else:
+            print(f"[DONE] WebView 安全审计完成，共 {output['_meta']['total_findings']} 个发现，输出: {output_path}")
     else:
         print(json_output)
 

@@ -18,16 +18,23 @@
 ```
 harmony_audit_results/
 └── <YYYYMMDD_HHMMSS>/
-    ├── metadata.json                          <-- Phase 1: 项目元数据
+    ├── metadata.json                              # Phase 1: 项目元数据
     ├── harmony-project-parser-findings.json
+    │
+    ├── harmony-ipc-security-audit-instances.json   # Phase 2a: IPC 实例列表+骨架
+    ├── harmony-ipc-security-audit-analysis-001.json # Phase 2b: 每个实例分片
+    ├── harmony-ipc-security-audit-analysis.json    # Phase 2c: 合并后完整分析
     ├── harmony-ipc-security-audit-findings.json
+    │
+    ├── harmony-webview-audit-instances.json
+    ├── harmony-webview-audit-analysis-001.json
+    ├── harmony-webview-audit-analysis.json
     ├── harmony-webview-audit-findings.json
-    ├── call_chain_analysis.json               <-- IPC 调用链分析
-    ├── findings_raw.json                      <-- IPC 完整诊断
-    ├── webview_analysis_report.json
-    ├── aggregated_data.json                   <-- Phase 3: 聚合数据
-    ├── audit-report.md                        <-- Phase 4: 最终报告
-    └── audit-report.json                      <-- Phase 4: JSON版报告
+    │
+    ├── aggregated_data.json                       # Phase 3
+    ├── audit-report.md                            # Phase 4
+    ├── audit-report.json
+    └── audit-report-appendix.md                   # 完整分析附录
 ```
 
 ### 初始化命令
@@ -49,19 +56,22 @@ metadata_path="$AUDIT_DIR/metadata.json"
 │  Phase 1: 项目发现 (harmony-project-parser)                       │
 │  → 输出: metadata.json + harmony-project-parser-findings.json    │
 ├──────────────────────────────────────────────────────────────────┤
-│  Phase 2: 并行审计 (各 audit skill 同时执行)                       │
-│  → IPC skill 输出: call_chain_analysis.json + findings_raw.json  │
-│                     + harmony-ipc-security-audit-findings.json    │
-│  → 其他 skill 输出: {skill}-findings.json                         │
+│  Phase 2: 并行审计 — 每个实例独立 Task                              │
+│  → 2a: 脚本 --list-instances 列出所有实例 + 预填 Layer 1 骨架      │
+│  → 2b: 每个实例并行派发一个 Task（深度分析）                         │
+│  → 2c: 合并分片 + 计数校验                                        │
+│  → 输出: {skill}-findings.json + {skill}-analysis.json           │
 ├──────────────────────────────────────────────────────────────────┤
 │  Phase 3: 聚合去重 + 风险评估                                       │
-│  → 合并所有 findings + 读取 call_chain_analysis.json              │
+│  → 合并所有 findings + 自动读取所有 {skill}-analysis.json          │
+│  → 计数校验（实例数 = 分析数？）→ 输出 warnings                     │
 │  → 输出: aggregated_data.json                                    │
 ├──────────────────────────────────────────────────────────────────┤
 │  Phase 4: 报告生成 (harmony-report-generator)                    │
-│  → 读取 aggregated_data.json + call_chain_analysis.json          │
-│  → 生成含调用链分析和漏洞详情的完整报告                              │
-│  → 输出: audit-report.md + audit-report.json                     │
+│  → 按 severity 分级渲染：Critical/High 全展开、Medium 表格摘要      │
+│  → Low/Info/无发现 不进入正文                                      │
+│  → 完整分析写入 audit-report-appendix.md                          │
+│  → 输出: audit-report.md + audit-report.json + appendix.md       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -114,81 +124,144 @@ project_path: <项目路径>
 
 ## Phase 2: 并行审计
 
-### 原则
-- 所有 audit skill **同时启动**（使用 Task tool 并行分发）
-- 每个 skill 独立运行，不依赖其他 skill 的结果
-- 每个 skill 读取 Phase 1 输出的 `metadata.json` 获取上下文
-- 每个 skill 输出标准化的 `findings.json` 到审计工作目录
+### 设计原则
+
+**每个审计实例一个 Task**，不再用一个 Task 处理所有同类审计对象。避免当服务/组件数量多时，AI 分析前面几个后跳过后面的。
+
+一个"实例"的定义由各 skill 的 `--list-instances` 脚本决定：
+- IPC：一个 `ExtensionAbility`（type=service, exported, 有 srcEntry）
+- WebView：一个 WebView 组件使用点
+- 未来 skill：各自由其脚本定义
+
+### 执行流程（两阶段）
+
+```
+Step 2a: 脚本发现所有实例 + 预填 Layer 1 骨架
+  → 运行 {skill}-auditor.py --list-instances <metadata_path> <project_path>
+  → 输出: {skill}-instances.json（每个实例含 Layer 1 预填分析）
+
+Step 2b: 每个实例并行派发一个 Task
+  → AI 加载 skill SKILL.md，仅分析该实例，补充 Layer 2-N
+  → 输出: {skill}-analysis-{instance_id}.json（分片）
+
+Step 2c: 无需额外操作
+  → 后续由 Phase 3 聚合器完成合并和计数校验
+```
 
 ### Skill 调度表
 
-| # | Skill 名称 | 状态 | 优先级 | 输入 |
-|---|-----------|------|--------|------|
-| 1 | `harmony-project-parser` | ✅ 已实现 | P0 | 项目路径 |
-| 2 | `harmony-permission-audit` | 🔜 待实现 | P1 | metadata.modules[].permissions |
-| 3 | `harmony-component-audit` | 🔜 待实现 | P2 | metadata.modules[].abilities |
-| 4 | `harmony-secrets-audit` | 🔜 待实现 | P1 | metadata.files.ets_sources |
-| 5 | `harmony-network-audit` | 🔜 待实现 | P2 | metadata.modules[].network_config |
-| 6 | `harmony-webview-audit` | ✅ 已实现 | P3 | metadata.security_surface.has_webview + metadata.files.ets_sources |
-| 7 | `harmony-crypto-audit` | 🔜 待实现 | P4 | metadata.files.ets_sources |
-| 8 | `harmony-data-storage-audit` | 🔜 待实现 | P3 | metadata.files.ets_sources |
-| 9 | `harmony-code-quality-audit` | 🔜 待实现 | P4 | metadata.files.ets_sources |
-| 10 | `harmony-ipc-security-audit` | ✅ 已实现 | P0 | metadata.modules[].extension_abilities + metadata.files.ets_sources |
-| 11 | `harmony-report-generator` | ✅ 已实现 | P0 | 所有 findings |
+| # | Skill 名称 | 状态 | 需要深度分析 | 实例来源 |
+|---|-----------|------|------------|---------|
+| 1 | `harmony-project-parser` | ✅ 已实现 | 否 | — |
+| 2 | `harmony-permission-audit` | 🔜 待实现 | 否 | — |
+| 3 | `harmony-component-audit` | 🔜 待实现 | 否 | — |
+| 4 | `harmony-secrets-audit` | 🔜 待实现 | 否 | — |
+| 5 | `harmony-network-audit` | 🔜 待实现 | 否 | — |
+| 6 | `harmony-webview-audit` | ✅ 已实现 | 是 | `--list-instances` 发现 WebView 使用点 |
+| 7 | `harmony-crypto-audit` | 🔜 待实现 | 否 | — |
+| 8 | `harmony-data-storage-audit` | 🔜 待实现 | 否 | — |
+| 9 | `harmony-code-quality-audit` | 🔜 待实现 | 否 | — |
+| 10 | `harmony-ipc-security-audit` | ✅ 已实现 | 是 | `--list-instances` 发现 ExtensionAbility |
+| 11 | `harmony-report-generator` | ✅ 已实现 | 否 | — |
 
 ### 调度逻辑
 
 ```
-# 读取 metadata，获取安全攻击面信息
 metadata = read("<audit_dir>/metadata.json")
 
-# 按安全攻击面决定跳过哪些 skill
+# === 决定需要哪些 skill ===
 dispatch_list = []
+# ... (与 Phase 1 相同，根据 security_surface 决定) ...
 
-if metadata.security_surface.total_permissions > 0:
-    dispatch_list.append("harmony-permission-audit")
-
-if metadata.security_surface.exported_abilities_count > 0:
-    dispatch_list.append("harmony-component-audit")
-
-if metadata.files.total_ets_files > 0:
-    dispatch_list.append("harmony-secrets-audit")
-
-if metadata.security_surface.network_domains_count > 0 or metadata.security_surface.has_cleartext_traffic:
-    dispatch_list.append("harmony-network-audit")
-
-if metadata.security_surface.has_webview:
-    dispatch_list.append("harmony-webview-audit")
-
-if metadata.security_surface.uses_crypto:
-    dispatch_list.append("harmony-crypto-audit")
-
-if metadata.security_surface.has_database:
-    dispatch_list.append("harmony-data-storage-audit")
-
-if metadata.security_surface.has_ipc_service or metadata.security_surface.has_service_extension:
-    dispatch_list.append("harmony-ipc-security-audit")
-    # IPC audit 特殊要求：输出 call_chain_analysis.json + findings_raw.json
-    # 这两个文件供 Phase 3 聚合器和 Phase 4 报告生成器使用
-
-if metadata.files.total_ets_files > 0:
-    dispatch_list.append("harmony-code-quality-audit")
-
-# 并行执行每个 skill（使用 Task tool）
-# 注意：每个参数必须用关键字指定（subagent_type=、description=、prompt=），不可省略参数名。
-# task_id 不指定则自动创建新 session。
+# === 对每个已实现的 skill 执行 ===
 for skill in dispatch_list:
-    Task(
-        subagent_type="general",
-        description=f"Run {skill}",
-        prompt=f"Load skill skills/{skill}/SKILL.md and analyze project using metadata at {metadata_path}. Output findings to {audit_dir}/{skill}-findings.json"
-    )
+    if skill_status[skill] != "已实现":
+        note: "该审计项暂未实现"
+        continue
+
+    if skill_requires_deep_analysis(skill):
+        # --- 深度分析 skill（IPC, WebView 等）---
+        
+        # Step 2a: 脚本发现实例 + 预填 Layer 1 骨架
+        run: python {skill}/scripts/{skill}-auditor.py \
+                --list-instances <metadata_path> <project_path> \
+                -o <audit_dir>/{skill}-instances.json
+        instances = read(<audit_dir>/{skill}-instances.json)
+        
+        # Step 2b: 每个实例并行派发一个 Task
+        for inst in instances:
+            Task(
+                subagent_type="general",
+                description=f"{skill}: {inst.name}",
+                prompt=f"""Load skills/{skill}/SKILL.md.
+        仅分析这一个实例。脚本已预填 Layer 1 骨架（见下方 JSON），
+        你只需补充 Layer 2-N 的深度分析，并对照规则逐条筛查。
+        
+        实例信息:
+        {json.dumps(inst, indent=2)}
+        
+        项目路径: {project_path}
+        输出分析分片到: {audit_dir}/{skill}-analysis-{inst.instance_id}.json
+        输出 findings 到: {audit_dir}/{skill}-findings.json（追加模式）
+        """,
+                task_id=f"{skill}-{inst.instance_id}"
+            )
+
+    else:
+        # --- 简单 skill（无深度分析，只跑脚本）---
+        Task(
+            subagent_type="general",
+            description=f"Run {skill}",
+            prompt=f"Load skills/{skill}/SKILL.md and analyze project using metadata at {metadata_path}. Output findings to {audit_dir}/{skill}-findings.json"
+        )
+
+# 注意: 实例分片在 Phase 3 聚合器中进行合并和计数校验
+```
+
+### 深度分析 skill 的 Task prompt 模板
+
+对每个实例，Task prompt 必须包含：
+
+1. 加载对应 skill 的 SKILL.md
+2. 明确"仅分析这个实例"（避免 AI 尝试分析全部）
+3. 附上脚本预填的 Layer 1 骨架（JSON 格式，AI 直接读）
+4. 输出路径明确为分片文件
+
+### 实例数据结构（脚本 --list-instances 输出）
+
+```json
+[
+  {
+    "instance_id": "ipc-001",
+    "name": "IpcServiceExtAbility",
+    "module": "entry",
+    "exported": true,
+    "src_entry": "./ets/serviceextability/ServiceExtAbility.ets",
+    "skeleton": {
+      "id": "chain-001",
+      "service_name": "IpcServiceExtAbility",
+      "module": "entry",
+      "layers": [
+        {
+          "layer": "1-服务注册层",
+          "order": 1,
+          "file": "entry/src/main/module.json5",
+          "analysis": "extensionAbility exported: true, permissions: [], type: service —— 导出且无权限守卫",
+          "code_references": [{"file": "...", "line_range": "53-59", "snippet": "..."}],
+          "issues_identified": ["缺少 permissions", "过度导出"],
+          "_source": "script"
+        }
+      ]
+    }
+  }
+]
 ```
 
 ### 注意
-- 对于**尚未实现**的 skill（🔜 待实现），跳过不报错，在最终报告中注明"该审计项暂未实现"
-- 对于**已实现**的 skill（✅），必须执行
-- 每个 skill 的输入数据从 `metadata` 中提取，无需重复扫描项目文件
+- 每个实例的 Task **完全并行，互不依赖**
+- 脚本 Layer 1 骨架是预填数据，AI 只负责补充 Layer 2-N，不修改 Layer 1
+- N 个实例就必须有 N 个 `-analysis-{id}.json` 分片，Phase 3 聚合器会校验数量
+- 尚未实现深度分析的 skill，仍用旧的一 Task 全量模式
 
 ---
 
@@ -201,14 +274,61 @@ python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir>
 ```
 若 `python3` 不可用（如 Windows），改为 `python`。
 
-聚合脚本自动：
+聚合脚本自动完成：
+
+**A. 合并 findings**
 - 扫描 `<audit_dir>` 中所有 `*-findings.json`
 - 按 (id, title, file, line) 去重，保留 severity 更高的
-- 读取 `call_chain_analysis.json`（若 IPC audit 已输出）
-- 计算按 severity / skill / CWE / OWASP 的分组统计
+
+**B. 合并分析分片**
+- 扫描 `<audit_dir>` 中所有 `*-analysis-*.json` 分片文件
+- 按 skill 名分组合并，输出到 `analysis_reports` 字典
+- 格式：`{"harmony-ipc-security-audit": {"total": N, "analyzed": M, "call_chains": [...]}, ...}`
+
+**C. 计数校验**
+- 读取 `*-instances.json` 获取预期实例数
+- 对比实际分析数（根据分片数）
+- 不一致时写入 `warnings` 数组
+- 示例 warning：`"harmony-ipc-security-audit: 共 3 个服务，仅分析了 2 个，缺少 DataService"`
+
+**D. 统计计算**
+- 按 severity / skill / CWE / OWASP 分组
 - 计算风险评分
-- 自动发现已执行的 skill 和待实现的 skill
-- 输出 `aggregated_data.json`（含调用链分析数据）
+- 自动发现已执行和待实现的 skill
+
+**E. 输出结构（aggregated_data.json）**
+
+```json
+{
+  "project": { ... },
+  "security_surface": { ... },
+  "audit": {
+    "time": "...",
+    "skills_executed": [...],
+    "skills_pending": [...]
+  },
+  "analysis_reports": {
+    "harmony-ipc-security-audit": {
+      "total": 3,
+      "analyzed": 2,
+      "call_chains": [...]
+    }
+  },
+  "findings": {
+    "total": 13,
+    "by_severity": {...},
+    "by_skill": {...},
+    "by_cwe": {...},
+    "by_owasp": {...},
+    "by_rule": [...]
+  },
+  "risk_score": 38,
+  "items": [...],
+  "warnings": [
+    "harmony-ipc-security-audit: 共 3 个服务，分析了 2 个，缺少 DataService"
+  ]
+}
+```
 
 ### Step 2: 呈现摘要给用户
 ```
@@ -216,11 +336,13 @@ python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir>
 
 | 严重度 | 数量 |
 |--------|------|
-| Critical | 1 |
-| High | 3 |
-| Medium | 5 |
-| Low | 4 |
-| Info | 2 |
+| Critical | 2 |
+| High | 4 |
+| Medium | 3 |
+| Low | 3 |
+| Info | 1 |
+
+⚠️ 警告: harmony-ipc-security-audit 共 3 个 IPC 服务，仅分析了 2 个
 ```
 
 ---
@@ -230,36 +352,71 @@ python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir>
 ### 加载 skill
 加载 `skills/harmony-report-generator/SKILL.md`，按照其模板和指令生成最终报告。
 
-### 报告结构
-
-```
-1. 项目总览              ← harmony-project-parser 输出（摘要、基本信息、攻击面、模块结构）
-2. IPC 跨进程通信安全审计  ← harmony-ipc-security-audit 输出（调用链分析 + 漏洞详情 + 统计）
-3. (未来 skill)           ← 动态展开，每个 skill 独立成章
-N. 审计总结               ← 风险总览 + 自定义规则命中 + CWE/OWASP 覆盖 + 修复优先级建议
-附录                      ← 审计范围 / 待实现 skill
-```
-
 ### 核心原则
-- 每个审计 skill 独立成章，包含完整分析过程和发现
+- 每个审计 skill 独立成章，但**按发现严重度分级渲染**，避免报告过长
 - 汇总章节必须列出**自定义规则 ID**命中统计（非仅 OWASP/CWE）
 - 代码证据原样展示，不可改写
 
+### 分级渲染规则
+
+报告的详细章节中，每个被审计实例的展开程度由其**最高 severity 发现**决定：
+
+| 实例最高 severity | 报告正文处理 | 附录处理 |
+|------------------|------------|---------|
+| Critical / High | **完整展开**：所有 Layer + code_references + 完整漏洞诊断 | 同正文 |
+| Medium | **表格摘要**：每层一行 + 漏洞列表（不展开 code_references） | 完整展开 |
+| Low / Info | **不渲染**：仅在总览统计表中出现 | 完整展开 |
+| 无发现 | **不渲染**：统计表中标记为 ✅ | 完整展开 |
+
+### 报告结构
+
+```
+# 1. 项目总览
+
+# 2-N. 各审计 skill 章节（遍历 analysis_reports 字典动态生成）
+
+   ## N.1 总览统计
+   | 实例名 | 模块 | 发现数 | 最高严重度 |
+   |--------|------|--------|-----------|
+   | ServiceA | entry | 3 | Critical |
+   | ServiceB | entry | 0 | ✅ |
+
+   ## N.2 详细分析（Critical/High 实例全展开）
+   ### ServiceA (chain-001) [🔴 Critical]
+   #### Layer 1: ...
+   #### Layer 3: ...（只展开有发现的层）
+
+   ## N.3 摘要（Medium 实例表格化）
+   | 实例名 | 层 | 问题 |
+   |--------|-----|------|
+   | DataService | 2-连接层 | onConnect 未校验 |
+
+# N. 审计总结
+   风险总览 + 规则命中统计 + CWE/OWASP 覆盖 + 修复优先级建议
+   + 校验 warnings（如："警告: IPC 审计 3 个服务中仅分析了 2 个"）
+
+# 附录
+   - 审计范围 + 待实现 skill
+   - 完整分析 → 见 audit-report-appendix.md
+```
+
 ### 报告文件
 
-| 文件 | 路径 |
-|------|------|
-| Markdown 报告 | `<audit_dir>/audit-report.md` |
-| JSON 数据 | `<audit_dir>/audit-report.json` |
-| 聚合数据 | `<audit_dir>/aggregated_data.json` |
+| 文件 | 路径 | 内容 |
+|------|------|------|
+| Markdown 报告 | `<audit_dir>/audit-report.md` | 分级渲染后的正文 |
+| JSON 数据 | `<audit_dir>/audit-report.json` | aggregated_data.json 完整内容 |
+| 完整分析附录 | `<audit_dir>/audit-report-appendix.md` | 全部实例的全部层的完整分析 |
 
 ### 执行
 1. 加载 `skills/harmony-report-generator/SKILL.md`
 2. 读取 `<audit_dir>/aggregated_data.json`
-3. 按模板生成完整 Markdown 报告
-4. **使用 Write 工具将报告内容写入 `<audit_dir>/audit-report.md`**
-5. 将 `aggregated_data.json` 也写入 `<audit_dir>/audit-report.json`
-6. 告知用户报告已生成，输出文件路径
+3. 遍历 `analysis_reports` 字典，为每个 skill 动态生成章节
+4. 按分级渲染规则决定每个实例在正文中的展开程度
+5. 使用 Write 工具写入 `<audit_dir>/audit-report.md`
+6. 将所有实例的全层完整分析写入 `<audit_dir>/audit-report-appendix.md`
+7. 将 `aggregated_data.json` 也写入 `<audit_dir>/audit-report.json`
+8. 告知用户报告已生成，输出全部文件路径
 
 ---
 
@@ -339,67 +496,13 @@ project-parser
     ├─ modules[].abilities ────────────→ component-audit
     ├─ files.ets_sources ──────────────→ secrets-audit
     ├─ modules[].network_config ───────→ network-audit
-    ├─ files.ets_sources ──────────────→ webview-audit
+    ├─ files.ets_sources ──────────────→ webview-audit (深度分析: 每个 WebView 实例一个 Task)
     ├─ files.ets_sources ──────────────→ crypto-audit
     ├─ files.ets_sources ──────────────→ data-storage-audit
-    ├─ modules[].extension_abilities ────→ ipc-security-audit
+    ├─ modules[].extension_abilities ──→ ipc-security-audit (深度分析: 每个 ExtensionAbility 一个 Task)
     ├─ files.ets_sources ──────────────→ code-quality-audit
-    └─ 全部 metadata + 全部 findings ──→ report-generator
+    └─ 全部 metadata + 全部 findings ──→ report-generator (分级渲染 + 动态章节)
 ```
-
----
-
-## 扩展指南（添加新 Skill）
-
-### 步骤
-
-1. **创建 Skill 目录**：
-   ```
-   skills/harmony-xxx-audit/
-   ├── SKILL.md            # Skill 定义（必须）
-   ├── PLAN.md             # 实现方案（可选）
-   ├── scripts/            # 分析脚本
-   └── rules/              # 检测规则
-   ```
-
-2. **SKILL.md 必须包含**：
-   - 触发条件
-   - 输入数据来源（从 metadata 的哪个字段读取）
-   - 分析逻辑（或脚本命令）
-   - 输出格式（遵循 Finding schema）
-   - 错误处理
-
-3. **注册到本 Agent**：
-   - 在 Phase 2 的「Skill 调度表」中添加一行
-   - 在 Phase 2 的「调度逻辑」中添加 dispatch 条件
-   - 状态标记为 ✅ 已实现
-
-4. **验证**：
-   - 确保输出的 findings.json 符合 Finding schema
-   - 确保 skill 能独立运行（通过测试项目验证）
-
-### 命名规范
-- Skill 名称: `harmony-{domain}-audit`
-- 输出文件: `{skill-name}-findings.json`
-- 规则文件: `rules/{severity}.yaml`
-
----
-
-## 当前实现状态
-
-| Skill | 状态 |
-|-------|------|
-| harmony-project-parser | ✅ 已实现 |
-| harmony-ipc-security-audit | ✅ 已实现 |
-| harmony-report-generator | ✅ 已实现 |
-| harmony-permission-audit | 🔜 待实现 |
-| harmony-component-audit | 🔜 待实现 |
-| harmony-secrets-audit | 🔜 待实现 |
-| harmony-network-audit | 🔜 待实现 |
-| harmony-webview-audit | ✅ 已实现 |
-| harmony-crypto-audit | 🔜 待实现 |
-| harmony-data-storage-audit | 🔜 待实现 |
-| harmony-code-quality-audit | 🔜 待实现 |
 
 ---
 
