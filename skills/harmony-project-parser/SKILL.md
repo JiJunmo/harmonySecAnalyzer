@@ -29,6 +29,7 @@ HarmonyOS 应用项目结构解析器。扫描鸿蒙项目目录，解析所有�
 ```bash
 python3 <skill_dir>/scripts/project_scanner.py <project_path> -o /tmp/harmony_project_metadata.json --pretty
 ```
+若 `python3` 不可用（如 Windows），改为 `python`。
 
 参数说明：
 - `<project_path>`: 用户提供的鸿蒙项目根目录绝对路径

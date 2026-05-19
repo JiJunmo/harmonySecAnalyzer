@@ -39,6 +39,7 @@ Agent 读取 metadata 后，若以下任一条件为 true 则调度本 Skill：
 ```bash
 python3 <skill_dir>/scripts/webview_auditor.py <metadata_path> <project_path> -o <audit_dir>/harmony-webview-audit-findings.json --pretty
 ```
+若 `python3` 不可用（如 Windows），改为 `python`。
 
 参数说明：
 - `<metadata_path>`: Phase 1 输出的 metadata JSON 路径

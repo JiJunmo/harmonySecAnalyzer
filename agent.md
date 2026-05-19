@@ -79,13 +79,16 @@ metadata_path="$AUDIT_DIR/metadata.json"
    如果 project_path 不存在 → 立即报错，终止审计
    ```
 
-2. **创建审计工作目录并加载 harmony-project-parser skill**
-   - 按「输出目录约定」章节的命令创建 `$AUDIT_DIR`
-   - 加载 `skills/harmony-project-parser/SKILL.md`
-   - 执行扫描脚本，输出到审计目录内：
-     ```bash
-     python3 skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o <audit_dir>/metadata.json --pretty
-     ```
+ 2. **创建审计工作目录并加载 harmony-project-parser skill**
+    - 按「输出目录约定」章节的命令创建 `$AUDIT_DIR`
+    - 加载 `skills/harmony-project-parser/SKILL.md`
+    - 执行扫描脚本，输出到审计目录内：
+```bash
+# 跨平台 python 命令 (Windows 通常只有 python，macOS/Linux 有 python3)
+PY=$(command -v python3 || command -v python || echo python3)
+$PY skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o <audit_dir>/metadata.json --pretty
+```
+      若 `python3` 不可用（如 Windows），尝试 `python`。
    - 同时复制一份作为 `harmony-project-parser-findings.json`（供聚合器使用）
      ```bash
      cp <audit_dir>/metadata.json <audit_dir>/harmony-project-parser-findings.json
@@ -196,6 +199,7 @@ for skill in dispatch_list:
 ```bash
 python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir> --project-root . -o <audit_dir>/aggregated_data.json --pretty
 ```
+若 `python3` 不可用（如 Windows），改为 `python`。
 
 聚合脚本自动：
 - 扫描 `<audit_dir>` 中所有 `*-findings.json`

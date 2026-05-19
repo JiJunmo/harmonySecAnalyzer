@@ -3,7 +3,7 @@
 鸿蒙项目扫描器 —— 主编排入口
 
 用法:
-    python3 project_scanner.py <project_path> [-o output.json] [--verbose]
+    python project_scanner.py <project_path> [-o output.json] [--verbose]
 
 功能:
     1. 递归扫描项目目录，收集源文件和配置文件
@@ -281,9 +281,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-    python3 project_scanner.py ./MyHarmonyApp
-    python3 project_scanner.py ./MyHarmonyApp -o metadata.json
-    python3 project_scanner.py ./MyHarmonyApp --verbose
+    python project_scanner.py ./MyHarmonyApp
+    python project_scanner.py ./MyHarmonyApp -o metadata.json
+    python project_scanner.py ./MyHarmonyApp --verbose
         """,
     )
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")

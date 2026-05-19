@@ -3,7 +3,7 @@
 HarmonyOS ArkWeb WebView 安全审计器 —— 配置级与代码级规则检查。
 
 用法:
-    python3 webview_auditor.py <metadata_json> <project_path> [-o findings.json]
+    python webview_auditor.py <metadata_json> <project_path> [-o findings.json]
 
 功能:
     1. 读取 Phase 1 输出的项目元数据 JSON

@@ -3,7 +3,7 @@
 审计发现聚合器。扫描审计目录中所有 skill 的 findings.json，合并去重，计算统计量。
 
 用法:
-    python3 report_aggregator.py <audit_dir> [-o aggregated_data.json]
+    python report_aggregator.py <audit_dir> [-o aggregated_data.json]
 
 输入: 审计工作目录（含 metadata.json 和各个 *-findings.json）
 输出: aggregated_data.json（供 AI 润色生成报告）
