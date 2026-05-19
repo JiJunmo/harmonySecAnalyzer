@@ -1,0 +1,271 @@
+{
+  "_meta": {
+    "category": "business_logic",
+    "description": "IPC handler 内部业务逻辑敏感操作审计规则。这些规则在 AI 深入阅读每个操作路径的 handler 源码后逐条匹配。"
+  },
+  "rules": [
+    {
+      "id": "IPC-BIZ-001",
+      "severity": "critical",
+      "cwe": "CWE-284",
+      "owasp": "M1",
+      "title": "IPC handler 可触发拨打电话",
+      "description": "handler 内部调用了拨打电话相关 API（如 call.makeCall、telephony.dial），客户端可通过 IPC 请求触发外拨电话。若 handler 无身份校验或未限制拨打号码，攻击者可拨打任意号码导致资费消耗和骚扰。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["call.makeCall", "telephony.dial", "ohos.telephony.call", "startAbilityByCall"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" },
+        { "condition": "number_is_restricted_to_whitelist", "effect": "downgrade_one", "reason": "拨打的号码限制在白名单内" }
+      ],
+      "remediation": "1. 在 handler 入口校验 getCallingUid() 确保调用方合法 2. 限制可拨打的号码范围（仅允许预定义号码）3. 执行拨号前弹窗提示用户确认",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-call"
+    },
+    {
+      "id": "IPC-BIZ-002",
+      "severity": "critical",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 可读取短信",
+      "description": "handler 内部调用了短信读取相关 API。客户端可通过 IPC 请求获取用户短信内容，严重侵犯用户隐私。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["sms.readSmsMessage", "telephony.sms", "querySmsMessage", "getSmsMessages"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "1. 短信读取操作不可通过 IPC 暴露 2. 如需读取短信，必须在 handler 中强制校验 getCallingUid() 并使用 abilityAccessCtrl 验证调用方权限",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-sms"
+    },
+    {
+      "id": "IPC-BIZ-003",
+      "severity": "critical",
+      "cwe": "CWE-863",
+      "owasp": "M1",
+      "title": "IPC handler 可操作摄像头或麦克风",
+      "description": "handler 内部调用了相机或麦克风相关 API。客户端可通过 IPC 请求打开摄像头拍照或启动录音，严重侵犯用户隐私且难以被用户察觉。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["camera.CameraManager", "camera.createCameraInput", "audio.createAudioCapturer", "media.createAVRecorder"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "摄像头和麦克风操作不可通过 IPC 暴露给外部应用。如果必须通过 IPC 控制，handler 中必须强制校验调用方身份并确认用户已在前台授权。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-camera"
+    },
+    {
+      "id": "IPC-BIZ-004",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 可读取联系人",
+      "description": "handler 内部调用了联系人读取 API。客户端可通过 IPC 获取用户通讯录，可能导致联系人信息批量泄露。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["ohos.contacts", "contact.queryContacts", "getAllContacts", "queryByPhoneNumber"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "联系人读取必须校验调用方身份并限制返回字段。建议只返回必要的联系人字段，避免批量导出。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-contact"
+    },
+    {
+      "id": "IPC-BIZ-005",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 可读取日历",
+      "description": "handler 内部调用了日历读取 API。客户端可通过 IPC 获取用户的日程安排、会议信息等敏感日程数据。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["calendar.CalendarManager", "ohos.calendarManager", "getEvents", "queryEvents", "queryCalendar"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "日历读取必须校验调用方身份。如需暴露日程数据，仅返回时间信息不返回地点和描述等敏感字段。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-calendarManager"
+    },
+    {
+      "id": "IPC-BIZ-006",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 可读取照片或媒体文件",
+      "description": "handler 内部调用了媒体库或文件系统读取照片/视频的 API。客户端可通过 IPC 访问用户相册和媒体文件，可能导致隐私照片泄露。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["photoAccessHelper", "mediaLibrary", "getAssets", "getAlbums", "file.fs.openSync", "fileIo.open"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" },
+        { "condition": "path_is_restricted_to_app_sandbox", "effect": "downgrade_one", "reason": "文件路径限制在应用沙箱内" }
+      ],
+      "remediation": "1. 限制可访问的目录范围（仅允许应用自有目录）2. 校验调用方身份 3. 禁止将文件原始内容直接写入 reply，改为返回 URI 且做权限校验",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-photoAccessHelper"
+    },
+    {
+      "id": "IPC-BIZ-007",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 可获取位置信息",
+      "description": "handler 内部调用了定位相关 API。客户端可通过 IPC 请求获取设备当前位置，泄露用户实时行踪。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["geoLocationManager", "getCurrentLocation", "getLastLocation", "onLocationChange"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "位置信息不可通过 IPC 暴露给非系统应用。handler 中必须校验 getCallingUid() 并确认调用方持有 ohos.permission.LOCATION 权限。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-geoLocationManager"
+    },
+    {
+      "id": "IPC-BIZ-008",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 可读取剪贴板内容",
+      "description": "handler 内部调用了剪贴板读取 API。客户端可通过 IPC 获取用户当前剪贴板中的内容，可能泄露密码、验证码、银行卡号等敏感信息。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["pasteboard.getData", "pasteboard.read", "systemPasteboard.getData"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "剪贴板内容读取不可通过 IPC 暴露。如业务确实需要读取剪贴板，必须在 handler 中强制校验调用方身份并确保用户知情。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-pasteboard"
+    },
+    {
+      "id": "IPC-BIZ-009",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 可访问分布式数据",
+      "description": "handler 内部调用了分布式数据对象或分布式数据库 API。客户端可通过 IPC 读取或同步跨设备的用户数据，数据泄露范围扩展到多设备。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["distributedObject", "distributedData", "createDistributedObject", "distributedKVStore"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "分布式数据访问必须校验调用方身份。敏感数据不应通过 IPC 暴露跨设备同步的接口。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-distributed-dataObject"
+    },
+    {
+      "id": "IPC-BIZ-010",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "owasp": "M8",
+      "title": "IPC handler 中用户输入被用作文件路径",
+      "description": "handler 将从 IPC data 中读取的字符串直接用作文件路径（如传给 fileIo.open、fs.openSync），未对 ../ 穿越、绝对路径和特殊字符做过滤。攻击者可读取或覆盖应用沙箱内的任意文件。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["fileIo.open", "fs.openSync", "fs.read", "fs.write"],
+        "negative_patterns": ["normalizePath", "resolve", "path traversal sanitized"]
+      },
+      "severity_modifiers": [
+        { "condition": "path_is_restricted_to_app_sandbox", "effect": "downgrade_one", "reason": "文件路径限制在应用沙箱内" },
+        { "condition": "path_contains_predefined_prefix", "effect": "downgrade_one", "reason": "路径拼接了预定义前缀而非直接使用用户输入" }
+      ],
+      "remediation": "1. 使用 Path.normalize() 规范化路径 2. 校验最终路径是否在允许的目录范围内 3. 禁止客户端传入的路径包含 ../ 或绝对路径",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-file-fs"
+    },
+    {
+      "id": "IPC-BIZ-011",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "owasp": "M8",
+      "title": "IPC handler 中用户输入被拼接为 SQL 或命令",
+      "description": "handler 将从 IPC data 中读取的字符串直接拼接到 SQL 语句或命令中，未使用参数化查询。攻击者可通过 IPC 执行 SQL 注入或命令注入。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["rdbStore.executeSql", "rdbStore.querySql", "rdbStore.getRdbStore"],
+        "negative_patterns": ["parameterized", "args", "Array<ValueType>"]
+      },
+      "remediation": "使用参数化查询替代字符串拼接。对于 rdbStore：executeSql(sql, bindArgs)，将用户输入放入 bindArgs 数组而非直接拼入 sql 字符串。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-data-rdb"
+    },
+    {
+      "id": "IPC-BIZ-012",
+      "severity": "medium",
+      "cwe": "CWE-862",
+      "owasp": "M5",
+      "title": "IPC handler 执行写入/删除操作且无身份校验",
+      "description": "handler 的内部逻辑调用了写入或删除数据的 API（如文件写入、数据库插入/更新/删除、配置修改），但 handler 自身及 onRemoteMessageRequest 均未校验调用方身份。任意连接的客户端均可执行破坏性操作。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["fs.write", "fs.unlink", "rdbStore.insert", "rdbStore.update", "rdbStore.delete", "rdbStore.executeSql"],
+        "negative_patterns": ["getCallingUid", "getCallingPid"]
+      },
+      "severity_modifiers": [
+        { "condition": "write_operation_is_per_user_scoped", "effect": "downgrade_one", "reason": "写入操作仅影响调用方自身的独立数据空间" }
+      ],
+      "remediation": "在 handler 入口处添加 getCallingUid() 校验。对于写入/删除操作，必须验证调用方身份后才允许执行。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+    },
+    {
+      "id": "IPC-BIZ-013",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "owasp": "M9",
+      "title": "IPC handler 返回系统内部状态或调试信息",
+      "description": "handler 向 reply 写入了应用内部状态信息（如全局变量、配置对象、内存状态、堆栈信息）。攻击者可通过 IPC 探测应用内部逻辑和敏感配置。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["JSON.stringify", "writeString"],
+        "context_patterns": ["state", "config", "global", "debug", "stack", "dump", "env", "process"]
+      },
+      "remediation": "避免将应用内部状态对象直接序列化后写入 reply。仅返回客户端所需的具体字段，对敏感字段做剔除处理。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+    },
+    {
+      "id": "IPC-BIZ-014",
+      "severity": "medium",
+      "cwe": "CWE-862",
+      "owasp": "M5",
+      "title": "IPC handler 可操作用户蓝牙或网络连接",
+      "description": "handler 内部调用了蓝牙扫描/连接或 Wi-Fi 配置等网络相关 API。客户端可通过 IPC 改变设备的网络连接状态或扫描附近设备。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["bluetooth.BluetoothManager", "bluetooth.startBluetoothDiscovery", "wifi.WifiManager", "socket.constructTCPSocket"],
+        "negative_patterns": []
+      },
+      "severity_modifiers": [
+        { "condition": "handler_has_caller_verification", "effect": "downgrade_one", "reason": "handler 内部有调用方身份校验" }
+      ],
+      "remediation": "蓝牙扫描和网络连接操作不应通过 IPC 暴露。如需暴露，handler 中必须校验调用方身份和权限。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-bluetooth"
+    }
+  ]
+}

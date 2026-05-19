@@ -196,6 +196,7 @@ def parse_module_config(module_json5_path: str | Path) -> dict:
 
     return {
         "_path": str(module_path),
+        "module_path": str(module_path),
         "name": module.get("name", ""),
         "type": module.get("type", "entry"),
         "description": module.get("description", ""),

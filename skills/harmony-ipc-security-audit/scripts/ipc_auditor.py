@@ -105,7 +105,7 @@ def check_config_rules(metadata: dict, rules: list[dict]) -> list[dict]:
             if mod.get("_parse_error"):
                 continue
 
-            mod_path = mod.get("_path", mod.get("name", "unknown"))
+            mod_path = mod.get("module_path", mod.get("_path", mod.get("name", "unknown")))
 
             items: list[dict] = []
             item_label = "Item"
