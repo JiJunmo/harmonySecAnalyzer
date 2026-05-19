@@ -11,6 +11,37 @@
 
 ---
 
+## 输出目录约定
+
+审计开始前在当前工作目录创建一个 `harmony_audit_results/<timestamp>/` 目录，所有产物存放于此。
+
+```
+harmony_audit_results/
+└── <YYYYMMDD_HHMMSS>/
+    ├── metadata.json                          <-- Phase 1: 项目元数据
+    ├── harmony-project-parser-findings.json
+    ├── harmony-ipc-security-audit-findings.json
+    ├── harmony-webview-audit-findings.json
+    ├── call_chain_analysis.json               <-- IPC 调用链分析
+    ├── findings_raw.json                      <-- IPC 完整诊断
+    ├── webview_analysis_report.json
+    ├── aggregated_data.json                   <-- Phase 3: 聚合数据
+    ├── audit-report.md                        <-- Phase 4: 最终报告
+    └── audit-report.json                      <-- Phase 4: JSON版报告
+```
+
+### 初始化命令
+
+```bash
+AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$AUDIT_DIR"
+metadata_path="$AUDIT_DIR/metadata.json"
+```
+
+每次审计创建一个新的时间戳目录，历史结果保留可追溯。
+
+---
+
 ## 审计工作流（4 个阶段）
 
 ```
@@ -48,13 +79,18 @@
    如果 project_path 不存在 → 立即报错，终止审计
    ```
 
-2. **加载并执行 harmony-project-parser skill**
+2. **创建审计工作目录并加载 harmony-project-parser skill**
+   - 按「输出目录约定」章节的命令创建 `$AUDIT_DIR`
    - 加载 `skills/harmony-project-parser/SKILL.md`
-   - 执行扫描脚本：
+   - 执行扫描脚本，输出到审计目录内：
      ```bash
-     python3 skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o /tmp/harmony_audit_metadata.json --pretty
+     python3 skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o <audit_dir>/metadata.json --pretty
      ```
-   - 读取 `/tmp/harmony_audit_metadata.json`
+   - 同时复制一份作为 `harmony-project-parser-findings.json`（供聚合器使用）
+     ```bash
+     cp <audit_dir>/metadata.json <audit_dir>/harmony-project-parser-findings.json
+     ```
+   - 读取 `<audit_dir>/metadata.json`
 
 3. **验证元数据完整性**
    - 检查 `_meta.parse_errors`，若有错误提醒用户但继续
@@ -65,17 +101,11 @@
 
 ### 输出（内部数据流）
 ```yaml
-metadata_path: /tmp/harmony_audit_metadata.json
+audit_dir: ./harmony_audit_results/<YYYYMMDD_HHMMSS>/
+metadata_path: <audit_dir>/metadata.json
 metadata: <完整 JSON 对象>
 project_path: <项目路径>
-audit_dir: /tmp/harmony_audit_<timestamp>/
 ```
-
-### 创建审计工作目录
-```bash
-mkdir -p /tmp/harmony_audit_$(date +%s)
-```
-后续所有中间文件均存放于此目录。
 
 ---
 
@@ -96,7 +126,7 @@ mkdir -p /tmp/harmony_audit_$(date +%s)
 | 3 | `harmony-component-audit` | 🔜 待实现 | P2 | metadata.modules[].abilities |
 | 4 | `harmony-secrets-audit` | 🔜 待实现 | P1 | metadata.files.ets_sources |
 | 5 | `harmony-network-audit` | 🔜 待实现 | P2 | metadata.modules[].network_config |
-| 6 | `harmony-webview-audit` | 🔜 待实现 | P3 | metadata.files.ets_sources |
+| 6 | `harmony-webview-audit` | ✅ 已实现 | P3 | metadata.security_surface.has_webview + metadata.files.ets_sources |
 | 7 | `harmony-crypto-audit` | 🔜 待实现 | P4 | metadata.files.ets_sources |
 | 8 | `harmony-data-storage-audit` | 🔜 待实现 | P3 | metadata.files.ets_sources |
 | 9 | `harmony-code-quality-audit` | 🔜 待实现 | P4 | metadata.files.ets_sources |
@@ -107,7 +137,7 @@ mkdir -p /tmp/harmony_audit_$(date +%s)
 
 ```
 # 读取 metadata，获取安全攻击面信息
-metadata = read("/tmp/harmony_audit_metadata.json")
+metadata = read("<audit_dir>/metadata.json")
 
 # 按安全攻击面决定跳过哪些 skill
 dispatch_list = []
@@ -362,11 +392,10 @@ project-parser
 | harmony-component-audit | 🔜 待实现 |
 | harmony-secrets-audit | 🔜 待实现 |
 | harmony-network-audit | 🔜 待实现 |
-| harmony-webview-audit | 🔜 待实现 |
+| harmony-webview-audit | ✅ 已实现 |
 | harmony-crypto-audit | 🔜 待实现 |
 | harmony-data-storage-audit | 🔜 待实现 |
 | harmony-code-quality-audit | 🔜 待实现 |
-| harmony-report-generator | 🔜 待实现 |
 
 ---
 
@@ -380,7 +409,7 @@ project-parser
 | 某个 audit skill 执行失败 | 记录错误，继续其他 skill |
 | 所有 audit skill 都失败 | 生成仅含项目摘要的简化报告 |
 | 无任何发现 | 生成报告注明"未发现问题" |
-| 输出目录不可写 | 使用 /tmp 作为回退 |
+| 输出目录不可写 | 使用 `/tmp/harmony_audit/` 作为回退 |
 
 ---
 
