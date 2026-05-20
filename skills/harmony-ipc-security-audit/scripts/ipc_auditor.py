@@ -188,6 +188,10 @@ def list_instances(metadata_path: str, project_path: str) -> list[dict]:
             if not ext.get("src_entry"):
                 continue
 
+            # 跳过由系统未开放权限守卫的实例（普通应用无法调用，风险极小）
+            if ext.get("filtered_by_system_permission"):
+                continue
+
             chain_counter += 1
             ext_name = ext.get("name", "")
             exported = ext.get("exported", False)

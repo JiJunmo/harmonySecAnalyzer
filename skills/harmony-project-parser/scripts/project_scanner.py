@@ -99,6 +99,8 @@ def _compute_security_surface(modules: list[dict], dependencies: dict, files: di
     has_ipc_service = False
     has_service_extension = False
     icp_service_count = 0
+    filtered_abilities_count = 0
+    filtered_extensions_count = 0
 
     for mod in modules:
         if mod.get("_parse_error"):
@@ -118,17 +120,25 @@ def _compute_security_surface(modules: list[dict], dependencies: dict, files: di
         for ab in mod.get("abilities", []):
             if ab.get("exported"):
                 exported_abilities.append(ab.get("name", ""))
+            if ab.get("filtered_by_system_permission"):
+                filtered_abilities_count += 1
 
         for ext in mod.get("extension_abilities", []):
             if ext.get("exported"):
                 exported_extensions.append(ext.get("name", ""))
             ext_type = ext.get("type", "").lower()
+            ext_filtered = ext.get("filtered_by_system_permission", False)
             if ext_type == "service":
-                has_ipc_service = True
+                if not ext_filtered:
+                    has_ipc_service = True
+                    icp_service_count += 1
+                else:
+                    filtered_extensions_count += 1
                 has_service_extension = True
-                icp_service_count += 1
             elif ext_type:
                 has_service_extension = True
+                if ext_filtered:
+                    filtered_extensions_count += 1
 
         nc = mod.get("network_config", {})
         if nc.get("cleartext_traffic"):
@@ -175,6 +185,8 @@ def _compute_security_surface(modules: list[dict], dependencies: dict, files: di
         "has_ipc_service": has_ipc_service,
         "has_service_extension": has_service_extension,
         "ipc_service_count": icp_service_count,
+        "filtered_abilities_count": filtered_abilities_count,
+        "filtered_extensions_count": filtered_extensions_count,
         "uses_crypto": capabilities.get("uses_crypto", False),
         "uses_http": capabilities.get("uses_http", False),
         "uses_bluetooth": capabilities.get("uses_bluetooth", False),

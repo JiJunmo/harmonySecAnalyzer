@@ -263,6 +263,35 @@ for skill in dispatch_list:
 - N 个实例就必须有 N 个 `-analysis-{id}.json` 分片，Phase 3 聚合器会校验数量
 - 尚未实现深度分析的 skill，仍用旧的一 Task 全量模式
 
+### 补偿机制：缺失实例补派
+
+如果模型未全部执行派发的 Task，在 Phase 3 聚合后通过以下逻辑补偿：
+
+```
+# Phase 3 聚合后读取 aggregated_data.json
+warnings = aggregated_data["warnings"]
+
+for warning in warnings:
+    if "仅分析了" in warning:
+        # 提取缺失的实例 ID
+        skill = extract_skill(warning)
+        instances = read(<audit_dir>/{skill}-instances.json)
+        analysis_files = glob(<audit_dir>/{skill}-analysis-*.json)
+        analyzed_ids = {extract_id(f) for f in analysis_files}
+        missing = [i for i in instances if i["instance_id"] not in analyzed_ids]
+
+        # 为缺失的实例重新派发 Task
+        for inst in missing:
+            Task(
+                subagent_type="general",
+                description=f"MISSING: {skill}: {inst.name}",
+                prompt=f"补偿分析。Load skills/{skill}/SKILL.md，仅分析这一个实例...",
+                task_id=f"{skill}-{inst.instance_id}-retry"
+            )
+
+# 所有缺失实例的 Task 完成后，重新运行 Phase 3 聚合器
+```
+
 ---
 
 ## Phase 3: 聚合去重
