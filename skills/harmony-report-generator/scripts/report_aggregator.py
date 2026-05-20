@@ -5,7 +5,7 @@
 用法:
     python report_aggregator.py <audit_dir> [-o aggregated_data.json]
 
-输入: 审计工作目录（含 metadata.json、*-findings.json、*-analysis-*.json、*-instances.json）
+输入: 审计工作目录（含 harmony-project-parser-findings.json、*-findings.json、*-analysis-*.json、*-instances.json）
 输出: aggregated_data.json（供报告生成器使用）
 """
 
@@ -261,12 +261,10 @@ def aggregate(audit_dir: str, project_root_path: str | None = None) -> dict:
 
     # 读取 metadata
     metadata_path = audit_path / "harmony-project-parser-findings.json"
-    meta_fallback = audit_path / "metadata.json"
     metadata: dict = {}
     if metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    elif meta_fallback.exists():
-        metadata = json.loads(meta_fallback.read_text(encoding="utf-8"))
+
 
     # 收集分析报告（自动发现 + 合并分片 + 计数校验）
     analysis_reports, warnings = collect_analysis_reports(audit_path)

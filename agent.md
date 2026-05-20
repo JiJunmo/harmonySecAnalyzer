@@ -18,8 +18,8 @@
 ```
 harmony_audit_results/
 └── <YYYYMMDD_HHMMSS>/
-    ├── metadata.json                              # Phase 1: 项目元数据
-    ├── harmony-project-parser-findings.json
+    ├── harmony-project-parser-findings.json        # Phase 1: 项目元数据（完整版，供下游 skill）
+    ├── harmony-project-parser-audit-plan.json      # Phase 1: 审计调度计划（精简版，供 AI 编排器）
     │
     ├── harmony-ipc-security-audit-instances.json   # Phase 2a: IPC 实例列表+骨架
     ├── harmony-ipc-security-audit-analysis-001.json # Phase 2b: 每个实例分片
@@ -42,7 +42,7 @@ harmony_audit_results/
 ```bash
 AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$AUDIT_DIR"
-metadata_path="$AUDIT_DIR/metadata.json"
+metadata_path="$AUDIT_DIR/harmony-project-parser-findings.json"
 ```
 
 每次审计创建一个新的时间戳目录，历史结果保留可追溯。
@@ -54,7 +54,7 @@ metadata_path="$AUDIT_DIR/metadata.json"
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  Phase 1: 项目发现 (harmony-project-parser)                       │
-│  → 输出: metadata.json + harmony-project-parser-findings.json    │
+│  → 输出: harmony-project-parser-findings.json                    │
 ├──────────────────────────────────────────────────────────────────┤
 │  Phase 2: 并行审计 — 每个实例独立 Task                              │
 │  → 2a: 脚本 --list-instances 列出所有实例 + 预填 Layer 1 骨架      │
@@ -92,18 +92,16 @@ metadata_path="$AUDIT_DIR/metadata.json"
  2. **创建审计工作目录并加载 harmony-project-parser skill**
     - 按「输出目录约定」章节的命令创建 `$AUDIT_DIR`
     - 加载 `skills/harmony-project-parser/SKILL.md`
-    - 执行扫描脚本，输出到审计目录内：
-```bash
-# 跨平台 python 命令 (Windows 通常只有 python，macOS/Linux 有 python3)
-PY=$(command -v python3 || command -v python || echo python3)
-$PY skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o <audit_dir>/metadata.json --pretty
-```
-      若 `python3` 不可用（如 Windows），尝试 `python`。
-   - 同时复制一份作为 `harmony-project-parser-findings.json`（供聚合器使用）
-     ```bash
-     cp <audit_dir>/metadata.json <audit_dir>/harmony-project-parser-findings.json
-     ```
-   - 读取 `<audit_dir>/metadata.json`
+    - 执行扫描脚本，生成两份文件：
+      ```bash
+      # 完整元数据（供下游 skill 使用）
+      $PY skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o <audit_dir>/harmony-project-parser-findings.json --pretty
+
+      # 审计调度计划（供 AI 编排器使用，< 2KB）
+      $PY skills/harmony-project-parser/scripts/project_scanner.py <project_path> --audit-plan -o <audit_dir>/harmony-project-parser-audit-plan.json --pretty
+      ```
+    - **只读取 `<audit_dir>/harmony-project-parser-audit-plan.json`**（不读完整 metadata）
+
 
 3. **验证元数据完整性**
    - 检查 `_meta.parse_errors`，若有错误提醒用户但继续
@@ -115,7 +113,7 @@ $PY skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o <
 ### 输出（内部数据流）
 ```yaml
 audit_dir: ./harmony_audit_results/<YYYYMMDD_HHMMSS>/
-metadata_path: <audit_dir>/metadata.json
+metadata_path: <audit_dir>/harmony-project-parser-findings.json
 metadata: <完整 JSON 对象>
 project_path: <项目路径>
 ```
@@ -167,44 +165,32 @@ Step 2c: 无需额外操作
 ### 调度逻辑
 
 ```
-metadata = read("<audit_dir>/metadata.json")
+# 读取审计调度计划（精简 JSON，< 2KB，脚本已预计算所有决策）
+plan = read("<audit_dir>/harmony-project-parser-audit-plan.json")
 
-# === 决定需要哪些 skill ===
-dispatch_list = []
-# ... (与 Phase 1 相同，根据 security_surface 决定) ...
-
-# === 对每个已实现的 skill 执行 ===
-for skill in dispatch_list:
-    if skill_status[skill] != "已实现":
-        note: "该审计项暂未实现"
+# 直接遍历 plan.dispatch，无需 AI 做 if-else 判断
+for skill, info in plan.dispatch.items():
+    if not info["run"]:
+        # 脚本已判定不需要审计
         continue
 
-    if skill_requires_deep_analysis(skill):
-        # --- 深度分析 skill（IPC, WebView 等）---
-        
-        # Step 2a: 脚本发现实例 + 预填 Layer 1 骨架
-        run: python {skill}/scripts/{skill}-auditor.py \
-                --list-instances <metadata_path> <project_path> \
-                -o <audit_dir>/{skill}-instances.json
-        instances = read(<audit_dir>/{skill}-instances.json)
-        
-        # Step 2b: 每个实例并行派发一个 Task
-        for inst in instances:
+    if "instances" in info:
+        # --- 深度分析 skill（IPC, WebView）---
+        for inst in info["instances"]:
             Task(
                 subagent_type="general",
-                description=f"{skill}: {inst.name}",
+                description=f"{skill}: {inst['name']}",
                 prompt=f"""Load skills/{skill}/SKILL.md.
-        仅分析这一个实例。脚本已预填 Layer 1 骨架（见下方 JSON），
-        你只需补充 Layer 2-N 的深度分析，并对照规则逐条筛查。
-        
-        实例信息:
-        {json.dumps(inst, indent=2)}
-        
-        项目路径: {project_path}
-        输出分析分片到: {audit_dir}/{skill}-analysis-{inst.instance_id}.json
-        输出 findings 到: {audit_dir}/{skill}-findings.json（追加模式）
-        """,
-                task_id=f"{skill}-{inst.instance_id}"
+仅分析这一个实例。脚本已预填 Layer 1 骨架。
+
+实例信息:
+{json.dumps(inst, indent=2)}
+
+项目路径: {project_path}
+输出分析分片到: {audit_dir}/{skill}-analysis-{inst['instance_id']}.json
+输出 findings 到: {audit_dir}/{skill}-findings.json（追加模式）
+""",
+                task_id=f"{skill}-{inst['instance_id']}"
             )
 
     else:
@@ -212,10 +198,13 @@ for skill in dispatch_list:
         Task(
             subagent_type="general",
             description=f"Run {skill}",
-            prompt=f"Load skills/{skill}/SKILL.md and analyze project using metadata at {metadata_path}. Output findings to {audit_dir}/{skill}-findings.json"
+            prompt=f"Load skills/{skill}/SKILL.md and analyze project using metadata at {audit_dir}/harmony-project-parser-findings.json. Output findings to {audit_dir}/{skill}-findings.json"
         )
 
-# 注意: 实例分片在 Phase 3 聚合器中进行合并和计数校验
+# 展示调度摘要给用户
+for skill, info in plan.dispatch.items():
+    status = "🔍 需要审计" if info["run"] else "⏭️ 跳过"
+    print(f"{status} | {skill} | {info['reason']}")
 ```
 
 ### 深度分析 skill 的 Task prompt 模板

@@ -287,6 +287,189 @@ def scan_project(project_path: str) -> dict:
     }
 
 
+def generate_audit_plan(metadata: dict, project_path: str) -> dict:
+    """
+    基于完整 metadata 预计算审计调度计划。
+
+    返回精简的 audit-plan.json 内容（< 2KB），供 AI 编排器直接使用，
+    无需 AI 读取完整 metadata 做决策。
+    """
+    ss = metadata.get("security_surface", {})
+    files = metadata.get("files", {})
+    build = metadata.get("build", {})
+    project = metadata.get("project", {})
+    modules = metadata.get("modules", [])
+
+    plan: dict = {
+        "project": {
+            "name": project.get("name", project.get("package_name", "")),
+            "package_name": project.get("package_name", ""),
+            "sdk_version": build.get("compile_sdk_version", ""),
+            "api_level": build.get("compile_sdk_api"),
+            "module_count": len(modules),
+            "total_ets_files": files.get("total_ets_files", 0),
+            "total_lines": files.get("total_lines", 0),
+        },
+        "parse_errors": metadata.get("_meta", {}).get("parse_errors", []),
+        "dispatch": {},
+        "summary": {
+            "total_permissions": ss.get("total_permissions", 0),
+            "high_risk_permissions": ss.get("total_high_risk_permissions", 0),
+            "dangerous_permissions": ss.get("total_dangerous_permissions", 0),
+            "exported_abilities": ss.get("exported_abilities_count", 0),
+            "exported_extensions": ss.get("exported_extensions_count", 0),
+            "filtered_extensions": ss.get("filtered_extensions_count", 0),
+            "has_cleartext_traffic": ss.get("has_cleartext_traffic", False),
+            "network_domains_count": ss.get("network_domains_count", 0),
+            "has_webview": ss.get("has_webview", False),
+            "has_database": ss.get("has_database", False),
+            "has_distributed": ss.get("has_distributed", False),
+            "has_napi": ss.get("has_napi", False),
+            "uses_crypto": ss.get("uses_crypto", False),
+        },
+    }
+
+    # --- IPC 审计 ---
+    ipc_instances: list[dict] = []
+    ipc_filtered = 0
+    for mod in modules:
+        for ext in mod.get("extension_abilities", []):
+            if ext.get("type") != "service":
+                continue
+            if not ext.get("src_entry"):
+                continue
+            if ext.get("filtered_by_system_permission"):
+                ipc_filtered += 1
+                continue
+            ipc_instances.append({
+                "instance_id": f"ipc-{len(ipc_instances) + 1:03d}",
+                "name": ext.get("name", ""),
+                "module": mod.get("name", ""),
+                "exported": ext.get("exported", False),
+                "src_entry": ext.get("src_entry", ""),
+            })
+
+    if ipc_instances:
+        plan["dispatch"]["harmony-ipc-security-audit"] = {
+            "run": True,
+            "reason": f"发现 {len(ipc_instances)} 个导出的 service 类型 ExtensionAbility（非系统权限守卫）",
+            "instance_count": len(ipc_instances),
+            "instances": ipc_instances,
+        }
+        if ipc_filtered > 0:
+            plan["dispatch"]["harmony-ipc-security-audit"]["filtered_out"] = ipc_filtered
+            plan["dispatch"]["harmony-ipc-security-audit"]["filtered_reason"] = (
+                f"{ipc_filtered} 个 service 由系统未开放权限守卫，普通应用无法调用，已跳过"
+            )
+    else:
+        reason = "未发现导出的 service 类型 ExtensionAbility"
+        if ipc_filtered > 0:
+            reason += f"（{ipc_filtered} 个由系统权限守卫，已跳过）"
+        plan["dispatch"]["harmony-ipc-security-audit"] = {
+            "run": False,
+            "reason": reason,
+        }
+
+    # --- WebView 审计 ---
+    has_webview = ss.get("has_webview", False)
+    if has_webview:
+        # 轻量扫描 WebView 使用点
+        wv_instances = _scan_webview_instances(project_path, files)
+        plan["dispatch"]["harmony-webview-audit"] = {
+            "run": True,
+            "reason": f"检测到 @kit.ArkWeb 使用，发现 {len(wv_instances)} 个 WebView 实例",
+            "instance_count": len(wv_instances),
+            "instances": wv_instances,
+        }
+    else:
+        plan["dispatch"]["harmony-webview-audit"] = {
+            "run": False,
+            "reason": "未检测到 @kit.ArkWeb 使用",
+        }
+
+    # --- 简单 skill（根据 security_surface 判断） ---
+    _add_simple_skill(plan, "harmony-permission-audit",
+        ss.get("total_permissions", 0) > 0,
+        f"项目申请了 {ss.get('total_permissions', 0)} 个权限（含 {ss.get('total_high_risk_permissions', 0)} 个高危）" if ss.get("total_permissions", 0) > 0 else "未申请权限")
+
+    _add_simple_skill(plan, "harmony-component-audit",
+        ss.get("exported_abilities_count", 0) > 0,
+        f"发现 {ss.get('exported_abilities_count', 0)} 个导出 Ability" if ss.get("exported_abilities_count", 0) > 0 else "无导出 Ability")
+
+    _add_simple_skill(plan, "harmony-secrets-audit",
+        files.get("total_ets_files", 0) > 0,
+        f"项目包含 {files.get('total_ets_files', 0)} 个 .ets 源文件" if files.get("total_ets_files", 0) > 0 else "无 .ets 源文件")
+
+    _add_simple_skill(plan, "harmony-network-audit",
+        ss.get("network_domains_count", 0) > 0 or ss.get("has_cleartext_traffic", False),
+        f"发现 {ss.get('network_domains_count', 0)} 个网络域名" + ("，含 cleartext_traffic" if ss.get("has_cleartext_traffic") else "") if (ss.get("network_domains_count", 0) > 0 or ss.get("has_cleartext_traffic")) else "未发现网络配置")
+
+    _add_simple_skill(plan, "harmony-crypto-audit",
+        ss.get("uses_crypto", False),
+        "源文件中检测到 cryptoFramework 使用" if ss.get("uses_crypto") else "未使用 cryptoFramework")
+
+    _add_simple_skill(plan, "harmony-data-storage-audit",
+        ss.get("has_database", False),
+        "检测到数据库使用" if ss.get("has_database") else "未检测到数据库使用")
+
+    _add_simple_skill(plan, "harmony-code-quality-audit",
+        files.get("total_ets_files", 0) > 0,
+        f"项目包含 {files.get('total_ets_files', 0)} 个 .ets 源文件" if files.get("total_ets_files", 0) > 0 else "无源文件")
+
+    return plan
+
+
+def _add_simple_skill(plan: dict, skill_name: str, should_run: bool, reason: str):
+    """为不需要深度分析的 skill 添加 dispatch 条目。"""
+    if not should_run:
+        plan["dispatch"][skill_name] = {"run": False, "reason": reason}
+    else:
+        plan["dispatch"][skill_name] = {"run": True, "reason": reason}
+
+
+def _scan_webview_instances(project_path: str, files: dict) -> list[dict]:
+    """轻量扫描 WebView 使用点，返回实例列表。"""
+    instances: list[dict] = []
+    counter = 0
+    project_root = Path(project_path).resolve()
+
+    ets_sources = files.get("ets_sources", [])
+    for sf in ets_sources:
+        filepath = project_root / sf["path"]
+        if not filepath.exists():
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        if "@kit.ArkWeb" not in content and "web_webview" not in content:
+            continue
+
+        idx = 0
+        while True:
+            idx = content.find("Web({", idx)
+            if idx == -1:
+                break
+            counter += 1
+            line_no = content[:idx].count("\n") + 1
+
+            import re
+            src_match = re.search(r"src:\s*['\"]([^'\"]+)['\"]", content[idx:idx + 200])
+            src_url = src_match.group(1) if src_match else "未知"
+
+            instances.append({
+                "instance_id": f"webview-{counter:03d}",
+                "name": f"WebView_{sf['path'].split('/')[-1].replace('.ets', '')}_{src_url[:30]}",
+                "file": sf["path"],
+                "line": line_no,
+                "src_url": src_url,
+            })
+            idx += 5
+
+    return instances
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="鸿蒙应用项目扫描器 —— 解析项目结构并输出安全审计元数据",
@@ -300,6 +483,7 @@ def main():
     )
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")
     parser.add_argument("-o", "--output", default=None, help="输出 JSON 文件路径（默认输出到 stdout）")
+    parser.add_argument("--audit-plan", action="store_true", help="输出审计调度计划（精简版，供 AI 编排器）")
     parser.add_argument("--verbose", action="store_true", help="输出详细日志")
     parser.add_argument("--pretty", action="store_true", help="格式化 JSON 输出")
 
@@ -314,8 +498,13 @@ def main():
         print(f"[ERROR] 扫描失败: {e}", file=sys.stderr)
         sys.exit(1)
 
+    if args.audit_plan:
+        output_data = generate_audit_plan(metadata, args.project_path)
+    else:
+        output_data = metadata
+
     indent = 2 if args.pretty else None
-    json_output = json.dumps(metadata, ensure_ascii=False, indent=indent, default=str)
+    json_output = json.dumps(output_data, ensure_ascii=False, indent=indent, default=str)
 
     if args.output:
         output_path = Path(args.output)
@@ -324,7 +513,8 @@ def main():
             f.write(json_output)
         if args.verbose:
             print(f"[INFO] 输出已保存到: {output_path}", file=sys.stderr)
-        print(f"[DONE] 扫描完成，输出: {output_path}")
+        label = "审计计划" if args.audit_plan else "扫描"
+        print(f"[DONE] {label}完成，输出: {output_path}")
     else:
         print(json_output)
 

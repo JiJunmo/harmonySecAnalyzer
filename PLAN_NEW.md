@@ -201,8 +201,7 @@ AI Task 拿到骨架后只需补充 Layer 2-N，大幅减少需要阅读的代�
 ```
 harmony_audit_results/
 └── <YYYYMMDD_HHMMSS>/
-    ├── metadata.json                              # Phase 1: 项目元数据
-    ├── harmony-project-parser-findings.json
+    ├── harmony-project-parser-findings.json        # Phase 1: 项目元数据
     │
     ├── harmony-ipc-security-audit-instances.json   # Phase 2a: 实例列表+骨架
     ├── harmony-ipc-security-audit-analysis-001.json # Phase 2b: 每实例分片

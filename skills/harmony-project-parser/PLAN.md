@@ -446,3 +446,149 @@ project-parser 输出
 | 多 module 项目 | 正常解析所有 module，按 name 区分 |
 | NAPI (C++) 模块 | 检测 CMakeLists.txt，收集 .cpp/.h 文件 |
 | 超大项目 (>10k files) | 脚本内限制文件扫描深度，不做无上限递归 |
+
+---
+
+## 八、优化方案：脚本预计算审计调度，AI 只读结论
+
+### 8.1 问题
+
+当前流程中，`harmony-project-parser-findings.json` 是完整元数据的倾泻——包含每个模块的全部配置、每个文件的路径和行数、所有权限列表、所有依赖信息。大型项目可能有数十个模块、数千个文件，这个 JSON 膨胀到上百 KB。
+
+能力较弱的 AI 模型拿到这个大 JSON 后：
+- 需要逐字段理解结构才能提取出"该调哪些 skill"
+- 解析过程消耗大量 token，挤占真正用于审计的上下文
+- 容易遗漏关键信息或做出错误判断
+
+但实际上，**"该调哪些 skill、每个 skill 有多少个实例"这个决策完全可以通过脚本预计算**——脚本已经遍历了所有数据，只是没有把这个结论独立输出。
+
+### 8.2 方案：双文件输出
+
+脚本在生成完整 metadata 的同时，额外输出一个 `audit-plan.json`，专门给 AI 编排器做任务分发。
+
+```
+project_scanner.py
+    │
+    ├─→ harmony-project-parser-findings.json   (完整元数据，供下游 skill + 报告)
+    │
+    └─→ audit-plan.json                        (审计调度计划，供 AI 编排器)
+```
+
+AI 编排器只需读取 `audit-plan.json`（通常 < 2KB），不再需要读完整的 metadata。
+
+### 8.3 audit-plan.json 结构
+
+```json
+{
+  "project": {
+    "name": "com.example.app",
+    "sdk_version": "5.0.0(12)",
+    "module_count": 3,
+    "total_ets_files": 120,
+    "total_lines": 8500
+  },
+  "parse_errors": [],
+
+  "dispatch": {
+    "harmony-ipc-security-audit": {
+      "run": true,
+      "reason": "发现 3 个导出的 service 类型 ExtensionAbility（非系统权限守卫）",
+      "instance_count": 3,
+      "instances": [
+        {"instance_id": "ipc-001", "name": "IpcServiceA", "module": "entry", "exported": true, "src_entry": "./ets/..."},
+        {"instance_id": "ipc-002", "name": "IpcServiceB", "module": "feature1", "exported": true, "src_entry": "./ets/..."},
+        {"instance_id": "ipc-003", "name": "IpcServiceC", "module": "feature2", "exported": true, "src_entry": "./ets/..."}
+      ],
+      "filtered_out": 2,
+      "filtered_reason": "2 个 service 由系统未开放权限守卫，普通应用无法调用"
+    },
+    "harmony-webview-audit": {
+      "run": true,
+      "reason": "检测到 @kit.ArkWeb 使用",
+      "instance_count": 5,
+      "instances": [...]
+    },
+    "harmony-permission-audit": {
+      "run": true,
+      "reason": "项目申请了 8 个权限（含 3 个高危）",
+      "total_permissions": 8,
+      "high_risk_permissions": 3
+    },
+    "harmony-secrets-audit": {
+      "run": true,
+      "reason": "项目包含 120 个 .ets 源文件"
+    },
+    "harmony-network-audit": {
+      "run": false,
+      "reason": "未发现网络配置（无 cleartext_traffic、无 domains）"
+    },
+    "harmony-crypto-audit": {
+      "run": true,
+      "reason": "源文件中检测到 cryptoFramework 使用"
+    }
+  },
+
+  "summary": {
+    "total_permissions": 8,
+    "high_risk_permissions": 3,
+    "dangerous_permissions": 5,
+    "exported_abilities": 2,
+    "exported_extensions": 5,
+    "filtered_extensions": 2,
+    "has_cleartext_traffic": false,
+    "network_domains_count": 0,
+    "has_webview": true,
+    "has_database": true,
+    "has_distributed": false,
+    "has_napi": false,
+    "uses_crypto": true
+  }
+}
+```
+
+### 8.4 关键设计点
+
+**实例内嵌**：IPC 和 WebView 的 `--list-instances` 结果直接嵌入 `audit-plan.json` 的 `dispatch` 字段中，不需要 AI 再去读单独的 `-instances.json` 文件。AI 可以直接遍历 `dispatch[skill].instances` 派发 Task。
+
+**决策逻辑下沉**：dispatch 中每个 skill 的 `run` 字段由脚本根据安全攻击面自动计算，AI 不需要自己做 if-else 判断。只有脚本明确标记 `run: true` 的 skill 才需要调度。
+
+**过滤原因说明**：`filtered_out` 和 `filtered_reason` 解释为什么某些实例不需要审计，AI 可以展示给用户，增加透明度。
+
+### 8.5 AI 编排器的新流程
+
+```
+Phase 1:
+  1. 运行 project_scanner.py（生成两个文件）
+  2. 只读取 audit-plan.json（不读完整 metadata）
+  3. 向用户展示项目摘要（从 audit-plan.project 提取）
+
+Phase 2:
+  for each skill in plan.dispatch:
+      if skill.run == False:
+          记录 "该审计项不需要：{reason}"
+          continue
+      if skill.instances 存在:
+          遍历 skill.instances 逐实例派发 Task
+      else:
+          派发单 Task
+```
+
+### 8.6 脚本改动
+
+`project_scanner.py` 新增 `--audit-plan` 参数，或直接默认生成 `audit-plan.json`。
+
+函数 `generate_audit_plan(metadata) → dict`：
+1. 从 `security_surface` 计算所有 skill 是否需要执行
+2. 对 IPC skill，内嵌 `list_instances()` 的结果
+3. 对 WebView skill，调用 `webview_auditor.py --list-instances` 的结果（或内联执行）
+4. 输出 `audit-plan.json`
+
+### 8.7 效果对比
+
+| 维度 | 当前 | 优化后 |
+|------|------|--------|
+| AI 需要读取的文件 | metadata.json (50-200KB) | audit-plan.json (< 2KB) |
+| AI 解析负担 | 理解完整 JSON 结构 + 提取有效信息 | 直接按字段取值 |
+| 大项目 token 消耗 | 数万 token 用于解析 | 数百 token |
+| dispatch 决策 | AI 自己 if-else | 脚本预计算，AI 直接执行 |
+| 弱模型可用性 | 可能错误或遗漏 | 结论已固化，不会出错 |
