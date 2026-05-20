@@ -110,7 +110,9 @@ Agent 传入的实例骨架：
   - 返回了什么 Stub/RemoteObject
   - 是否存在 onDisconnect / onDestroy 的回调及清理逻辑
 
-### 2.3 服务请求处理层
+### 2.3 服务请求处理层（同时也是外部攻击入口）
+
+> **入口标注**：`onRemoteMessageRequest` 是一个外部可达的入口点。其他应用通过 IPC 连接后可直接调用此方法，传入任意 `code` 和 `data`。此入口的参数流向可能跨越 IPC 服务边界，影响应用内的其他组件（如 WebView 的 src、文件操作、数据库查询）。分析时需额外关注：该服务处理的数据是否流向其他组件形成二次攻击面。
 
 - 从 onConnect 的返回值追踪到 Stub/RemoteObject 实现文件
 - 阅读 `onRemoteMessageRequest(code, data, reply, option)` 方法

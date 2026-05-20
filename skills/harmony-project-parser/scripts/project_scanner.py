@@ -470,6 +470,109 @@ def _scan_webview_instances(project_path: str, files: dict) -> list[dict]:
     return instances
 
 
+def list_entries(project_path: str) -> list[dict]:
+    """
+    扫描项目中所有外部可控入口（DeepLink、Want 参数、IPC 消息、URL Scheme 等）。
+
+    返回入口列表，每个入口包含 entry_id、type、file、line、handler、controlled_params。
+    """
+    import re
+    project_root = Path(project_path).resolve()
+    entries: list[dict] = []
+    counter = 0
+
+    # 收集所有源文件
+    try:
+        fc = collect_files(project_root)
+    except (FileNotFoundError, PermissionError):
+        return entries
+
+    for sf in fc.ets_sources:
+        filepath = project_root / sf.path
+        if not filepath.exists():
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        # --- DeepLink 入口: want.parameters 取值 ---
+        for m in re.finditer(r"(?:want|Want)\s*\.\s*parameters\s*\??\s*\.\s*(\w+)", content):
+            counter += 1
+            line_no = content[:m.start()].count("\n") + 1
+            param_name = m.group(1)
+            ctx_start = max(0, m.start() - 100)
+            ctx_end = min(len(content), m.end() + 200)
+            snippet = content[ctx_start:ctx_end].strip()[:300]
+
+            entries.append({
+                "entry_id": f"entry-{counter:03d}",
+                "type": "deeplink",
+                "file": sf.path,
+                "line": line_no,
+                "handler": "want.parameters",
+                "controlled_params": [param_name],
+                "snippet": snippet,
+            })
+
+        # --- Want 接收器: startAbility 中传入的外部 want ---
+        for m in re.finditer(r"(?:startAbility|startAbilityForResult)\s*\([^)]*want[^)]*\)", content):
+            counter += 1
+            line_no = content[:m.start()].count("\n") + 1
+            ctx_start = max(0, m.start() - 50)
+            ctx_end = min(len(content), m.end() + 100)
+            snippet = content[ctx_start:ctx_end].strip()[:300]
+
+            entries.append({
+                "entry_id": f"entry-{counter:03d}",
+                "type": "want_receiver",
+                "file": sf.path,
+                "line": line_no,
+                "handler": "startAbility(want)",
+                "controlled_params": ["want.parameters", "want.uri"],
+                "snippet": snippet,
+            })
+
+        # --- IPC 消息入口: onRemoteMessageRequest ---
+        for m in re.finditer(r"onRemoteMessageRequest\s*\([^)]*\)", content):
+            counter += 1
+            line_no = content[:m.start()].count("\n") + 1
+            ctx_start = max(0, m.start() - 50)
+            ctx_end = min(len(content), m.end() + 200)
+            snippet = content[ctx_start:ctx_end].strip()[:300]
+
+            entries.append({
+                "entry_id": f"entry-{counter:03d}",
+                "type": "ipc",
+                "file": sf.path,
+                "line": line_no,
+                "handler": "onRemoteMessageRequest",
+                "controlled_params": ["code", "data"],
+                "snippet": snippet,
+            })
+
+        # --- URL Scheme 回调: onLoadIntercept / onUrlLoadIntercept ---
+        for pattern in ["onLoadIntercept", "onUrlLoadIntercept"]:
+            for m in re.finditer(rf"{pattern}\s*\(\s*(?:event|\w+)\s*(?:\)|:)", content):
+                counter += 1
+                line_no = content[:m.start()].count("\n") + 1
+                ctx_start = max(0, m.start() - 50)
+                ctx_end = min(len(content), m.end() + 200)
+                snippet = content[ctx_start:ctx_end].strip()[:300]
+
+                entries.append({
+                    "entry_id": f"entry-{counter:03d}",
+                    "type": "url_callback",
+                    "file": sf.path,
+                    "line": line_no,
+                    "handler": pattern,
+                    "controlled_params": ["url"],
+                    "snippet": snippet,
+                })
+
+    return entries
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="鸿蒙应用项目扫描器 —— 解析项目结构并输出安全审计元数据",
@@ -484,6 +587,7 @@ def main():
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")
     parser.add_argument("-o", "--output", default=None, help="输出 JSON 文件路径（默认输出到 stdout）")
     parser.add_argument("--audit-plan", action="store_true", help="输出审计调度计划（精简版，供 AI 编排器）")
+    parser.add_argument("--list-entries", action="store_true", help="发现所有外部可控入口")
     parser.add_argument("--verbose", action="store_true", help="输出详细日志")
     parser.add_argument("--pretty", action="store_true", help="格式化 JSON 输出")
 
@@ -498,7 +602,18 @@ def main():
         print(f"[ERROR] 扫描失败: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if args.audit_plan:
+    if args.list_entries:
+        output_data = {
+            "_meta": {
+                "scanner_version": VERSION,
+                "scan_time": datetime.now(timezone.utc).isoformat(),
+                "project_path": str(Path(args.project_path).resolve()),
+                "total_entries": 0,
+            },
+            "entries": list_entries(args.project_path),
+        }
+        output_data["_meta"]["total_entries"] = len(output_data["entries"])
+    elif args.audit_plan:
         output_data = generate_audit_plan(metadata, args.project_path)
     else:
         output_data = metadata
@@ -513,7 +628,7 @@ def main():
             f.write(json_output)
         if args.verbose:
             print(f"[INFO] 输出已保存到: {output_path}", file=sys.stderr)
-        label = "审计计划" if args.audit_plan else "扫描"
+        label = "入口发现" if args.list_entries else ("审计计划" if args.audit_plan else "扫描")
         print(f"[DONE] {label}完成，输出: {output_path}")
     else:
         print(json_output)
