@@ -208,7 +208,15 @@ flow 中每一跳必须有 `snippet`（实际代码），不可只有文字描�
 
 ## 输出
 
-`harmony-ipc-security-audit-attack-paths.json`
+每个 IPC 服务独立输出一个分片文件。**必须使用 Write 工具写入磁盘，不可仅在对话中展示 JSON。**
+
+文件命名：`harmony-ipc-security-audit-attack-paths-{模块名}.json`
+
+例如：`harmony-ipc-security-audit-attack-paths-IpcServiceExtAbility.json`
+
+Phase 3 聚合器会自动合并所有 `harmony-ipc-security-audit-attack-paths-*.json` 分片。
+
+### 整体输出结构
 
 ```json
 {

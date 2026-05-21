@@ -38,6 +38,12 @@ AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$AUDIT_DIR"
 ```
 
+扫描完成后，**确保项目已被 GitNexus 索引**，后续 skill 将用它做跨文件调用链追踪：
+
+```bash
+cd <project_path> && npx gitnexus analyze
+```
+
 ### 输出
 
 读 `<audit_dir>/entries.json` 和 `<audit_dir>/attack_map.json`，向用户展示：
@@ -76,13 +82,14 @@ for entry in ipc_entries:
 
 按 SKILL.md 的四步流程执行：
 1. 梳理完整业务流程（输入→分发→执行→输出）
-2. 判断是否是敏感业务（非敏感则跳过）
+2. 逐分支判断敏感度
 3. 对照 rules/*.json 检查安全风险
 4. 若有漏洞，生成 AttackPath
 
+**必须使用 Write 工具将 AttackPath JSON 写入磁盘，文件名: {audit_dir}/harmony-ipc-security-audit-attack-paths-{entry['handler']}.json**
+
 项目路径: {project_path}
 audit_dir: {audit_dir}
-输出文件: {audit_dir}/harmony-ipc-security-audit-attack-paths.json
 """,
         task_id=f"ipc-{entry['id']}"
     )
@@ -103,7 +110,8 @@ for path in [p for p in attack_map if p["sink_type"] == "webview"]:
 - 入口: entries.json 中的 {path['entry_id']}
 - 终点: sinks.json 中的 {path['sink_id']}
 
-若可达，生成 AttackPath 写入 {audit_dir}/harmony-webview-audit-attack-paths.json。
+若可达，生成 AttackPath。
+**必须使用 Write 工具将 AttackPath JSON 写入磁盘，文件名: {audit_dir}/harmony-webview-audit-attack-paths-{path['id']}.json**
 若不可达，跳过。
 
 项目路径: {project_path}

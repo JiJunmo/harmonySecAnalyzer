@@ -26,9 +26,9 @@ def aggregate(audit_dir: str) -> dict:
     if not audit_path.exists():
         raise FileNotFoundError(f"审计目录不存在: {audit_dir}")
 
-    # 读取所有 attack-paths
+    # 读取所有 attack-paths 分片（匹配 *-attack-paths*.json）
     all_paths = []
-    for fpath in sorted(audit_path.glob("*-attack-paths.json")):
+    for fpath in sorted(audit_path.glob("*-attack-paths*.json")):
         try:
             data = json.loads(fpath.read_text(encoding="utf-8"))
             all_paths.extend(data.get("attack_paths", []))

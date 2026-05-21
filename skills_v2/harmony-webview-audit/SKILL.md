@@ -29,9 +29,26 @@ Phase 1 发现的外部入口（`type=deeplink`、`type=url_callback`）和 WebV
 
 ## 审计流程（四步）
 
+### Step 0：利用 GitNexus 做跨文件追踪
+
+入口和 WebView 往往不在同一文件（路由传参、全局状态、跨模块 import）。先使用 GitNexus MCP 工具发现跨文件连接：
+
+```
+# 对每个入口，查询其参数的下游流向
+gitnexus_query({query: "want.parameters 的下游调用和赋值追踪"})
+
+# 对关键变量，查询其 caller/callee 关系
+gitnexus_context({name: "variableName"})
+
+# 查询从入口到 WebView 的完整执行流
+gitnexus_query({query: "从 onCreate/want.parameters 到 WebView/loadUrl 的执行流"})
+```
+
+GitNexus 能给出精确的跨文件调用链（含文件和行号），替代当前脚本的同文件粗筛。拿到调用链后进入 Step 1。
+
 ### Step 1：梳理完整攻击链路
 
-对每个（入口, WebView终点）配对，追踪完整数据流：
+基于 GitNexus 给出的跨文件调用链 + 手动代码阅读，追踪完整数据流：
 
 ```
 DeepLink / Want 参数入口
@@ -166,7 +183,15 @@ flow 中每一步必须有 `snippet`（实际源码），不可只有文字：
 
 ## 输出
 
-`harmony-webview-audit-attack-paths.json`
+每个攻击路径独立输出一个分片文件。**必须使用 Write 工具写入磁盘，不可仅在对话中展示 JSON。**
+
+文件命名：`harmony-webview-audit-attack-paths-{attack_map路径ID}.json`
+
+例如：`harmony-webview-audit-attack-paths-path-003.json`
+
+Phase 3 聚合器会自动合并所有 `harmony-webview-audit-attack-paths-*.json` 分片。
+
+### 整体输出结构
 
 ```json
 {
