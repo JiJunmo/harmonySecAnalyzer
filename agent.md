@@ -101,15 +101,8 @@ metadata_path="$AUDIT_DIR/harmony-project-parser-findings.json"
 
  2. **创建审计工作目录并加载 harmony-project-parser skill**
     - 按「输出目录约定」章节的命令创建 `$AUDIT_DIR`
-    - 加载 `skills/harmony-project-parser/SKILL.md`
-    - 执行扫描脚本，生成两份文件：
-      ```bash
-      # 完整元数据（供下游 skill 使用）
-      $PY skills/harmony-project-parser/scripts/project_scanner.py <project_path> -o <audit_dir>/harmony-project-parser-findings.json --pretty
-
-      # 审计调度计划（供 AI 编排器使用，< 2KB）
-      $PY skills/harmony-project-parser/scripts/project_scanner.py <project_path> --audit-plan -o <audit_dir>/harmony-project-parser-audit-plan.json --pretty
-      ```
+    - **使用 Skill 工具加载 `skills/harmony-project-parser/SKILL.md`**
+    - 按照 SKILL.md 中的指令执行项目扫描，输出到 `<audit_dir>/`
     - **只读取 `<audit_dir>/harmony-project-parser-audit-plan.json`**（不读完整 metadata）
 
 
@@ -148,11 +141,8 @@ project_path: <项目路径>
 
 ### 执行
 
-```bash
-python3 skills/harmony-project-parser/scripts/project_scanner.py --list-entries <project_path> -o <audit_dir>/harmony-project-parser-entries.json --pretty
-```
-
-若 `python3` 不可用（如 Windows），改为 `python`。
+- **使用 Skill 工具加载 `skills/harmony-project-parser/SKILL.md`** 中的入口发现指令
+- 执行入口扫描，输出到 `<audit_dir>/harmony-project-parser-entries.json`
 
 ### 输出
 
@@ -334,12 +324,10 @@ for warning in warnings:
 
 ## Phase 3: 聚合去重
 
-### Step 1: 运行聚合脚本
+### Step 1: 运行聚合
 
-```bash
-python3 skills/harmony-report-generator/scripts/report_aggregator.py <audit_dir> --project-root . -o <audit_dir>/aggregated_data.json --pretty
-```
-若 `python3` 不可用（如 Windows），改为 `python`。
+- **使用 Skill 工具加载 `skills/harmony-report-generator/SKILL.md`** 中的聚合指令
+- 执行聚合脚本，生成 `<audit_dir>/aggregated_data.json`
 
 聚合脚本自动完成：
 

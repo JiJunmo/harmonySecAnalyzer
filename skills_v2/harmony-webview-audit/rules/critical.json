@@ -1,0 +1,43 @@
+{
+  "rules": [
+    {
+      "id": "WEB-001",
+      "severity": "critical",
+      "cwe": "CWE-749",
+      "owasp": "M2",
+      "title": "registerJavaScriptProxy 注入可执行任意系统 API 的对象",
+      "description": "JS Bridge 暴露的对象方法内部调用了文件读写、数据库操作等系统 API，且未校验调用方身份和参数。攻击者通过 XSS 可在 Web 端调用这些方法，实现远程代码执行或敏感数据窃取。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["registerJavaScriptProxy"],
+        "context_checks": [
+          "@ohos.file",
+          "@ohos.data",
+          "fileIo.open",
+          "fileIo.write",
+          "relationalStore",
+          "rdbStore.executeSql"
+        ]
+      },
+      "remediation": "1. 仅暴露 UI 交互方法给 Web 端（如 showToast、setTitle），绝不暴露文件 IO、数据库操作等系统 API\n2. 每个 Native 方法入口处校验调用方 origin: controller.getAllowedOriginRules()\n3. 所有参数做类型和范围校验\n4. 敏感操作添加用户二次确认",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-webview"
+    },
+    {
+      "id": "WEB-002",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "owasp": "M2",
+      "title": "onInterceptRequest 未校验外部 URL 即加载",
+      "description": "资源拦截器 onInterceptRequest 回调中直接 web.loadUrl() 或 web.loadData() 加载外部传入的 URL，未校验协议白名单和域名白名单。攻击者可构造恶意 URL 通过拦截器加载任意网页内容或触发 SSRF。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["onInterceptRequest"],
+        "negative_patterns": ["url.startsWith", "indexOf", "URL_CHECK", "ALLOWED_HOSTS", "white"]
+      },
+      "remediation": "在 onInterceptRequest 中校验 URL scheme 仅允许 https，并检查 host 是否在白名单内。禁止从 request.getRequestUrl() 直接传给 web.loadUrl()。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-webview"
+    }
+  ]
+}
