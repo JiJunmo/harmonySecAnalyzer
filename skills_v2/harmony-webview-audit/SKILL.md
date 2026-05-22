@@ -46,6 +46,8 @@ gitnexus_query({query: "从 onCreate/want.parameters 到 WebView/loadUrl 的执�
 
 GitNexus 能给出精确的跨文件调用链（含文件和行号），替代当前脚本的同文件粗筛。拿到调用链后进入 Step 1。
 
+**降级策略**：GitNexus 可能无法准确追踪基于 ArkTS 装饰器（如 `@StorageLink`、`AppStorage.setOrCreate`、`@Provide`/`@Consume`）的隐式状态流转。如果追踪中断，你必须自行使用 `grep_search` 工具搜索相关全局状态键值或变量名，通过分析搜索结果来补全数据流链路，切勿停止工作等待人类介入。
+
 ### Step 1：梳理完整攻击链路
 
 基于 GitNexus 给出的跨文件调用链 + 手动代码阅读，追踪完整数据流：
@@ -114,7 +116,7 @@ JS Bridge 方法注册（registerJavaScriptProxy 注册了哪些方法？）
 
 ### Step 4：对照规则 + 记录漏洞
 
-对照 `rules/*.json` 逐条检查，对每个命中生成完整漏洞记录。**核心要求与 IPC Skill 一致**：
+请结合前几步发现的特征 API 和敏感操作，使用 `grep_search` 工具在 `rules` 目录下搜索相关关键字，仅加载和阅读匹配的具体规则，避免盲目加载全部规则导致上下文膨胀。对每个命中的规则生成完整漏洞记录。**核心要求与 IPC Skill 一致**：
 
 **A. 列出所有 JS Bridge 方法**
 

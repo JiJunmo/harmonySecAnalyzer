@@ -28,10 +28,12 @@ def aggregate(audit_dir: str) -> dict:
 
     # 读取所有 attack-paths 分片（匹配 *-attack-paths*.json）
     all_paths = []
+    processed_files_count = 0
     for fpath in sorted(audit_path.glob("*-attack-paths*.json")):
         try:
             data = json.loads(fpath.read_text(encoding="utf-8"))
             all_paths.extend(data.get("attack_paths", []))
+            processed_files_count += 1
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -53,16 +55,16 @@ def aggregate(audit_dir: str) -> dict:
         max_p = len(all_paths) * 10
         risk = min(100, round(total / max_p * 100)) if max_p else 0
 
-    # 计数校验：对比 attack_map 和实际验证数
+    # 计数校验：对比 attack_map 和实际执行完成的 Task 文件数
     warnings = []
     map_path = audit_path / "attack_map.json"
     if map_path.exists():
         try:
             amap = json.loads(map_path.read_text(encoding="utf-8"))
             expected = amap.get("_meta", {}).get("count", 0)
-            actual = len(all_paths)
-            if actual < expected:
-                warnings.append(f"潜在路径 {expected} 条，实际验证 {actual} 条，可能遗漏")
+            actual_tasks = processed_files_count
+            if actual_tasks < expected:
+                warnings.append(f"潜在路径 {expected} 条，实际完成 Task {actual_tasks} 个，可能漏分析")
         except (json.JSONDecodeError, OSError):
             pass
 

@@ -62,62 +62,70 @@ cd <project_path> && npx gitnexus analyze
 | `ipc_service` | `harmony-ipc-security-audit` | **每个 IPC 服务一个独立 Task** |
 | `deeplink` + `url_callback` | `harmony-webview-audit` | 按 attack_map 中 sink_type=webview 的路径派发 |
 
-### IPC 审计调度（按模块，每个服务一个 Task）
+### IPC 审计调度（动态批处理）
 
-Phase 1 已筛选出对所有三方应用开放的 IPC 服务（type=service, exported=true, 非系统权限守卫）。每个服务派发一个独立 Task：
+Phase 1 已筛选出对所有三方应用开放的 IPC 服务（type=service, exported=true, 非系统权限守卫）。为了避免调度过度和 API 并发过高，我们将 IPC 服务按每 5 个一批（Batch）进行派发：
 
 ```python
 ipc_entries = [e for e in entries if e["type"] == "ipc_service"]
 
-for entry in ipc_entries:
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+for i, batch_entries in enumerate(chunks(ipc_entries, 5)):
+    entries_desc = "\n".join([f"- 服务名: {e['handler']}, 源码: {e['src_entry']}, 模块: {e['file']}" for e in batch_entries])
+    
     Task(
         subagent_type="general",
-        description=f"IPC audit: {entry['handler']}",
+        description=f"IPC audit batch {i}",
         prompt=f"""使用 Skill 工具加载 skills_v2/harmony-ipc-security-audit/SKILL.md。
 
-审计这个 IPC 服务：
-- 服务名: {entry['handler']}
-- 源码入口: {entry['src_entry']}
-- 模块: {entry['file']}
+请一次性审计以下 {len(batch_entries)} 个 IPC 服务：
+{entries_desc}
 
-按 SKILL.md 的四步流程执行：
+对每个服务按 SKILL.md 的四步流程执行：
 1. 梳理完整业务流程（输入→分发→执行→输出）
 2. 逐分支判断敏感度
 3. 对照 rules/*.json 检查安全风险
 4. 若有漏洞，生成 AttackPath
 
-**必须使用 Write 工具将 AttackPath JSON 写入磁盘，文件名: {audit_dir}/harmony-ipc-security-audit-attack-paths-{entry['handler']}.json**
+**必须使用 Write 工具将这批服务的 AttackPath 合并为一个 JSON 数组写入磁盘，文件名: {audit_dir}/harmony-ipc-security-audit-attack-paths-batch-{i}.json**
+注意：如果这批服务均无安全风险或不可达，也必须写入包含空数组的文件：`{{"attack_paths": []}}` 以完成检查点。
 
 项目路径: {project_path}
 audit_dir: {audit_dir}
 """,
-        task_id=f"ipc-{entry['id']}"
+        task_id=f"ipc-batch-{i}"
     )
 ```
 
-### WebView 审计调度（按 attack_map 路径）
+### WebView 审计调度（动态批处理）
 
-对 `attack_map.json` 中 `sink_type=webview` 的路径：
+对 `attack_map.json` 中 `sink_type=webview` 的路径，同样按每 5 条路径一批（Batch）进行派发：
 
 ```python
-for path in [p for p in attack_map if p["sink_type"] == "webview"]:
+webview_paths = [p for p in attack_map if p["sink_type"] == "webview"]
+
+for i, batch_paths in enumerate(chunks(webview_paths, 5)):
+    paths_desc = "\n".join([f"- 路径 {p['id']}: 入口 {p['entry_id']} → 终点 {p['sink_id']}" for p in batch_paths])
+
     Task(
         subagent_type="general",
-        description=f"WebView: {path['entry_type']}→{path['sink_type']}",
+        description=f"WebView audit batch {i}",
         prompt=f"""使用 Skill 工具加载 skills_v2/harmony-webview-audit/SKILL.md。
 
-验证这条攻击路径是否可达：
-- 入口: entries.json 中的 {path['entry_id']}
-- 终点: sinks.json 中的 {path['sink_id']}
+请验证以下 {len(batch_paths)} 条 WebView 攻击路径是否真实可达：
+{paths_desc}
 
-若可达，生成 AttackPath。
-**必须使用 Write 工具将 AttackPath JSON 写入磁盘，文件名: {audit_dir}/harmony-webview-audit-attack-paths-{path['id']}.json**
-若不可达，跳过。
+对每条路径，若可达且存在安全风险，生成 AttackPath。
+**必须使用 Write 工具将这批路径的 AttackPath 合并为一个 JSON 数组写入磁盘，文件名: {audit_dir}/harmony-webview-audit-attack-paths-batch-{i}.json**
+注意：如果这批路径均不可达或无风险，也必须写入包含空数组的文件：`{{"attack_paths": []}}` 以完成检查点。
 
 项目路径: {project_path}
 audit_dir: {audit_dir}
 """,
-        task_id=f"webview-{path['id']}"
+        task_id=f"webview-batch-{i}"
     )
 ```
 

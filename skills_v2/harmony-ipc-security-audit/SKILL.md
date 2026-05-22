@@ -92,7 +92,7 @@ reply 回包 / 全局状态变更 / 文件写入 / 数据库操作 / 网络请�
 
 ### Step 3：对照规则检查安全风险
 
-确定是敏感业务后，从 `rules/*.json` 加载全部规则，逐条检查：
+确定是敏感业务后，请结合发现的特征 API（如 `fileIo`, `getCallingUid` 等），使用 `grep_search` 工具在 `rules` 目录下搜索相关关键字，仅加载和阅读匹配的具体规则。避免盲目加载全部规则导致上下文膨胀。逐条检查：
 
 **检查清单**：
 
@@ -116,11 +116,12 @@ reply 回包 / 全局状态变更 / 文件写入 / 数据库操作 / 网络请�
 
 对每个存在敏感分支的 IPC 服务，生成完整的漏洞记录。**核心要求**：
 
-**A. 梳理所有 code 分支**
+**A. 梳理敏感的 code 分支**
 
-服务有多少个 case 就列多少个分支，每个都要分析。格式：
+不要把所有非敏感分支都写入 `cases` 数组。`cases` 数组中仅保留**判定为敏感或有安全风险**的分支。对于其他非敏感分支，统一归纳到新增的 `non_sensitive_summary` 字段中说明即可，以节省输出空间。格式：
 
 ```json
+"non_sensitive_summary": "code 1004 / default 仅做日志记录，无敏感操作",
 "cases": [
   {
     "code": 1001,
@@ -147,12 +148,6 @@ reply 回包 / 全局状态变更 / 文件写入 / 数据库操作 / 网络请�
     "input": "无",
     "output": "reply.writeString(dataStatus.parcelableData + dataStatus.arrayBufferData)",
     "sensitive_reason": "直接返回全局状态，泄露其他客户端的数据"
-  },
-  {
-    "code": "default",
-    "description": "记录未知 code 日志",
-    "sensitive": false,
-    "sensitive_reason": "仅 hilog.info，无敏感操作"
   }
 ]
 ```
@@ -227,6 +222,7 @@ Phase 3 聚合器会自动合并所有 `harmony-ipc-security-audit-attack-paths-
       "severity": "critical",
       "title": "IPC 服务无身份校验 → 任意应用可读写全局状态中的用户数据",
 
+      "non_sensitive_summary": "default 分支仅做日志记录，无敏感操作",
       "cases": [
         {
           "code": 1001,
@@ -245,12 +241,6 @@ Phase 3 聚合器会自动合并所有 `harmony-ipc-security-audit-attack-paths-
           "output": "无回包，写入 dataStatus.arrayBufferData",
           "snippet": "let result = data.readArrayBuffer(rpc.TypeCode.UINT8_ARRAY);\nlet decoder = util.TextDecoder.create('utf-8');\nlet stringData = decoder.decodeWithStream(new Uint8Array(result));\ndataStatus.updataArrayBuffer(stringData);",
           "sensitive_reason": "攻击者控制的 ArrayBuffer 解码后写入全局变量，且未检查 byteLength（可触发 OOM）"
-        },
-        {
-          "code": "default",
-          "description": "记录未知 code 日志",
-          "sensitive": false,
-          "sensitive_reason": "仅 hilog.info，无敏感操作"
         }
       ],
 
