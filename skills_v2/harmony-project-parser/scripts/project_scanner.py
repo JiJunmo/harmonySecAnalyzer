@@ -172,6 +172,46 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
                 "snippet": json.dumps(ext, ensure_ascii=False)[:400],
             })
 
+    # exported UIAbility 作为入口（从 modules 中提取）
+    for mod in modules:
+        mod_json_path = mod.get("module_path", "")
+        if not mod_json_path:
+            continue
+        mod_base = Path(mod_json_path).parent.parent.parent
+
+        for ab in mod.get("abilities", []):
+            if ab.get("exported") is not True:
+                continue
+            if ab.get("filtered_by_system_permission") is True:
+                continue
+            src_entry = ab.get("src_entry", "")
+            if not src_entry:
+                continue
+
+            ab_file_path = (mod_base / "src" / "main" / src_entry.lstrip("./")).as_posix()
+            try:
+                rel_ab_path = Path(ab_file_path).resolve().relative_to(root).as_posix()
+            except ValueError:
+                rel_ab_path = ab_file_path
+
+            counter += 1
+            entries.append({
+                "id": f"entry-{counter:03d}",
+                "type": "exported_ability",
+                "file": rel_ab_path,
+                "line": 0,
+                "handler": f"UIAbility({ab.get('name', '')})",
+                "controlled_params": ["want"],
+                "exported": True,
+                "src_entry": src_entry,
+                "snippet": json.dumps({
+                    "name": ab.get("name"),
+                    "exported": ab.get("exported"),
+                    "permissions": ab.get("permissions"),
+                    "skills": ab.get("skills")
+                }, ensure_ascii=False)[:400],
+            })
+
     return entries
 
 
@@ -305,6 +345,30 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
                 "target": m.group(0),
             })
 
+        # Sink: Ability 启动 (重定向风险)
+        for m in re.finditer(r"(?:context\s*\.)?\s*startAbility(?:ForResult)?\s*\(", content):
+            counter += 1
+            line = content[:m.start()].count("\n") + 1
+            sinks.append({
+                "id": f"sink-{counter:03d}",
+                "type": "start_ability",
+                "file": sf["path"],
+                "line": line,
+                "target": m.group(0).strip(),
+            })
+
+        # Sink: Result 回传 (敏感信息泄露)
+        for m in re.finditer(r"(?:context\s*\.)?\s*terminateSelfWithResult\s*\(", content):
+            counter += 1
+            line = content[:m.start()].count("\n") + 1
+            sinks.append({
+                "id": f"sink-{counter:03d}",
+                "type": "terminate_result",
+                "file": sf["path"],
+                "line": line,
+                "target": m.group(0).strip(),
+            })
+
     return sinks
 
 
@@ -332,6 +396,12 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
         ("ipc", "file_write"),
         ("ipc_service", "data_exfil"),
         ("ipc_service", "file_write"),
+        ("exported_ability", "start_ability"),
+        ("exported_ability", "terminate_result"),
+        ("exported_ability", "webview"),
+        ("exported_ability", "file_write"),
+        ("exported_ability", "database"),
+        ("exported_ability", "network"),
     }
 
     for entry in entries:
@@ -344,6 +414,11 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
                 counter += 1
                 seen.add(pair_key)
                 is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
+                is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
+
+                conf = "high_verified_deeplink" if is_high_verified else ("high_verified_ability" if is_high_ability else "same_file")
+                note = f"真实外部 DeepLink 入口通过同文件直接流向 WebView，极高置信度" if is_high_verified else (f"公开 UIAbility 跨方法流向 {sink['target']}，高置信度" if is_high_ability else f"入口 {entry['handler']} 和终点 {sink['target']} 在同一文件，极可能可达")
+
                 paths.append({
                     "id": f"path-{counter:03d}",
                     "entry_id": entry["id"],
@@ -351,13 +426,18 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
                     "entry_type": entry["type"],
                     "sink_type": sink["type"],
                     "file": entry["file"],
-                    "confidence": "high_verified_deeplink" if is_high_verified else "same_file",
-                    "note": f"真实外部 DeepLink 入口通过同文件直接流向 WebView，极高置信度" if is_high_verified else f"入口 {entry['handler']} 和终点 {sink['target']} 在同一文件，极可能可达",
+                    "confidence": conf,
+                    "note": note,
                 })
             elif os.path.dirname(entry["file"]) == os.path.dirname(sink["file"]):
                 counter += 1
                 seen.add(pair_key)
                 is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
+                is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
+
+                conf = "high_verified_deeplink" if is_high_verified else ("high_verified_ability" if is_high_ability else "same_dir")
+                note = f"真实外部 DeepLink 入口与 WebView 在同目录，可能通过函数调用直接到达，高置信度" if is_high_verified else (f"公开 UIAbility 与 {sink['target']} 在同目录，可能通过函数调用直接到达，高置信度" if is_high_ability else f"入口和终点在同一目录，可能通过函数调用可达")
+
                 paths.append({
                     "id": f"path-{counter:03d}",
                     "entry_id": entry["id"],
@@ -365,8 +445,8 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
                     "entry_type": entry["type"],
                     "sink_type": sink["type"],
                     "file": f"{entry['file']} ↔ {sink['file']}",
-                    "confidence": "high_verified_deeplink" if is_high_verified else "same_dir",
-                    "note": f"真实外部 DeepLink 入口与 WebView 在同目录，可能通过函数调用直接到达，高置信度" if is_high_verified else f"入口和终点在同一目录，可能通过函数调用可达",
+                    "confidence": conf,
+                    "note": note,
                 })
             elif (entry["type"], sink["type"]) in CROSS_MODULE_PAIRS:
                 counter += 1
@@ -378,9 +458,14 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
                 sink_module = sink_parts[0] if len(sink_parts) > 1 else ""
 
                 is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
+                is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
+
                 if is_high_verified:
                     conf = "high_verified_deeplink"
                     note = f"真实外部 DeepLink 跨文件可能流向同模块 WebView，高置信度" if entry_module == sink_module else f"真实外部 DeepLink 跨文件可能流向跨模块 WebView，高置信度"
+                elif is_high_ability:
+                    conf = "high_verified_ability"
+                    note = f"公开 UIAbility 跨文件可能流向同模块 {sink['target']}，高置信度" if entry_module == sink_module else f"公开 UIAbility 跨文件可能流向跨模块 {sink['target']}，高置信度"
                 else:
                     conf = "same_module" if entry_module == sink_module else "cross_module"
                     note = f"外部入口 {entry['handler']} 可能通过路由/状态管理到达 {sink['target']}，需 AI 验证可达性"

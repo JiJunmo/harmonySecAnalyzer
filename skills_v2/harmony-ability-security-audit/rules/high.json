@@ -1,0 +1,36 @@
+{
+  "rules": [
+    {
+      "id": "ABILITY-003",
+      "severity": "high",
+      "cwe": "CWE-20",
+      "owasp": "M8",
+      "title": "公开 UIAbility 越权本地高危操作 (Unauthorized High-Risk Local Action)",
+      "description": "公开导出的 UIAbility 接受外部 `want.parameters` 传入的文件路径、SQL语句或URL参数，且完全没有合法性前缀与路径校验，直接流向本地沙箱文件读写（如 fileIo.openSync / fs.unlink）、数据库查询（如 relationalStore.executeSql）或外部网络请求 API。三方应用可以构造越权参数操控受害应用读取沙箱内任意文件或造成本地拒绝服务（删除重要数据）。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["want.parameters", "fileIo", "executeSql"],
+        "negative_patterns": []
+      },
+      "remediation": "1. 对外部传入的 parameters 进行严格的沙箱隔离和域名白名单校验。\n2. 校验文件路径仅能处于临时的 caches 目录下，不可越权访问 base/el2 等应用核心沙箱区。",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-file-fs"
+    },
+    {
+      "id": "ABILITY-004",
+      "severity": "high",
+      "cwe": "CWE-290",
+      "owasp": "M1",
+      "title": "调用包名白名单弱校验或前缀校验绕过 (Weak Calling Package Verification)",
+      "description": "公开导出的 UIAbility 即使通过 `getCallingBundleName()` 获取了调用方的包名，但在执行白名单匹配时使用了弱匹配策略（如 includes 包含判断，或者脆弱的 startsWith 判断，或是未严格锚定两端的正则表达式）。这使恶意第三方可以通过构造包名（如 'com.example.victim.attacker' 或 'com.example.victim_partner'）轻松绕过白名单，实现越权注入。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": ["getCallingBundleName", "includes", "startsWith"],
+        "negative_patterns": ["==="]
+      },
+      "remediation": "白名单匹配必须采用全等校验（`===`）或严格的首尾锚定正则：\nconst whitelist = ['com.example.trusted'];\nif (!whitelist.includes(caller)) { return; }",
+      "reference": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-inner-common-event"
+    }
+  ]
+}
