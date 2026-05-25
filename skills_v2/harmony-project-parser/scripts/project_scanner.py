@@ -377,10 +377,8 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
 # ============================================================
 
 def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
-    """将入口和 sink 配对，根据同文件/同模块/跨模块做可连性预判。"""
-    paths = []
-    counter = 0
-    seen: set[tuple[str, str]] = set()  # 去重：(entry_id, sink_id)
+    """将入口和 sink 配对，根据同文件/同模块/跨模块做可连性预判，并按 (entry_id, sink_file) 进行归并去重。"""
+    grouped_paths = {}  # dict[tuple[str, str], list[dict]]
 
     # 需要跨模块配对的 entry_type → sink_type 组合
     # 这些组合即使不在同一文件/目录下，也应生成攻击路径让 AI 验证
@@ -406,52 +404,26 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
 
     for entry in entries:
         for sink in sinks:
-            pair_key = (entry["id"], sink["id"])
-            if pair_key in seen:
-                continue
+            is_valid_pair = False
+            conf = "same_module"
+            note = ""
 
             if entry["file"] == sink["file"]:
-                counter += 1
-                seen.add(pair_key)
+                is_valid_pair = True
                 is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
                 is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
-
                 conf = "high_verified_deeplink" if is_high_verified else ("high_verified_ability" if is_high_ability else "same_file")
-                note = f"真实外部 DeepLink 入口通过同文件直接流向 WebView，极高置信度" if is_high_verified else (f"公开 UIAbility 跨方法流向 {sink['target']}，高置信度" if is_high_ability else f"入口 {entry['handler']} 和终点 {sink['target']} 在同一文件，极可能可达")
+                note = f"入口通过同文件直接流向终点，极高置信度"
 
-                paths.append({
-                    "id": f"path-{counter:03d}",
-                    "entry_id": entry["id"],
-                    "sink_id": sink["id"],
-                    "entry_type": entry["type"],
-                    "sink_type": sink["type"],
-                    "file": entry["file"],
-                    "confidence": conf,
-                    "note": note,
-                })
             elif os.path.dirname(entry["file"]) == os.path.dirname(sink["file"]):
-                counter += 1
-                seen.add(pair_key)
+                is_valid_pair = True
                 is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
                 is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
-
                 conf = "high_verified_deeplink" if is_high_verified else ("high_verified_ability" if is_high_ability else "same_dir")
-                note = f"真实外部 DeepLink 入口与 WebView 在同目录，可能通过函数调用直接到达，高置信度" if is_high_verified else (f"公开 UIAbility 与 {sink['target']} 在同目录，可能通过函数调用直接到达，高置信度" if is_high_ability else f"入口和终点在同一目录，可能通过函数调用可达")
+                note = f"入口与终点在同目录，可能通过函数直接到达，高置信度"
 
-                paths.append({
-                    "id": f"path-{counter:03d}",
-                    "entry_id": entry["id"],
-                    "sink_id": sink["id"],
-                    "entry_type": entry["type"],
-                    "sink_type": sink["type"],
-                    "file": f"{entry['file']} ↔ {sink['file']}",
-                    "confidence": conf,
-                    "note": note,
-                })
             elif (entry["type"], sink["type"]) in CROSS_MODULE_PAIRS:
-                counter += 1
-                seen.add(pair_key)
-                # 判断是否在同一顶层模块下
+                is_valid_pair = True
                 entry_parts = entry["file"].split("/")
                 sink_parts = sink["file"].split("/")
                 entry_module = entry_parts[0] if len(entry_parts) > 1 else ""
@@ -462,24 +434,76 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
 
                 if is_high_verified:
                     conf = "high_verified_deeplink"
-                    note = f"真实外部 DeepLink 跨文件可能流向同模块 WebView，高置信度" if entry_module == sink_module else f"真实外部 DeepLink 跨文件可能流向跨模块 WebView，高置信度"
                 elif is_high_ability:
                     conf = "high_verified_ability"
-                    note = f"公开 UIAbility 跨文件可能流向同模块 {sink['target']}，高置信度" if entry_module == sink_module else f"公开 UIAbility 跨文件可能流向跨模块 {sink['target']}，高置信度"
                 else:
                     conf = "same_module" if entry_module == sink_module else "cross_module"
-                    note = f"外部入口 {entry['handler']} 可能通过路由/状态管理到达 {sink['target']}，需 AI 验证可达性"
+                note = f"外部入口可能通过路由/状态管理到达跨文件终点，需 AI 验证可达性"
 
-                paths.append({
-                    "id": f"path-{counter:03d}",
-                    "entry_id": entry["id"],
+            if is_valid_pair:
+                key = (entry["id"], sink["file"])
+                if key not in grouped_paths:
+                    grouped_paths[key] = []
+                grouped_paths[key].append({
                     "sink_id": sink["id"],
-                    "entry_type": entry["type"],
                     "sink_type": sink["type"],
-                    "file": f"{entry['file']} ↔ {sink['file']}",
                     "confidence": conf,
-                    "note": note,
+                    "target": sink.get("target", sink["type"]),
+                    "entry": entry
                 })
+
+    # 合并并生成最终的 attack_map
+    paths = []
+    counter = 0
+
+    # 评级优先级权重表 (用于选举合并路径后的最终置信度)
+    CONFIDENCE_WEIGHTS = {
+        "high_verified_deeplink": 6,
+        "high_verified_ability": 5,
+        "same_file": 4,
+        "same_dir": 3,
+        "same_module": 2,
+        "cross_module": 1
+    }
+
+    # 排序使输出更加确定有序
+    for key in sorted(grouped_paths.keys()):
+        entry_id, sink_file = key
+        sub_pairs = grouped_paths[key]
+
+        counter += 1
+        entry = sub_pairs[0]["entry"]
+
+        # 归并 Sinks
+        sink_ids = sorted(list(set(sp["sink_id"] for sp in sub_pairs)))
+        sink_types = sorted(list(set(sp["sink_type"] for sp in sub_pairs)))
+
+        # 选举最高的置信度
+        highest_conf = "cross_module"
+        highest_weight = 0
+        for sp in sub_pairs:
+            w = CONFIDENCE_WEIGHTS.get(sp["confidence"], 0)
+            if w > highest_weight:
+                highest_weight = w
+                highest_conf = sp["confidence"]
+
+        # 组合生成说明 Note
+        targets_str = ", ".join(sorted(list(set(sp["target"] for sp in sub_pairs))))
+        if entry["file"] == sink_file:
+            note = f"真实入口 {entry['handler']} ➜ 同文件所有高危终点 [{targets_str}]，置信度: {highest_conf}"
+        else:
+            note = f"真实入口 {entry['handler']} ➜ 跨文件终点 [{targets_str}]，置信度: {highest_conf}"
+
+        paths.append({
+            "id": f"path-{counter:03d}",
+            "entry_id": entry_id,
+            "sink_ids": sink_ids,
+            "sink_types": sink_types,
+            "entry_type": entry["type"],
+            "file": entry["file"] if entry["file"] == sink_file else f"{entry['file']} ↔ {sink_file}",
+            "confidence": highest_conf,
+            "note": note
+        })
 
     return paths
 
