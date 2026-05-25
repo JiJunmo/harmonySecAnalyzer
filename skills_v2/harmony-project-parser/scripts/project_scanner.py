@@ -54,12 +54,55 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
             continue
 
         # DeepLink / Want 参数入口
-        for m in re.finditer(r"(?:want|Want)\s*(?:\.|\[\s*['\"])\s*parameters\s*(?:\.|\[\s*['\"])(\w+)", content):
+        for m in re.finditer(r"(?:want|Want)\s*(?:\??\.|\[\s*['\"])\s*parameters\s*(?:\??\.|\[\s*['\"])(\w+)", content):
             counter += 1
             line = content[:m.start()].count("\n") + 1
             start = max(0, m.start() - 150)
             end = min(len(content), m.end() + 250)
-            entries.append({
+
+            # Check if this file is a verified deep link entry point in module.json5
+            verified_deeplink = False
+            deeplink_configs = []
+
+            # Normalize current ets file path to absolute path relative to project root
+            current_file_path = (root / sf["path"]).resolve().as_posix()
+
+            for mod in modules:
+                mod_json_path = mod.get("module_path", "")
+                if not mod_json_path:
+                    continue
+                # module_path is e.g. "entry/src/main/module.json5" -> parent is "entry/src/main" -> parent is "entry"
+                mod_base = Path(mod_json_path).parent.parent.parent
+
+                for ab in mod.get("abilities", []):
+                    src_entry = ab.get("src_entry", "")
+                    if not src_entry:
+                        continue
+
+                    # Ability's source entry is relative to "<module_base>/src/main/"
+                    ab_file_path = (mod_base / "src" / "main" / src_entry.lstrip("./")).as_posix()
+
+                    if Path(ab_file_path).resolve() == Path(current_file_path).resolve():
+                        if ab.get("exported") is True:
+                            skills = ab.get("skills", [])
+                            uris = []
+                            for skill in skills:
+                                if "uris" in skill:
+                                    uris.extend(skill["uris"])
+                            if uris:
+                                verified_deeplink = True
+                                for u in uris:
+                                    deeplink_configs.append({
+                                        "scheme": u.get("scheme", ""),
+                                        "host": u.get("host", ""),
+                                        "port": u.get("port", ""),
+                                        "path": u.get("path", "") or u.get("pathStartWith", "") or u.get("pathRegex", "")
+                                    })
+                        break
+                if verified_deeplink:
+                    break
+
+            entry_data = {
                 "id": f"entry-{counter:03d}",
                 "type": "deeplink",
                 "file": sf["path"],
@@ -67,7 +110,12 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
                 "handler": "want.parameters",
                 "controlled_params": [m.group(1)],
                 "snippet": content[start:end].strip()[:400],
-            })
+            }
+            if verified_deeplink:
+                entry_data["verified_deeplink"] = True
+                entry_data["deeplink_configs"] = deeplink_configs
+
+            entries.append(entry_data)
 
         # IPC 消息入口
         for m in re.finditer(r"onRemoteMessageRequest\s*\(", content):
@@ -172,17 +220,38 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
                 "note": "攻击者数据写入全局状态",
             })
 
-        # Sink: WebView 加载点
-        idx = 0
-        while True:
-            idx = content.find("Web({", idx)
-            if idx == -1:
-                break
+        # Sink: WebView 加载点（正则匹配，兼容换行和空格）
+        for wm in re.finditer(r'Web\s*\(\s*\{', content):
             counter += 1
+            idx = wm.start()
             line = content[:idx].count("\n") + 1
-            src_m = re.search(r"src:\s*['\"]([^'\"]+)['\"]", content[idx:idx + 300])
-            src_url = src_m.group(1) if src_m else "动态/变量"
-            has_jsbridge = "registerJavaScriptProxy" in content[idx:idx + 1000]
+            # 提取 Web 组件后续 2000 字符用于属性分析
+            web_block = content[idx:idx + 2000]
+
+            # 提取 src（支持字符串字面量、$rawfile、变量引用）
+            src_m = re.search(r"src:\s*(?:(\$rawfile\s*\([^)]*\))|['\"]([^'\"]+)['\"]|([\w.]+(?:\?\.\w+)*))", web_block)
+            if src_m:
+                src_url = src_m.group(1) or src_m.group(2) or f"var:{src_m.group(3)}"
+            else:
+                src_url = "未识别"
+
+            # 提取关键 Web 属性配置
+            web_settings = {}
+            for attr in ["javaScriptAccess", "fileAccess", "domStorageAccess",
+                         "mixedMode", "onlineImageAccess", "imageAccess",
+                         "geolocationAccess", "databaseAccess"]:
+                attr_m = re.search(rf"\.{attr}\s*\(\s*(true|false|WebMixedMode\.\w+)", web_block)
+                if attr_m:
+                    val = attr_m.group(1)
+                    web_settings[attr] = val == "true" if val in ("true", "false") else val
+
+            # 在整个文件中搜索 JS Bridge 和 WebMessagePort（不限定距离）
+            has_jsbridge = "registerJavaScriptProxy" in content
+            has_message_port = "createWebMessagePorts" in content
+
+            is_local_resource = src_url.startswith("$rawfile")
+            is_dynamic = src_url.startswith("var:") or src_url == "未识别"
+
             sinks.append({
                 "id": f"sink-{counter:03d}",
                 "type": "webview",
@@ -191,11 +260,14 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
                 "target": f"WebView(src={src_url})",
                 "features": {
                     "js_bridge": has_jsbridge,
-                    "external_url": not src_url.startswith("$") and "rawfile" not in src_url,
+                    "message_port": has_message_port,
+                    "external_url": not is_local_resource,
+                    "local_resource": is_local_resource,
+                    "dynamic_src": is_dynamic,
+                    "web_settings": web_settings,
                 },
                 "snippet": content[idx:idx + 500].strip()[:400],
             })
-            idx += 5
 
         # Sink: 文件写入
         for m in re.finditer(r"(?:fileIo|fs)\s*\.\s*(?:openSync|writeSync|write|writeText)", content):
@@ -241,15 +313,37 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
 # ============================================================
 
 def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
-    """将入口和 sink 配对，根据同文件/同模块做轻量可连性预判。"""
+    """将入口和 sink 配对，根据同文件/同模块/跨模块做可连性预判。"""
     paths = []
     counter = 0
+    seen: set[tuple[str, str]] = set()  # 去重：(entry_id, sink_id)
+
+    # 需要跨模块配对的 entry_type → sink_type 组合
+    # 这些组合即使不在同一文件/目录下，也应生成攻击路径让 AI 验证
+    CROSS_MODULE_PAIRS = {
+        ("deeplink", "webview"),
+        ("deeplink", "file_write"),
+        ("deeplink", "database"),
+        ("deeplink", "network"),
+        ("deeplink", "state_mutation"),
+        ("deeplink", "data_exfil"),
+        ("url_callback", "webview"),
+        ("ipc", "data_exfil"),
+        ("ipc", "file_write"),
+        ("ipc_service", "data_exfil"),
+        ("ipc_service", "file_write"),
+    }
 
     for entry in entries:
         for sink in sinks:
-            # 基本过滤：同文件才有意义做配对（跨文件需要 AI 验证）
+            pair_key = (entry["id"], sink["id"])
+            if pair_key in seen:
+                continue
+
             if entry["file"] == sink["file"]:
                 counter += 1
+                seen.add(pair_key)
+                is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
                 paths.append({
                     "id": f"path-{counter:03d}",
                     "entry_id": entry["id"],
@@ -257,11 +351,13 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
                     "entry_type": entry["type"],
                     "sink_type": sink["type"],
                     "file": entry["file"],
-                    "confidence": "same_file",
-                    "note": f"入口 {entry['handler']} 和终点 {sink['target']} 在同一文件，极可能可达",
+                    "confidence": "high_verified_deeplink" if is_high_verified else "same_file",
+                    "note": f"真实外部 DeepLink 入口通过同文件直接流向 WebView，极高置信度" if is_high_verified else f"入口 {entry['handler']} 和终点 {sink['target']} 在同一文件，极可能可达",
                 })
             elif os.path.dirname(entry["file"]) == os.path.dirname(sink["file"]):
                 counter += 1
+                seen.add(pair_key)
+                is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
                 paths.append({
                     "id": f"path-{counter:03d}",
                     "entry_id": entry["id"],
@@ -269,8 +365,35 @@ def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
                     "entry_type": entry["type"],
                     "sink_type": sink["type"],
                     "file": f"{entry['file']} ↔ {sink['file']}",
-                    "confidence": "same_dir",
-                    "note": f"入口和终点在同一目录，可能通过函数调用可达",
+                    "confidence": "high_verified_deeplink" if is_high_verified else "same_dir",
+                    "note": f"真实外部 DeepLink 入口与 WebView 在同目录，可能通过函数调用直接到达，高置信度" if is_high_verified else f"入口和终点在同一目录，可能通过函数调用可达",
+                })
+            elif (entry["type"], sink["type"]) in CROSS_MODULE_PAIRS:
+                counter += 1
+                seen.add(pair_key)
+                # 判断是否在同一顶层模块下
+                entry_parts = entry["file"].split("/")
+                sink_parts = sink["file"].split("/")
+                entry_module = entry_parts[0] if len(entry_parts) > 1 else ""
+                sink_module = sink_parts[0] if len(sink_parts) > 1 else ""
+
+                is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
+                if is_high_verified:
+                    conf = "high_verified_deeplink"
+                    note = f"真实外部 DeepLink 跨文件可能流向同模块 WebView，高置信度" if entry_module == sink_module else f"真实外部 DeepLink 跨文件可能流向跨模块 WebView，高置信度"
+                else:
+                    conf = "same_module" if entry_module == sink_module else "cross_module"
+                    note = f"外部入口 {entry['handler']} 可能通过路由/状态管理到达 {sink['target']}，需 AI 验证可达性"
+
+                paths.append({
+                    "id": f"path-{counter:03d}",
+                    "entry_id": entry["id"],
+                    "sink_id": sink["id"],
+                    "entry_type": entry["type"],
+                    "sink_type": sink["type"],
+                    "file": f"{entry['file']} ↔ {sink['file']}",
+                    "confidence": conf,
+                    "note": note,
                 })
 
     return paths

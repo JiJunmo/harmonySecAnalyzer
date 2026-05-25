@@ -5,11 +5,12 @@ description: v2 — 审计 WebView 攻击路径：从外部入口出发，追踪
 
 # harmony-webview-audit v2
 
-审计鸿蒙应用中 WebView 的攻击路径。只审计有外部可控入口的 WebView，从入口出发追踪参数到 WebView 加载点，逐方法分析 JS Bridge 暴露面，逐策略分析拦截器安全性，输出完整攻击链路。
-
 ## 前置条件
 
 Phase 1 发现的外部入口（`type=deeplink`、`type=url_callback`）和 WebView 终点（`sink_type=webview`）。
+
+**优先审计路径**：
+- 任何在 `attack_map.json` 中被标记为 `"confidence": "high_verified_deeplink"` 的路径为**最高优先级**。这些路径起于通过 `module.json5` 配置校验的真实外部 DeepLink 入口，且归属于某个 `exported: true` 的 Ability。
 
 **不可达场景 → 直接跳过，不审计**：
 - WebView 的 `src` 是 `$rawfile()` 本地固定页面，且无任何外部参数能流入
@@ -21,30 +22,34 @@ Phase 1 发现的外部入口（`type=deeplink`、`type=url_callback`）和 WebV
 | 数据 | 来源 |
 |------|------|
 | 项目源码 | 用户提供的 project_path |
-| `entries.json` | Phase 1 的外部入口 |
+| `entries.json` | Phase 1 的外部入口（含有 `verified_deeplink` 标记的真实对外接口） |
 | `sinks.json` | Phase 1 的 WebView 终点 |
-| `attack_map.json` | Phase 1 的入口→终点配对 |
+| `attack_map.json` | Phase 1 的入口→终点配对（优先关注 `high_verified_deeplink`） |
 | 规则知识库 | `skills_v2/harmony-webview-audit/rules/*.json` |
 | WebView 领域知识 | `skills_v2/harmony-webview-audit/WEBVIEW_REFERENCE.md` |
 
 ## 审计流程（四步）
 
-### Step 0：利用 GitNexus 做跨文件追踪
+### Step 0：双向混合追踪 (Top-Down & Bottom-Up Hybrid)
 
-入口和 WebView 往往不在同一文件（路由传参、全局状态、跨模块 import）。先使用 GitNexus MCP 工具发现跨文件连接：
+由于入口和 WebView 往往不在同一文件，且 ArkTS 深度依赖装饰器（如 `@StorageLink`、`AppStorage.setOrCreate`、`@Provide`/`@Consume`）做解耦通信，传统的单向调用追踪极易断流。你必须采用**双向混合追踪策略**：
 
+#### 轨道一：自顶向下追踪 (Top-Down)
+以 `verified_deeplink` 或 `want.parameters` 入口为起点，顺流追溯参数被谁接收：
 ```
-# 对每个入口，查询其参数的下游流向
+# 使用 GitNexus 查询入口参数的下游流向
 gitnexus_query({query: "want.parameters 的下游调用和赋值追踪"})
-
-# 对关键变量，查询其 caller/callee 关系
-gitnexus_context({name: "variableName"})
-
-# 查询从入口到 WebView 的完整执行流
-gitnexus_query({query: "从 onCreate/want.parameters 到 WebView/loadUrl 的执行流"})
 ```
+- 如果顺利流向 WebView，直接进入 Step 1。
+- 如果流向 `AppStorage.setOrCreate('key', value)` 或 `router.pushUrl({ params: ... })` 等解耦传递点，传统图追踪会断流。**立刻切换到轨道二**。
 
-GitNexus 能给出精确的跨文件调用链（含文件和行号），替代当前脚本的同文件粗筛。拿到调用链后进入 Step 1。
+#### 轨道二：自底向上逆向 (Bottom-Up)
+以 `Web({ src: this.url })` 的渲染终点 (Sink) 为起点，逆流寻找 `this.url` 的来源：
+- 使用 `grep_search` 寻找所有修改了该成员变量、或者与之绑定的状态修饰符（如 `@StorageLink('key')`）。
+- 找到对应的状态写入点（如 `AppStorage.setOrCreate('key', param)`）。
+
+#### 双向缝合 (Flow Suture)
+将轨道一的“入口参数写入点”与轨道二的“WebView 读取状态/变量绑定点”在语义和数据流上完成拼接，即可确证一条完整的攻击链路！
 
 **降级策略**：GitNexus 可能无法准确追踪基于 ArkTS 装饰器（如 `@StorageLink`、`AppStorage.setOrCreate`、`@Provide`/`@Consume`）的隐式状态流转。如果追踪中断，你必须自行使用 `grep_search` 工具搜索相关全局状态键值或变量名，通过分析搜索结果来补全数据流链路，切勿停止工作等待人类介入。
 
