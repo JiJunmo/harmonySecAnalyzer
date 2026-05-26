@@ -54,12 +54,22 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
             continue
 
         # DeepLink / Want 参数入口
+        file_deeplinks = {}  # dict[str, list[dict]]
         for m in re.finditer(r"(?:want|Want)\s*(?:\??\.|\[\s*['\"])\s*parameters\s*(?:\??\.|\[\s*['\"])(\w+)", content):
-            counter += 1
+            param_name = m.group(1)
             line = content[:m.start()].count("\n") + 1
             start = max(0, m.start() - 150)
             end = min(len(content), m.end() + 250)
+            snippet = content[start:end].strip()[:400]
 
+            if param_name not in file_deeplinks:
+                file_deeplinks[param_name] = []
+            file_deeplinks[param_name].append({
+                "line": line,
+                "snippet": snippet
+            })
+
+        for param_name, matches in file_deeplinks.items():
             # Check if this file is a verified deep link entry point in module.json5
             verified_deeplink = False
             deeplink_configs = []
@@ -102,14 +112,19 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
                 if verified_deeplink:
                     break
 
+            counter += 1
+            lines = sorted(list(set(m["line"] for m in matches)))
+            snippets_summary = "\n---\n".join(f"[Line {m['line']}]: {m['snippet']}" for m in matches[:3])
+
             entry_data = {
                 "id": f"entry-{counter:03d}",
                 "type": "deeplink",
                 "file": sf["path"],
-                "line": line,
+                "line": lines[0],
+                "lines": lines,
                 "handler": "want.parameters",
-                "controlled_params": [m.group(1)],
-                "snippet": content[start:end].strip()[:400],
+                "controlled_params": [param_name],
+                "snippet": snippets_summary,
             }
             if verified_deeplink:
                 entry_data["verified_deeplink"] = True

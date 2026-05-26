@@ -51,6 +51,12 @@ gitnexus_query({query: "want.parameters 的下游调用和赋值追踪"})
 #### 双向缝合 (Flow Suture)
 将轨道一的“入口参数写入点”与轨道二的“WebView 读取状态/变量绑定点”在语义和数据流上完成拼接，即可确证一条完整的攻击链路！
 
+#### GitNexus 语义流等价性与重入防御遗漏分析
+当 `entries.json` 中的 `lines` 数组存在多个行号（表明同一参数在如 `onCreate` 和 `onNewWant` 中被多次提取）时，你必须使用 **GitNexus** 运行以下双向流向追踪查询：
+`gitnexus_query({query: "追踪 EntryAbility.ets 中 onCreate 和 onNewWant 两个生命周期的 want.parameters.xxx 下游流向并分析其防御交汇逻辑"})`
+- **语义折叠**：若 GitNexus 结果显示两条通路在下游均经过了相同的域名白名单或合法性校验函数（如汇聚到了同一个校验模块），说明它们在语义上 100% 等价。你只需归并为一条漏洞链进行报告以节省输出 Token。
+- **漏洞挖掘（重入防御缺失绕过）**：若 GitNexus 显示 `onNewWant` 的参数提取流向缺失了 `onCreate` 本已具备的域名安全校验（极其经典的重入漏洞），这构成了高危的**“重入参数防护缺失绕过”**利用链！请务必在漏洞报告中详细展开此攻击链条。
+
 **降级策略**：GitNexus 可能无法准确追踪基于 ArkTS 装饰器（如 `@StorageLink`、`AppStorage.setOrCreate`、`@Provide`/`@Consume`）的隐式状态流转。如果追踪中断，你必须自行使用 `grep_search` 工具搜索相关全局状态键值或变量名，通过分析搜索结果来补全数据流链路，切勿停止工作等待人类介入。
 
 ### Step 1：梳理完整攻击链路

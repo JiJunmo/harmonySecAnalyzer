@@ -50,6 +50,12 @@ gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
 * 是否对返回的包名进行了白名单或硬编码域名正则校验？是否可被绕过？
 * 该 Ability 在 `module.json5` 里是否被配置了特定的自定义权限守卫？
 
+#### GitNexus 语义流等价性与重入防御遗漏分析
+当 `entries.json` 中的 `lines` 数组存在多个行号（表明同一参数在如 `onCreate` 和 `onNewWant` 中被多次提取）时，你必须使用 **GitNexus** 运行以下双向流向追踪查询：
+`gitnexus_query({query: "追踪 EntryAbility.ets 中 onCreate 和 onNewWant 两个生命周期的 want.parameters.xxx 下游流向并分析其防御交汇逻辑"})`
+- **语义折叠**：若 GitNexus 结果显示两条通路在下游均经过了相同的白名单校验逻辑，说明它们在语义上 100% 等价。你只需归并为一条漏洞链进行报告以节省输出 Token。
+- **漏洞挖掘（重入防御警惕）**：若 GitNexus 显示 `onNewWant` 的参数提取流向缺失了 `onCreate` 本已具备的安全防护（如包名白名单校验等），这构成了高危的**“重入防御缺失绕过”**利用链！请务必在利用说明（Exploitation）和利用 Payload 中重点展示这一重入攻击链条。
+
 ---
 
 ### Step 2：判定漏洞利用链类型 (Vulnerability Chain Types)
