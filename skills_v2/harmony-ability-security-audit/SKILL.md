@@ -1,18 +1,26 @@
 ---
 name: harmony-ability-security-audit
-description: v2 — 审计对三方应用开放的 UIAbility 漏洞路径：分析从 want 参数输入到高危 API 执行或能力重定向的全流程，确认漏洞真实可利用性，输出完整利用 Payload
+description: v2 (混合智能双轨方案) — 审计对外暴露的 UIAbility 边界防卫与参数流向追踪。发现 Ability 重定向与敏感信息回传漏洞，若发现参数流向 WebView，输出 Warm-Start 上下文级联触发 WebView 专项审计。
 ---
 
-# harmony-ability-security-audit v2
+# harmony-ability-security-audit v2 (混合智能双轨版)
 
-审计鸿蒙应用中**对所有三方应用开放的 UIAbility**（`exported=true`、非系统权限守卫），梳理每个 UIAbility 从 `want` 参数输入、参数校验、再到执行具体功能（如启动其他 Ability、返回敏感数据、本地文件读写等）的完整可利用漏洞路径。
+审计鸿蒙应用中**对所有三方应用开放的 UIAbility**（`exported=true`、非系统权限守卫），担任 **Track 2 Stage 1 (UIAbility Guard & Flow Tracing)** 的核心引擎。
+
+它的核心职责是：
+1. **入口防卫审计**：对 `onCreate(want)` / `onNewWant(want)` 进行统一的安全过滤（包名校验、重入防绕过、自定义权限校验）。
+2. **跨页面/状态数据流追踪**：使用 **GitNexus 语义索引**追踪受污参数流向。
+3. **分流与级联触发**：
+   - **分支 A (Ability 闭环)**：若流向 `context.startAbility` (能力重定向) 或 `terminateSelfWithResult` (信息回传泄露)，对照规则深入研判并输出 `harmony-ability-security-audit-attack-paths-*.json`。
+   - **分支 B (级联唤醒 WebView)**：若流向 WebView 组件，**不直接进行 WebView 审计**，而是输出 **Warm-Start WebView Task Context** 文件（命名为 `harmony-webview-warm-start-{path_id}.json`），由 Phase 2 调度器自动热启动触发 WebView 专项审计。
+
+---
 
 ## 前置条件
 
-Phase 1 已发现的外部入口（`type=exported_ability`）和组件终点（`sink_type=start_ability`、`sink_type=terminate_result` 或其他高危 Sinks）。
+Phase 1 已发现的外部入口（`type=exported_ability`）和组件终点。
 
-**优先审计路径**：
-- 在 `attack_map.json` 中被标记为 `"confidence": "high_verified_ability"` 的路径为**最高优先级**。这些路径直接关联了公开 UIAbility 入口与高危能力启动点，利用成功率极高。
+---
 
 ## 输入
 
@@ -22,6 +30,8 @@ Phase 1 已发现的外部入口（`type=exported_ability`）和组件终点（`
 | UIAbility 列表 | Phase 1 entries.json 中 `type=exported_ability` 的条目 |
 | 规则知识库 | `skills_v2/harmony-ability-security-audit/rules/*.json` |
 | UIAbility 领域知识 | `skills_v2/harmony-ability-security-audit/ABILITY_REFERENCE.md` |
+
+---
 
 ## 审计流程（四步）
 
@@ -41,20 +51,16 @@ Phase 1 已发现的外部入口（`type=exported_ability`）和组件终点（`
 gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
 ```
 
-#### 3. 轨道二：自底向上逆向 (Bottom-Up)
-如果在中途由于状态机或跨文件路由断流，立刻以 Sinks（如 `context.startAbility`、`terminateSelfWithResult`）为起点向上反查变量来源，在交汇处实现缝合。
+#### 3. 跨页面状态传递与缝合 (ArkUI State Suture)
+由于 ArkTS 的声明式 UI 机制，页面跳转和变量传递通常通过 `AppStorage`/`LocalStorage` 状态共享或 `router` 发生。当传统 AST 断流时，你必须使用以下 GitNexus 查询进行数据流桥接：
+- **AppStorage 共享追踪**：若代码调用 `AppStorage.setOrCreate('key', taintedVal)`，立刻运行以下查询：
+  `gitnexus_query({query: "查找所有引用了状态键名 'key' 的装饰器声明，如 @StorageLink('key') 或 @StorageProp('key')" })`
+- **Router 跳转传递追踪**：若代码调用 `router.pushUrl({ url: 'pages/WebPage', params: { urlParam: taintedVal } })`，立刻定位到 `WebPage.ets` 文件并寻找 `router.getParams()` 中对 `urlParam` 的消费。
 
-#### 4. 关键点防御审计：有无身份校验？
-检查该 Ability 是否存在防御机制。在鸿蒙中，UIAbility 没有直接获取调用者包名的 API，只有当使用 `startAbilityForResult` 启动且回传结果时，可以通过 `getCallingBundleName()` 检查 Caller：
-* 是否调用了 `getCallingBundleName()`？
-* 是否对返回的包名进行了白名单或硬编码域名正则校验？是否可被绕过？
-* 该 Ability 在 `module.json5` 里是否被配置了特定的自定义权限守卫？
-
-#### GitNexus 语义流等价性与重入防御遗漏分析
-当 `entries.json` 中的 `lines` 数组存在多个行号（表明同一参数在如 `onCreate` 和 `onNewWant` 中被多次提取）时，你必须使用 **GitNexus** 运行以下双向流向追踪查询：
-`gitnexus_query({query: "追踪 EntryAbility.ets 中 onCreate 和 onNewWant 两个生命周期的 want.parameters.xxx 下游流向并分析其防御交汇逻辑"})`
-- **语义折叠**：若 GitNexus 结果显示两条通路在下游均经过了相同的白名单校验逻辑，说明它们在语义上 100% 等价。你只需归并为一条漏洞链进行报告以节省输出 Token。
-- **漏洞挖掘（重入防御警惕）**：若 GitNexus 显示 `onNewWant` 的参数提取流向缺失了 `onCreate` 本已具备的安全防护（如包名白名单校验等），这构成了高危的**“重入防御缺失绕过”**利用链！请务必在利用说明（Exploitation）和利用 Payload 中重点展示这一重入攻击链条。
+#### 4. 关键点防御审计：有无身份校验与重入遗漏？
+检查该 Ability 是否存在防御机制：
+* **包名白名单校验**：是否调用了 `getCallingBundleName()`（配合 `startAbilityForResult` 启动）？是否对返回的包名进行了校验？
+* **生命周期重入一致性审计**：当 `entries.json` 中包含多个提取入口行号时，必须使用 GitNexus 分析 `onCreate` 与 `onNewWant` 下游的校验逻辑。若 `onNewWant` 缺失了 `onCreate` 的包名白名单校验，判定构成高危的**“重入防御缺失绕过”**利用链！
 
 ---
 
@@ -63,22 +69,23 @@ gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
 根据参数的流向和终点（Sink）的属性，判定该 UIAbility 是否构成以下三种高危真实漏洞路径之一：
 
 #### 类型 A：Ability 重定向漏洞（Intent Redirection / Ability Redirection）
-* **原理**：公开的 Ability 接受外部传入的嵌套 `Want`（通常作为 parameters 中的某个 key），在未核实调用者身份的前提下，直接将其传给 `context.startAbility(nestedWant)` 或 `context.startAbilityForResult(nestedWant)` 启动。
-* **利用链**：恶意 App 传入一个精心设计的 `nestedWant`（靶向目标为受害 App 内部 `exported: false` 的私有 Ability，或者高权限系统设置 Ability），借用受害 App 的身份越权调起该私有 Ability。
-* **判定标志**：有 `startAbility` Sink，且传入的 Want 数据全部或部分可被 `want.parameters` 操纵。
+* **原理**：公开的 Ability 接受外部传入的嵌套 `Want`，在未核实调用者身份的前提下，直接将其传给 `context.startAbility(nestedWant)` 或 `context.startAbilityForResult(nestedWant)` 启动。
+* **判定标志**：有 `startAbility` Sink，且传入的 Want 数据全部或部分可被外部 `want.parameters` 操纵。
+* **处理动作**：进入 Step 3 深度审计该 Ability 闭环链条。
 
 #### 类型 B：敏感信息回传泄露（Result Leakage）
-* **原理**：该公开 Ability 是一个专门提供交互、授权或选择的组件（如自定义登录页、文件选择器、支付页），被其他 App 通过 `startAbilityForResult` 唤起。它在调用 `terminateSelfWithResult(resultWant)` 结束自己并向 Caller 返回数据时，未校验 Caller 身份（`getCallingBundleName()` 为空或无校验），直接将用户的敏感数据（Token、文件路径、持久化配置等）写入 `resultWant` 中返回。
-* **利用链**：恶意 App 直接启动该 Ability，在 `onAbilityResult` 中坐收回传的敏感数据。
+* **原理**：公开 Ability 作为组件被其他 App 通过 `startAbilityForResult` 唤起。它在调用 `terminateSelfWithResult(resultWant)` 结束自己并向 Caller 返回数据时，未校验 Caller 身份，直接将用户的敏感数据（Token、文件路径、持久化配置等）写入 `resultWant` 中返回。
 * **判定标志**：有 `terminateSelfWithResult` Sink，且回传的数据包含敏感机密。
+* **处理动作**：进入 Step 3 深度审计该 Ability 闭环链条。
 
-#### 类型 C：越权本地高危操作（Unauthorized High-Risk Local Action）
-* **原理**：外部 `want.parameters` 传入的值，直接被作为参数流向了本地的沙箱文件读写、数据库 SQL 执行、网络 SSRF 等高危 Sinks，且完全没有合法性与路径白名单限制。
-* **判定标志**：有 `file_write`/`database`/`network` 终点，且参数由 `want` 控制。
+#### 类型 C：级联 WebView 攻击路径（SSRF / JS Bridge Native Bypass）
+* **原理**：外部 want 传入的 URL 或敏感状态，直接流向了 `Web({ src })` 组件加载点。
+* **判定标志**：受污数据流流入 WebView 的 `src`（无论是直接赋值还是通过 `@StorageLink` 状态驱动）。
+* **处理动作**：**绝不在此 Skill 中直接审计 WebView。** 立刻跳转至输出 “Warm-Start WebView Task Context” 机制。
 
 ---
 
-### Step 3：对照安全规则深入研判
+### Step 3：对照安全规则深入研判 (Lazy Rules Retrieval)
 
 结合匹配的特征 API，使用 `grep_search` 在 `rules` 目录下检索具体规则加载，重点关注以下风险模式：
 
@@ -91,20 +98,12 @@ gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
 
 ---
 
-### Step 4：记录漏洞与生成攻击链报告
+### Step 4：记录漏洞或输出级联上下文
 
-针对存在敏感利用链的 UIAbility，**生成详细的漏洞记录，写入磁盘**。
+根据判定结果，执行以下两种动作之一：
 
-#### 核心要求与 WebView 极其一致：
-1. **漏洞必须具备“可利用性”**：禁止空泛的单点代码建议。
-2. **详尽披露完整流程（Flow）**：每一步必须携带**真实源码 Snippet** 与行号。
-3. **提供完整的漏洞利用 Want Payload 示例（Exploitation Payload）**：展示攻击者 App 该如何构造 Want 才能触发此漏洞。
-
-#### 输出文件命名：
-`harmony-ability-security-audit-attack-paths-{path_id}.json`
-（例如 `harmony-ability-security-audit-attack-paths-path-001.json`）
-
-#### 整体输出结构：
+#### 动作 1：针对类型 A / 类型 B 闭环漏洞，生成攻击链报告
+将分析结果写入 `harmony-ability-security-audit-attack-paths-{path_id}.json`。
 
 ```json
 {
@@ -114,14 +113,12 @@ gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
       "module": "EntryAbility (entry)",
       "severity": "critical",
       "title": "公开 UIAbility 存在能力重定向漏洞 ➜ 任意三方应用可越权调起内部私有组件",
-      
       "ability_details": {
         "name": "EntryAbility",
         "exported": true,
         "caller_verification": "none",
         "has_calling_bundle_check": false
       },
-
       "flow": [
         {
           "step": 1,
@@ -135,46 +132,68 @@ gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
           "stage": "传递与执行",
           "description": "系统使用 this.context.startAbility 启动嵌套的 target Want 导致重定向",
           "file": "EntryAbility.ets:22-25",
-          "snippet": "this.context.startAbility(this.target).then(() => {\n  hilog.info(0x0000, 'TAG', 'Ability redirected successfully');\n});"
+          "snippet": "this.context.startAbility(this.target);"
         }
       ],
-
       "exploitation": {
-        "summary": "编写恶意 App，构造包含目标私有 Ability (PrivateAbility) 信息的嵌套 Want，发送给公开的 EntryAbility，受害 App 会代为启动该私有 Ability 从而越权。",
+        "summary": "编写恶意 App，构造包含目标私有 Ability 信息的嵌套 Want，发送给公开的 EntryAbility，受害 App 代为拉起私有组件。",
         "payload": {
-          "target_bundle": "com.example.victim",
-          "target_ability": "EntryAbility",
-          "nested_want": {
-            "bundleName": "com.example.victim",
-            "abilityName": "PrivateAbility",
-            "parameters": {
-              "admin_action": true
-            }
-          },
           "snippet": "let want: Want = {\n  bundleName: 'com.example.victim',\n  abilityName: 'EntryAbility',\n  parameters: {\n    redirWant: {\n      bundleName: 'com.example.victim',\n      abilityName: 'PrivateAbility',\n      parameters: { admin_action: true }\n    } as Want\n  }\n};\ncontext.startAbility(want);"
         }
       },
-
       "impact": {
-        "summary": "任意三方应用可通过此 Ability 重定向越权访问 App 内部的全部敏感未导出页面或执行敏感的私有业务逻辑。",
+        "summary": "任意三方应用可通过此 Ability 重定向越权访问 App 内部全部非导出组件。",
         "sensitive_operations": [
-          { "operation": "绕过 exported=false 限制调起私有组件", "via": "context.startAbility(nestedWant)", "consequence": "可进入管理员或核心敏感设置界面，实现越权数据操作" }
+          { "operation": "绕过 exported=false 限制调起私有组件", "via": "context.startAbility(nestedWant)", "consequence": "可进入管理员或核心敏感设置界面" }
         ]
       },
-
-      "remediation": "1. 将 `EntryAbility` 设为 `exported: false`（如无外部调用必要）。\n2. 若必须对外公开，通过校验 `getCallingBundleName()` 并设置严格包名白名单拦截不合法调用（需配合 startAbilityForResult ）。\n3. 对传入的 nestedWant 做严格的白名单校验（仅允许拉起特定的合法目标，如第三方地图或分享插件），禁止任意 Want 转发。",
-      
+      "remediation": "校验 getCallingBundleName() 并设置严格包名白名单校验，对传入的 nestedWant 做严格白名单过滤。",
       "matched_rules": ["ABILITY-001", "ABILITY-004"],
       "evidence": [
-        { "file": "EntryAbility.ets", "line_range": "10-25", "snippet": "let redirWant = want.parameters?.redirWant as Want;\n... \nthis.context.startAbility(this.target);", "description": "存在重定向调用且无防守逻辑" }
+        { "file": "EntryAbility.ets", "line_range": "10-25", "snippet": "let redirWant = want.parameters?.redirWant as Want; ... this.context.startAbility(this.target);" }
       ]
     }
   ]
 }
 ```
 
+#### 动作 2：针对类型 C (WebView 攻击路径)，输出 Warm-Start 级联上下文
+**必须使用 Write 工具将已追踪的前半段流写入磁盘，不可跳过！**
+文件名统一为：`harmony-webview-warm-start-{path_id}.json`（存放在 `<audit_dir>/` 下）。
+
+```json
+{
+  "path_id": "path-003",
+  "entry_type": "exported_ability",
+  "entry_file": "EntryAbility.ets",
+  "tainted_parameter": "want.parameters.url",
+  "propagation_flow": [
+    {
+      "step": 1,
+      "stage": "入口",
+      "description": "want.parameters.url 被 EntryAbility 的 onCreate 提取，无安全校验，通过 AppStorage 注入全局状态键名 'webUrl'",
+      "file": "EntryAbility.ets:42-45",
+      "snippet": "let url = want.parameters?.url as string;\nAppStorage.setOrCreate('webUrl', url);"
+    },
+    {
+      "step": 2,
+      "stage": "跨页面状态流转",
+      "description": "WebPage.ets 视图文件通过 @StorageLink 读取 webUrl 全局状态变量，并将其绑定至 Web 组件的 src 加载点",
+      "file": "WebPage.ets:10-15",
+      "snippet": "@StorageLink('webUrl') externalUrl: string = '';\n// ...\nWeb({ src: this.externalUrl, controller: this.ctrl })"
+    }
+  ],
+  "webview_sink": {
+    "file": "WebPage.ets",
+    "line": 15,
+    "variable": "this.externalUrl"
+  }
+}
+```
+
+---
+
 ## 重要原则
 
-1. **绝对坚持利用链第一原则**：禁止只报“没有调用 `getCallingBundleName`”等单点代码缺陷。必须证明这个 want 参数真的流向了 `startAbility`、`terminateSelfWithResult` 或其他危险 API。如果中途变量丢失或未被使用，视为不可利用，直接跳过。
-2. **PoC/Payload 的具体性**：利用代码片段必须可以无缝拷入 TypeScript 编译执行，其中的嵌套 Want 必须展示出清晰的越权设计意图。
-3. **真实源码说话**：调用流程中每一跳都必须附带**实际源码片段**，绝不凭空猜测。
+1. **绝对坚持利用链第一原则**：禁止仅凭“缺少 getCallingBundleName 校验”报告漏洞。如果入参未流向 startAbility/terminateSelfWithResult/WebView 等危险 API，视为不可利用，直接跳过。
+2. **不允许在本 Skill 中直接推导 JS Bridge 逻辑**：发现 WebView 参数流后，必须通过 **Warm-Start Context** 进行级联中转，将后续的 JS Bridge 评估交由更专业的 `harmony-webview-audit` 执行，实现 cognitive load 解耦。

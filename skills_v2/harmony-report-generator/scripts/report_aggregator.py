@@ -55,18 +55,33 @@ def aggregate(audit_dir: str) -> dict:
         max_p = len(all_paths) * 10
         risk = min(100, round(total / max_p * 100)) if max_p else 0
 
-    # 计数校验：对比 attack_map 和实际执行完成的 Task 文件数
+    # 计数校验：动态计算预期任务文件数（防断流/剪枝误报）
     warnings = []
-    map_path = audit_path / "attack_map.json"
-    if map_path.exists():
+    expected_files = 0
+    entries_path = audit_path / "entries.json"
+    if entries_path.exists():
         try:
-            amap = json.loads(map_path.read_text(encoding="utf-8"))
-            expected = amap.get("_meta", {}).get("count", 0)
-            actual_tasks = processed_files_count
-            if actual_tasks < expected:
-                warnings.append(f"潜在路径 {expected} 条，实际完成 Task {actual_tasks} 个，可能漏分析")
-        except (json.JSONDecodeError, OSError):
+            entries_data = json.loads(entries_path.read_text(encoding="utf-8"))
+            entries = entries_data.get("entries", [])
+            ipc_count = sum(1 for e in entries if e.get("type") == "ipc_service")
+            ability_count = sum(1 for e in entries if e.get("type") == "exported_ability")
+            
+            # 计算批次数量 (向上取整，每 5 个一批)
+            expected_ipc_batches = (ipc_count + 4) // 5
+            expected_ability_batches = (ability_count + 4) // 5
+            
+            # 统计实际生成的 warm-start 文件数以获取触发的 WebView 任务预期批次数
+            warm_start_count = len(list(audit_path.glob("harmony-webview-warm-start-*.json")))
+            expected_webview_batches = (warm_start_count + 4) // 5
+            
+            expected_files = expected_ipc_batches + expected_ability_batches + expected_webview_batches
+        except Exception:
             pass
+
+    if expected_files > 0 and processed_files_count < expected_files:
+        warnings.append(
+            f"预期完成 {expected_files} 个批次任务文件，实际完成 {processed_files_count} 个，可能存在漏分析"
+        )
 
     # 读取项目概览
     entries_count = 0
