@@ -54,14 +54,15 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_di
 | `attack_paths[].cases.bridge_methods[]` | 2.N (WEBVIEW) | JS Bridge 方法表 | 跳过此表 |
 | `attack_paths[].cases.interceptors[]` | 2.N (WEBVIEW) | 拦截器状态表 | 跳过此表 |
 | `attack_paths[].input` | 2.N (IPC) | 攻击载荷代码块 | 跳过此段 |
-| `attack_paths[].entry` | 2.N (WEBVIEW) | 攻击入口信息卡 | 展示 `--` |
+| `attack_paths[].entry_paths[]` | 2.N | 攻击入口与传导链路列表 | 跳过整个漏洞 |
+| `attack_paths[].entry_paths[].entry` | 2.N | 攻击入口信息卡 | 展示 `--` |
+| `attack_paths[].entry_paths[].flow[]` | 2.N | 数据流向 | 展示 `*数据流向不可追溯*` |
+| `attack_paths[].entry_paths[].flow[].step` | 2.N | 步骤编号 | 按序号自增 |
+| `attack_paths[].entry_paths[].flow[].stage` | 2.N | 步骤阶段标签 | 展示 `--` |
+| `attack_paths[].entry_paths[].flow[].description` | 2.N | 步骤说明文字 | 展示 `--` |
+| `attack_paths[].entry_paths[].flow[].file` | 2.N | 文件位置引用 | 展示 `--` |
+| `attack_paths[].entry_paths[].flow[].snippet` | 2.N | 代码块 | 展示 `/* 代码未提供 */` |
 | `attack_paths[].ability_details` | 2.N (ABILITY) | 能力信息卡 | 跳过此段 |
-| `attack_paths[].flow[]` | 2.N | 数据流向 | 展示 `*数据流向不可追溯*` |
-| `attack_paths[].flow[].step` | 2.N | 步骤编号 | 按序号自增 |
-| `attack_paths[].flow[].stage` | 2.N | 步骤阶段标签 | 展示 `--` |
-| `attack_paths[].flow[].description` | 2.N | 步骤说明文字 | 展示 `--` |
-| `attack_paths[].flow[].file` | 2.N | 文件位置引用 | 展示 `--` |
-| `attack_paths[].flow[].snippet` | 2.N | 代码块 | 展示 `/* 代码未提供 */` |
 | `attack_paths[].impact.summary` | 2.N | 危害概述段落 | 展示 `未提供影响评估` |
 | `attack_paths[].impact.sensitive_data_exposed[]` | 2.N | 敏感数据泄露列表 | 跳过此子节 |
 | `attack_paths[].impact.sensitive_operations[]` | 2.N | 敏感操作列表 | 跳过此子节 |
@@ -213,24 +214,7 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_di
 | {case.code} | {case.description} | {case.input} | {case.output} | {case.sensitive_reason} |
 {遍历结束}
 
-{=== 分支 B: 如果 attack_path.id 以 "WEBVIEW-" 开头 ===}
-
-{如果 attack_path.entry 存在，渲染：}
-
-#### 攻击入口
-
-| 属性 | 说明 |
-|------|------|
-| **入口类型** | {attack_path.entry.type} |
-| **入口位置** | `{attack_path.entry.file}` |
-| **触发方式** | {attack_path.entry.how} |
-| **可控参数** | {attack_path.entry.payload.url，缺失则写 "want.parameters"} |
-
-**攻击者构造的入口载荷**：
-
-```typescript
-{attack_path.entry.payload.snippet}
-```
+{=== 分支 B: 如果 attack_path.id 包含 "WEBVIEW" ===}
 
 {如果 attack_path.cases 存在，渲染：}
 
@@ -256,7 +240,7 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_di
 | {interceptor.type} | {interceptor.present ? "✅ 已实现" : "❌ 未实现"} | {interceptor.risk} |
 {遍历结束}
 
-{=== 分支 C: 如果 attack_path.id 以 "ABILITY-" 开头 ===}
+{=== 分支 C: 如果 attack_path.id 包含 "ABILITY" ===}
 
 {如果 attack_path.ability_details 存在，渲染：}
 
@@ -276,12 +260,28 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_di
 
 ---
 
-#### 攻击流程
+#### 攻击入口与数据流向
 
-以下按步骤展示从攻击入口到危害终点的完整数据流向。每一步均附带实际源码证据。
+该漏洞可以通过以下 **{length of attack_path.entry_paths[]}** 个不同的外部入口和传导链路触发：
 
-{如果 attack_path.flow[] 存在且 length > 0，对每个 flow 元素渲染：}
+{遍历 attack_path.entry_paths[]}
 
+##### 【入口 {index}】: {entry_path.entry.type} ({entry_path.entry.file})
+
+*   **触发方式**: {entry_path.entry.how}
+{如果 entry_path.entry.payload.url 存在，渲染：}
+*   **可控参数**: {entry_path.entry.payload.url}
+{如果 entry_path.entry.payload.snippet 存在，渲染：}
+
+**入口参数载荷**:
+
+```typescript
+{entry_path.entry.payload.snippet}
+```
+
+**数据流传导路径**:
+
+{如果 entry_path.flow[] 存在且 length > 0，对每个 flow 元素渲染：}
 > **步骤 {flow.step}: {flow.stage}**
 >
 > **文件位置**: `{flow.file}`
@@ -294,8 +294,10 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_di
 >
 > 
 
-{如果 attack_path.flow[] 不存在或为空，渲染：}
+{如果 entry_path.flow[] 不存在或为空，渲染：}
 > *数据流向不可追溯*
+
+{遍历结束}
 
 ---
 
