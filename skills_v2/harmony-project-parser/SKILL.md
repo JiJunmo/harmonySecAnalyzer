@@ -21,7 +21,28 @@ python skills_v2/harmony-project-parser/scripts/project_scanner.py <project_path
 |------|------|
 | `entries.json` | 所有外部可控入口（DeepLink/Want 参数/IPC 消息/URL 回调） |
 | `sinks.json` | 所有攻击终点（WebView 加载/文件写入/数据库/网络） |
-| `attack_map.json` | 同文件/同目录的入口→sink 配对，标记置信度 |
+| `attack_map.json` | 入口→sink 配对，标记置信度 + **data_flow_hint**（Phase 1.5 GitNexus 预分析注入） |
+
+## Phase 1.5: GitNexus 数据流预分析（自动执行）
+
+扫描完成后，`project_scanner.py` 自动调用 `gitnexus_hints.py`，使用 GitNexus Cypher 查询 ACCESSES/CALLS 边，为每条 attack_map 路径注入 `data_flow_hint`：
+
+```json
+{
+  "id": "path-001",
+  "confidence": "high_verified_deeplink",
+  "data_flow_hint": {
+    "trace": [
+      "onCreate → write(externalUrl) (EntryAbility.ets) [外部参数注入]",
+      "onNewWant → write(externalUrl) (EntryAbility.ets) [外部参数注入]"
+    ],
+    "verified": true,
+    "source": "gitnexus_cypher"
+  }
+}
+```
+
+跳过此步骤：`--skip-gitnexus`
 
 ## 入口类型
 

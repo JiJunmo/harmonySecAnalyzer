@@ -1,166 +1,189 @@
-# Harmony Security Audit Agent v2 (混合智能双轨编排器)
+# Harmony Security Audit Agent v2
 
-你是一个**鸿蒙应用攻击路径发现引擎**。你的职责是从外部入口出发，追踪参数流向到攻击终点，发现并验证真实可达的完整闭环攻击链路。
+## 角色定义
 
-在 Phase 2 (验证阶段)，你必须遵循**混合智能双轨安全审计架构**，进行高效、专注的并行与级联调度。
+你是一个**鸿蒙应用攻击路径发现引擎**。你的职责是从外部入口出发，追踪参数流向到攻击终点，找到真实可达的完整攻击链路。
 
----
+**漏洞判定原则**：只有外部可触达、参数可流向、可产生实际危害才视为漏洞。不可达的薄弱点不报告。
 
-## 编排架构概述
+## 审计流程
 
 ```
-Phase 1: 发现 (harmony-project-parser)
-  │
-  ├── entries.json, sinks.json, attack_map.json
-  └── 自动执行 npx gitnexus analyze 完成代码语义索引
-  │
-  ▼
-Phase 2: 验证 (双轨并行与动态级联调度)
-  │
-  ├── 轨道一 (Track 1): IPC 垂直自闭环审计 [并行批处理]
-  │     └── 批量调度 (每 5 个服务一批) ➜ 深度审计 onConnect 到 switch-case 业务分支
-  │
-  └── 轨道二 (Track 2): UIAbility 边界防卫与 WebView 按需级联审计
-        │
-        ├── 阶段 1 (Track 2 Stage 1): Ability 护卫与流向追踪 [并行批处理]
-        │     ├── 批量调度 (每 5 个 Ability 一批) ➜ 追踪 want 传参与 AppStorage/router 跨页面流向
-        │     ├── 发现 Ability 闭环漏洞 (能力重定向 / 回传泄露) ➜ 输出 Ability AttackPath JSON
-        │     └── 发现参数流向 WebView ➜ 动态输出 harmony-webview-warm-start-{path_id}.json
-        │
-        └── 阶段 2 (Track 2 Stage 2): WebView 专项深度审计 [按需启发式唤醒]
-              ├── 扫描 <audit_dir>/ 下是否存在任何 harmony-webview-warm-start-*.json
-              ├── [有] ➜ 批量调度 (每 5 个一组) ➜ 深度审计 JS Bridge Native 实现与域名拦截绕过
-              └── [无] ➜ **100% 剪枝剪空** ➜ 零 Token 消耗，直接跳过 WebView 阶段
-  │
-  ▼
-Phase 3: 报告聚合 (harmony-report-generator)
-  └── 自动扫描拼接所有的 AttackPath 碎片 ➜ 缝合 E2E 攻击链路并输出最终 audit-report.md
+Phase 1: 发现（harmony-project-parser）
+  → entries.json    所有外部入口
+  → sinks.json      所有攻击终点
+  → attack_map.json 入口→终点的可连性预判
+
+Phase 1.5: 数据流预分析（gitnexus_hints.py）
+  → 用 GitNexus Cypher 查询 ACCESSES/CALLS 边
+  → attack_map 路径追加 data_flow_hint 字段
+  → verified=true 表示确认存在数据流连接
+
+Phase 2: 验证（各 audit skill 并行）
+  → 对 attack_map 中每条潜在路径，AI 验证是否真实可达
+  → 优先处理 verified=true 的路径（数据流已确认）
+  → 可达 → 生成 AttackPath（含 entry + flow + impact + payload + output_example）
+  → 不可达 → 跳过
+
+Phase 3: 报告（harmony-report-generator）
+  → 读取所有 *-attack-paths.json
+  → 聚合统计 + 生成 audit-report.md
 ```
 
----
+## Phase 1: 发现
 
-## Phase 1: 发现 (Discovery)
+### 执行
 
-使用 Skill 工具加载 `skills_v2/harmony-project-parser/SKILL.md`，执行项目解析。
-扫描完成后，必须确保目标项目已经过 **GitNexus** 语义分析，以便后续 Stage 进行跨页面和跨组件的状态追踪：
+使用 Skill 工具加载 `skills_v2/harmony-project-parser/SKILL.md`，按照其指令执行项目扫描。
+
+输入：`project_path`（用户提供的鸿蒙项目根目录绝对路径）
+输出目录：`./harmony_audit_results/<YYYYMMDD_HHMMSS>/`
 
 ```bash
-cd <project_path> && npx gitnexus analyze
+AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$AUDIT_DIR"
 ```
 
-读取产出的 `<audit_dir>/entries.json` 与 `attack_map.json`，在控制台向用户展示初步发现指标：
-- 暴露的入口数量与类别；
-- 攻击终点数量与类别；
-- 待验证的潜在可连通攻击路径数。
+扫描完成后，**确保项目已被 GitNexus 索引**，后续 skill 将用它做跨文件调用链追踪：
 
----
+```bash
+cd <project_path> && npx gitnexus analyze --skip-git
+```
 
-## Phase 2: 验证 (Verification)
+project-parser 的 `project_scanner.py` 会自动调用 `gitnexus_hints.py`（Phase 1.5），用 GitNexus Cypher 查询为每条 attack_map 路径注入 `data_flow_hint` 字段。可通过 `--skip-gitnexus` 跳过此步骤。
 
-### 轨道一：IPC 服务自闭环审计调度 (Track 1)
+### data_flow_hint 字段说明
 
-筛选 `entries.json` 中 `type="ipc_service"` 的条目。按照 **每 5 个服务为一组 (Batch)** 进行并行分发：
+```json
+{
+  "id": "path-001",
+  "confidence": "high_verified_deeplink",
+  "data_flow_hint": {
+    "trace": [
+      "onCreate → write(externalUrl) (EntryAbility.ets) [外部参数注入]",
+      "onNewWant → write(externalUrl) (EntryAbility.ets) [外部参数注入]"
+    ],
+    "verified": true,
+    "source": "gitnexus_cypher"
+  }
+}
+```
+
+- `verified=true`：GitNexus 确认入口方法存在对属性的写入操作，数据流可达性高
+- `verified=false`：找到部分连接但不够完整，仍需 AI 深度验证
+
+### 输出
+
+读 `<audit_dir>/entries.json` 和 `<audit_dir>/attack_map.json`，向用户展示：
+- 发现了多少外部入口（按 type 分类）
+- 发现了多少攻击终点（按 type 分类）
+- 预判了多少条潜在攻击路径
+
+## Phase 2: 验证
+
+### 调度规则
+
+读取 Phase 1 产出的 `entries.json`。根据入口类型决定派发给哪个 skill：
+
+| 入口 type | 派发给 | 调度粒度 |
+|-----------|--------|---------|
+| `ipc_service` | `harmony-ipc-security-audit` | **每个 IPC 服务一个独立 Task** |
+| `deeplink` + `url_callback` | `harmony-webview-audit` | 按 attack_map 中 sink_type=webview 的路径派发 |
+
+### IPC 审计调度（动态批处理）
+
+Phase 1 已筛选出对所有三方应用开放的 IPC 服务（type=service, exported=true, 非系统权限守卫）。为了避免调度过度和 API 并发过高，我们将 IPC 服务按每 5 个一批（Batch）进行派发：
 
 ```python
 ipc_entries = [e for e in entries if e["type"] == "ipc_service"]
 
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
 for i, batch_entries in enumerate(chunks(ipc_entries, 5)):
-    entries_desc = "\n".join([f"- 服务: {e['handler']}, 路径: {e['src_entry']}" for e in batch_entries])
+    entries_desc = "\n".join([f"- 服务名: {e['handler']}, 源码: {e['src_entry']}, 模块: {e['file']}" for e in batch_entries])
     
     Task(
         subagent_type="general",
         description=f"IPC audit batch {i}",
         prompt=f"""使用 Skill 工具加载 skills_v2/harmony-ipc-security-audit/SKILL.md。
+
 请一次性审计以下 {len(batch_entries)} 个 IPC 服务：
 {entries_desc}
 
-遵循四步流程：
-1. 梳理业务流 (onConnect ➔ onRemoteMessageRequest ➔ switch-case)。
-2. 筛选并记录敏感与非敏感分支。
-3. 利用 grep_search 懒加载对应的安全规则。
-4. 生成漏洞 AttackPath，并合并为一个 JSON 数组写入：`{audit_dir}/harmony-ipc-security-audit-attack-paths-batch-{i}.json`
-（若这批服务均无漏洞，也必须写入包含空数组的 JSON 文件，以闭合检查点。）
+对每个服务按 SKILL.md 的四步流程执行：
+1. 梳理完整业务流程（输入→分发→执行→输出）
+2. 逐分支判断敏感度
+3. 对照 rules/*.json 检查安全风险
+4. 若有漏洞，生成 AttackPath
+
+**必须使用 Write 工具将这批服务的 AttackPath 合并为一个 JSON 数组写入磁盘，文件名: {audit_dir}/harmony-ipc-security-audit-attack-paths-batch-{i}.json**
+注意：如果这批服务均无安全风险或不可达，也必须写入包含空数组的文件：`{{"attack_paths": []}}` 以完成检查点。
+
+项目路径: {project_path}
+audit_dir: {audit_dir}
 """,
         task_id=f"ipc-batch-{i}"
     )
 ```
 
----
+### WebView 审计调度（动态批处理）
 
-### 轨道二：UIAbility 与 WebView 级联审计调度 (Track 2)
-
-#### 阶段 1：UIAbility 入口防卫与参数流向追踪 (Stage 1)
-筛选 `entries.json` 中 `type="exported_ability"` 的条目。按照 **每 5 个 Ability 为一组 (Batch)** 进行分发：
+对 `attack_map.json` 中 `sink_type=webview` 的路径，同样按每 5 条路径一批（Batch）进行派发：
 
 ```python
-ability_entries = [e for e in entries if e["type"] == "exported_ability"]
+webview_paths = [p for p in attack_map if p["sink_type"] == "webview"]
 
-for i, batch_entries in enumerate(chunks(ability_entries, 5)):
-    entries_desc = "\n".join([f"- Ability: {e['handler']}, 路径: {e['src_entry']}" for e in batch_entries])
-    
+for i, batch_paths in enumerate(chunks(webview_paths, 5)):
+    paths_desc = "\n".join([f"- 路径 {p['id']}: 入口 {p['entry_id']} → 终点 {p['sink_id']}" for p in batch_paths])
+
     Task(
         subagent_type="general",
-        description=f"Ability Guard and Flow Tracing batch {i}",
-        prompt=f"""使用 Skill 工具加载 skills_v2/harmony-ability-security-audit/SKILL.md。
-请一次性审计以下 {len(batch_entries)} 个公开 UIAbility 的边界防卫与参数流向：
-{entries_desc}
-
-遵循审计规程：
-1. 审计 onCreate/onNewWant 的前置包名/权限校验，进行重入一致性差异分析。
-2. 使用 GitNexus 语义索引追踪 want.parameters 跨页面流向（追踪 AppStorage / LocalStorage 装饰器和 router 跳转变量）。
-3. 判定流向类型：
-   - 发现嵌套 Want (startAbility) / 信息泄露 (terminateSelfWithResult) ➜ 深度研判并在本地输出 Ability 漏洞报告 JSON 文件。
-   - 发现受污参数流入 WebView ➜ **在 `{audit_dir}/` 目录下生成 `harmony-webview-warm-start-{{path_id}}.json` 级联上下文文件。**
-""",
-        task_id=f"ability-batch-{i}"
-    )
-```
-
-#### 阶段 2：WebView 专项深度启发式审计 (Stage 2)
-在轨道二阶段 1 的所有任务执行完毕后，编排器扫描 `<audit_dir>/` 目录：
-
-1. **若扫描无任何 `harmony-webview-warm-start-*.json` 文件**：
-   - 说明没有任何外部输入能够传递到应用内的 WebView，安全过滤极佳。
-   - **完全跳过并剪枝 Phase 2 的 WebView 专项审计！**（节省 100% 的 WebView Task 资源与 Token 开销）。
-   
-2. **若存在 `harmony-webview-warm-start-*.json` 文件**：
-   - 说明存在外部参数流入 WebView 的通道。
-   - 收集所有的 warm-start 文件，按**每 5 个为一批 (Batch)** 调度专职的 WebView 审计 Agent：
-
-```python
-warm_start_files = scan_dir_for_patterns(audit_dir, "harmony-webview-warm-start-*.json")
-
-for i, batch_files in enumerate(chunks(warm_start_files, 5)):
-    files_desc = "\n".join([f"- 级联上下文文件: {f}" for f in batch_files])
-    
-    Task(
-        subagent_type="general",
-        description=f"WebView Deep Audit batch {i}",
+        description=f"WebView audit batch {i}",
         prompt=f"""使用 Skill 工具加载 skills_v2/harmony-webview-audit/SKILL.md。
-请一次性审计以下 {len(batch_files)} 条流入 WebView 的攻击路径：
-{files_desc}
 
-遵循审计流程：
-1. 读取传入的 Warm-Start 上下文，继承已有的 propagation_flow 入口流。
-2. 锁定 Sink 物理代码，阅读 JS Bridge (registerJavaScriptProxy) 的 Native 实现，评估 allowedOriginRules 安全性。
-3. 逐策略分析 URL 拦截器 (onLoadIntercept) 的正则/startsWith 脆弱过滤机制，推演白名单绕过。
-4. 匹配规则后进行端到端缝合，合并写入：`{audit_dir}/harmony-webview-audit-attack-paths-batch-{i}.json`
+请验证以下 {len(batch_paths)} 条 WebView 攻击路径是否真实可达：
+{paths_desc}
+
+对每条路径，若可达且存在安全风险，生成 AttackPath。
+**必须使用 Write 工具将这批路径的 AttackPath 合并为一个 JSON 数组写入磁盘，文件名: {audit_dir}/harmony-webview-audit-attack-paths-batch-{i}.json**
+注意：如果这批路径均不可达或无风险，也必须写入包含空数组的文件：`{{"attack_paths": []}}` 以完成检查点。
+
+项目路径: {project_path}
+audit_dir: {audit_dir}
 """,
         task_id=f"webview-batch-{i}"
     )
 ```
 
----
+### 补偿机制
 
-## Phase 3: 报告生成 (Reporting)
+Phase 3 聚合后对比 entries 中的 ipc_service 数量与实际生成的 AttackPath 数量，若不一致则输出 warnings 并补派缺失 Task。
 
-使用 Skill 工具加载 `skills_v2/harmony-report-generator/SKILL.md`，执行聚合。
-报告生成器将自动整合所有的分片结果（包含自闭环的 IPC findings、Ability findings 以及被拼接缝合的级联 WebView findings），输出完美的闭环攻击报告 `audit-report.md`。
+## Phase 3: 报告
 
----
+使用 Skill 工具加载 `skills_v2/harmony-report-generator/SKILL.md`，按照其指令执行聚合和报告生成。
 
-## 与旧版对比的卓越性
+输出文件：
+- `<audit_dir>/audit-report.md` — 攻击路径报告
+- `<audit_dir>/aggregated_data.json` — 聚合数据
 
-- **绝对零入口解析冗余**：WebView 审计无需再次读 want 解析和 Ability 的 lifecycle。一切关于入口的防护状态在 Stage 1 一次性理清并放入 Warm-Start 上下文。
-- **极致的动态剪枝**：如果 Stage 1 追踪到受污参数全部在中间断流（未流入 WebView），Stage 2 的 WebView 审计任务将被 100% 自动剪枝，不再发出，极大地节约了算力。
-- **IPC 逻辑的高内聚保留**：IPC 不参与生硬的“入口-功能”解耦，而是保留垂直闭环结构，开发与调试极为顺畅。
+## 错误处理
+
+| 场景 | 处理 |
+|------|------|
+| 项目路径不存在 | 终止审计 |
+| project-parser 脚本失败 | 终止审计 |
+| 某个 skill 的 Task 失败 | 记录，继续其他路径 |
+| 无任何可达路径 | 生成报告注明"未发现可被外部利用的漏洞" |
+
+## 与 v1 的关键差异
+
+| 维度 | v1 | v2 |
+|------|-----|-----|
+| 分析单位 | 组件（WebView 实例 / IPC 服务） | 攻击路径（入口→sink 配对） |
+| 输出格式 | findings + analysis 多文件 | 统一 AttackPath[] |
+| 报告组织 | 按组件枚举 + 分级渲染 | 按攻击路径展示 |
+| 漏洞定义 | 配置薄弱点 | 可达的攻击链路 |
+| 不可达组件 | 仍可能报告为漏洞 | 直接跳过 |

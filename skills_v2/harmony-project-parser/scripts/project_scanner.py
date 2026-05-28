@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -532,6 +533,7 @@ def main():
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")
     parser.add_argument("-o", "--output-dir", required=True, help="输出目录路径")
     parser.add_argument("--pretty", action="store_true", help="格式化 JSON")
+    parser.add_argument("--skip-gitnexus", action="store_true", help="跳过 GitNexus 数据流预分析")
     args = parser.parse_args()
 
     project_root = Path(args.project_path).resolve()
@@ -569,7 +571,30 @@ def main():
     }
     (out_dir / "attack_map.json").write_text(json.dumps(map_json, ensure_ascii=False, indent=indent), encoding="utf-8")
 
+    # Phase 1.5: GitNexus 数据流预分析
+    if not args.skip_gitnexus:
+        _run_gitnexus_hints(str(project_root), str(out_dir), indent)
+
     print(f"[DONE] v2 攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点, {len(attack_map)} 潜在路径 → {out_dir}")
+
+
+def _run_gitnexus_hints(project_root: str, out_dir: str, indent):
+    """调用 gitnexus_hints.py 进行数据流预分析。"""
+    hints_script = Path(__file__).resolve().parent / "gitnexus_hints.py"
+    if not hints_script.exists():
+        print("[SKIP] gitnexus_hints.py 未找到，跳过数据流预分析")
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, str(hints_script), project_root, out_dir, "--pretty"] if indent != None
+            else [sys.executable, str(hints_script), project_root, out_dir],
+            capture_output=True, text=True, timeout=60
+        )
+        print(result.stdout.strip())
+        if result.stderr:
+            print(result.stderr.strip(), file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] GitNexus hints 失败: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
