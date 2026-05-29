@@ -40,8 +40,17 @@ def run_cypher(query: str, repo_path: str) -> list[dict]:
         if result.returncode != 0:
             print(f"[WARN] Cypher 查询失败: {result.stderr[:200]}", file=sys.stderr)
             return []
+        if not result.stdout or result.stdout.strip() == "[]":
+            return []
         data = json.loads(result.stdout)
-        return _parse_markdown_table(data.get("markdown", ""))
+        if isinstance(data, list):
+            if len(data) > 0 and isinstance(data[0], dict):
+                data = data[0]
+            else:
+                return []
+        if isinstance(data, dict):
+            return _parse_markdown_table(data.get("markdown", ""))
+        return []
     except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError) as e:
         print(f"[WARN] Cypher 错误: {e}", file=sys.stderr)
         return []
