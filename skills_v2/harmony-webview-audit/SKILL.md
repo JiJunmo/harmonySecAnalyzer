@@ -69,15 +69,13 @@ description: v2 (混合智能双轨方案) — WebView 专项高能审计。继�
 
 ---
 
-### Step 3：对照安全规则深入研判 (Lazy Rules Retrieval)
+### Step 3：对照安全规则与语义判定 (AI Audit Guide Verification)
 
-请根据 Step 1 和 Step 2 识别出的高危 Sink 与脆弱拦截逻辑，使用 `grep_search` 在 `rules/` 目录下精准检索并加载匹配规则，避免 context 膨胀：
+请根据 Step 1 和 Step 2 识别出的高危 Sink 与脆弱拦截逻辑，精准加载并阅读 `rules/` 目录下各规则文件（`config.json`、`handler.json`、`data.json`、`lifecycle.json`）的匹配规则。
 
-| 危害类型 | 关联规则编号 | 核心研判要点 |
-|---------|:-----------:|------------|
-| 拦截器绕过 | WEB-010 | 是否使用 startsWith / includes / 粗糙正则做域名白名单校验？ |
-| JS Bridge 越权 | WEB-001 / WEB-003 | 是否将敏感 Native 操作通过 Bridge 暴露？是否缺失 allowedOriginRules 校验？ |
-| 沙箱文件越权访问 | WEB-006 | fileAccess 是否非必要开启？Bridge 方法是否提供了任意文件读写？ |
+**必须严格执行以下两条标准进行漏洞判定**：
+1. **严格对照并执行规则中的 `audit_guide` 自然语言向导**：不要仅仅因为正向关键字匹配（如看到 `registerJavaScriptProxy` 就盲报 `WEB-007` ），必须按照 `audit_guide` 描述的因果调用链和逻辑步骤对代码进行深入的上下文验证，证明漏洞确实成立。
+2. **读取并应用 `severity_modifiers` 结构化参数**：核对代码事实是否满足降级或跳过条件（例如暴露的方法是否仅限 UI 交互 `bridge_methods_are_ui_only` 满足则降一级为 medium 漏洞）。
 
 ---
 

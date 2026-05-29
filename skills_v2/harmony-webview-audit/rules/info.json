@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "id": "WEB-I01",
+      "severity": "info",
+      "title": "项目使用了 ArkWeb WebView 组件",
+      "description": "标记应用中包含 WebView 敏感组件，作为安全审计的基础视图指引。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "@kit.ArkWeb",
+          "web_webview",
+          "import { webview }"
+        ]
+      },
+      "audit_guide": "辅助指示规则，检测到 WebView 依赖引用后，自动在报告审计概览的覆盖攻击面中列出“WebView 安全审计”一栏，无风险分级。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.18",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-web-webview"
+      }
+    }
+  ]
+}

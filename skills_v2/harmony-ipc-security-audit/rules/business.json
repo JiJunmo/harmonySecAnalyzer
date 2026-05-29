@@ -1,0 +1,411 @@
+{
+  "rules": [
+    {
+      "id": "IPC-B01",
+      "severity": "critical",
+      "title": "IPC handler 可触发拨打电话",
+      "description": "IPC Handler 可被任意三方调用，且无身份校验直接执行 call.makeCall 等拨号高危方法，造成资费消耗或恶意干扰。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "call.makeCall",
+          "telephony.dial",
+          "ohos.telephony.call",
+          "startAbilityByCall"
+        ]
+      },
+      "audit_guide": "追踪拨号参数：1) 确认电话号码是否完全由 data.readString() 等用户传入输入决定；2) 确认无 calling Uid 校验。3) 判定成立：无身份校验且号码外部完全可控。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "代码中已使用了 getCallingUid() 拦截了非法调用方，风险降低一级"
+        },
+        {
+          "condition": "拨打的号码限制在预定义白名单内",
+          "effect": "downgrade_one",
+          "reason": "目标拨打号码经过了严格的安全白名单白名单强校验，只允许拨打固定号码"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-telephony-call"
+      }
+    },
+    {
+      "id": "IPC-B02",
+      "severity": "critical",
+      "title": "IPC handler 可读取短信",
+      "description": "IPC 接口未做调用方校验即直接暴露了读取短信 SMS 的高危本地能力，允许不受信的任意三方 App 读取短信验证码等敏感数据。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "sms.readSmsMessage",
+          "telephony.sms",
+          "querySmsMessage",
+          "getSmsMessages"
+        ]
+      },
+      "audit_guide": "审计短信拦截：1) 确认是否无 authentication 直接暴露短信提取服务；2) 判定成立：无身份校验暴露短信读取服务，严重。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "使用了 getCallingUid() 拦截了非法调用方"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-telephony-sms"
+      }
+    },
+    {
+      "id": "IPC-B03",
+      "severity": "critical",
+      "title": "IPC handler 可操作摄像头或麦克风",
+      "description": "IPC 服务被绑定后直接对外暴露了拍照、录音或捕获摄像头画面的高危硬件操作能力，且无客户端安全校验，容易引发后台窃密。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "camera.CameraManager",
+          "camera.createCameraInput",
+          "audio.createAudioCapturer",
+          "media.createAVRecorder"
+        ]
+      },
+      "audit_guide": "分析硬件调用：1) 确认在 onRemoteRequest 链路下无身份校验直接拉起了摄像头录屏；2) 判定成立：无鉴权控制敏感摄像头/麦克风组件，严重风险。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已使用 getCallingUid() 校验身份"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-camera"
+      }
+    },
+    {
+      "id": "IPC-B04",
+      "severity": "high",
+      "title": "IPC handler 可读取联系人",
+      "description": "IPC 服务缺少调用方鉴权直接对外暴露联系人查询接口，导致用户手机内的联系人姓名与电话数据发生静默泄露。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "ohos.contacts",
+          "contact.queryContacts",
+          "getAllContacts",
+          "queryByPhoneNumber"
+        ]
+      },
+      "audit_guide": "审查联系人泄漏：确认无 calling Uid 强验证直接触发了 contact.query 读操作，判定为高风险成立。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已进行 calling Uid 验证"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-contact"
+      }
+    },
+    {
+      "id": "IPC-B05",
+      "severity": "high",
+      "title": "IPC handler 可读取日历",
+      "description": "IPC 服务接口未做鉴权直接暴露了本地日历事件读取接口，导致第三方可获取用户的个人日程隐私。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "calendar.CalendarManager",
+          "ohos.calendarManager",
+          "getEvents",
+          "queryEvents",
+          "queryCalendar"
+        ]
+      },
+      "audit_guide": "审查日历读取：确认无鉴权直接暴露了 calendar.getEvents 高风险查询，判定成立高风险。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已进行身份认证"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-calendarmanager"
+      }
+    },
+    {
+      "id": "IPC-B06",
+      "severity": "high",
+      "title": "IPC handler 可读取照片或媒体文件",
+      "description": "IPC 服务缺少调用方鉴权直接暴露了 photoAccessHelper 高危照片媒体提取接口，导致用户隐私相册被第三方越权静默遍历窃取。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "photoAccessHelper",
+          "mediaLibrary",
+          "getAssets",
+          "getAlbums",
+          "file.fs.openSync",
+          "fileIo.open"
+        ]
+      },
+      "audit_guide": "追踪照片数据流：确认无 calling Uid 身份鉴权直接通过 mediaLibrary 提取相册流，高风险成立。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已进行身份认证"
+        },
+        {
+          "condition": "文件路径限制在应用沙箱内",
+          "effect": "downgrade_one",
+          "reason": "读取操作限制在应用沙箱，无法遍历外部相册"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-photoaccesshelper"
+      }
+    },
+    {
+      "id": "IPC-B07",
+      "severity": "high",
+      "title": "IPC handler 可获取位置信息",
+      "description": "IPC 服务未做强身份校验即直接暴露了 geoLocationManager 定位接口，导致恶意三方应用在后台获取用户的物理精确地理位置。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "geoLocationManager",
+          "getCurrentLocation",
+          "getLastLocation",
+          "onLocationChange"
+        ]
+      },
+      "audit_guide": "追踪位置参数：确认无 calling Uid 校验直接通过 getCurrentLocation 返回经纬度数据，判定成立高风险。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已进行 calling Uid 校验"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-geolocationmanager"
+      }
+    },
+    {
+      "id": "IPC-B08",
+      "severity": "high",
+      "title": "IPC handler 可读取剪贴板内容",
+      "description": "IPC 接口缺少调用方鉴权直接暴露了 pasteboard.getData 剪贴板提取能力，允许第三方恶意窃取用户的密码、验证码等口令隐私。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "pasteboard.getData",
+          "pasteboard.read",
+          "systemPasteboard.getData"
+        ]
+      },
+      "audit_guide": "分析剪贴板泄漏：确认无身份校验直接通过 pasteboard 返回剪贴板数据内容，高风险成立。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已进行调用方身份校验"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-pasteboard"
+      }
+    },
+    {
+      "id": "IPC-B09",
+      "severity": "high",
+      "title": "IPC handler 可访问分布式数据",
+      "description": "IPC 服务接口未做鉴权直接暴露了分布式 KV 数据库 distributedKVStore 的读写接口，导致多端互联数据遭到窃取。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "distributedObject",
+          "distributedData",
+          "createDistributedObject",
+          "distributedKVStore"
+        ]
+      },
+      "audit_guide": "审查分布式泄漏：确认无 calling Uid 拦截直接读取分布式数据对象，高风险成立。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已进行调用方强校验"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-distributedkvstore"
+      }
+    },
+    {
+      "id": "IPC-B10",
+      "severity": "high",
+      "title": "IPC handler 中用户输入被用作文件路径",
+      "description": "从客户端传入的文件路径字符串 data.readString() 被服务端无过滤地直接传入 fileIo.openSync 触发本地读写，容易遭受路径穿越漏洞（Path Traversal）窃取沙箱核心文件。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "fileIo.open",
+          "fs.openSync",
+          "fs.read",
+          "fs.write"
+        ],
+        "negative_patterns": [
+          "normalizePath",
+          "resolve"
+        ]
+      },
+      "audit_guide": "检查文件路径防御：1) 确认路径是否完全是由用户传入的字符串动态拼接；2) 确认完全没有对路径进行 normalize 规范化或阻断 '../' 跨越前缀；3) 判定成立：受污路径参数流向文件 open，且无有效路径安全白名单或防穿越过滤。",
+      "severity_modifiers": [
+        {
+          "condition": "文件路径限制在应用沙箱内",
+          "effect": "downgrade_one",
+          "reason": "读写操作限制在独立沙箱，危害有限"
+        },
+        {
+          "condition": "路径包含了预定义的安全前缀而非由用户完全控制",
+          "effect": "downgrade_one",
+          "reason": "路径前部强制拼装了安全根目录前缀，降低风险"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-file-fs"
+      }
+    },
+    {
+      "id": "IPC-B11",
+      "severity": "high",
+      "title": "IPC handler 中用户输入被拼接为 SQL 或命令",
+      "description": "在 IPC 回调内部，将用户传入的数据拼接进 rdbStore.executeSql 等 SQL 查询中，可能遭受 SQL 注入，越权篡改本地轻量级数据库。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "rdbStore.executeSql",
+          "rdbStore.querySql",
+          "rdbStore.getRdbStore"
+        ],
+        "negative_patterns": [
+          "parameterized",
+          "args",
+          "Array<ValueType>"
+        ]
+      },
+      "audit_guide": "审查 SQL 注入：确认 executeSql 中的 SQL 语句是由外部受污输入拼接而成，且未使用带占位符的参数化查询 args。判定成立高风险。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-data-rdb"
+      }
+    },
+    {
+      "id": "IPC-B12",
+      "severity": "medium",
+      "title": "IPC handler 执行写入/删除操作且无身份校验",
+      "description": "IPC 服务中包含数据修改（write/unlink/insert/update/delete）等状态副作用方法，但在 onRemoteMessageRequest 消息分发阶段完全缺乏身份安全认证。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "fs.write",
+          "fs.unlink",
+          "rdbStore.insert",
+          "rdbStore.update",
+          "rdbStore.delete",
+          "rdbStore.executeSql"
+        ],
+        "negative_patterns": [
+          "getCallingUid",
+          "getCallingPid"
+        ]
+      },
+      "audit_guide": "检查写越权风险：确认无 calling Uid 验证执行了敏感的物理删除/覆写接口，中等风险业务漏洞成立。",
+      "severity_modifiers": [
+        {
+          "condition": "写入操作仅影响调用方自身的独立数据空间",
+          "effect": "downgrade_one",
+          "reason": "写入操作已被安全限制在单独调用隔离空间，无法侵害全局用户状态"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-file-fs"
+      }
+    },
+    {
+      "id": "IPC-B13",
+      "severity": "medium",
+      "title": "IPC handler 返回系统内部状态或调试信息",
+      "description": "在 IPC 数据回传客户端（data.writeString() 等）时，未经检查直接将 JSON 序列化的全局状态、调试数据或错误堆栈暴露给调用方，导致内部环境泄漏。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "JSON.stringify",
+          "writeString"
+        ]
+      },
+      "audit_guide": "分析回传信息敏感性：确认回传的数据包含 stack, debug, config, env 等字样，且未经清洗。判定成立为中风险。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+      }
+    },
+    {
+      "id": "IPC-B14",
+      "severity": "medium",
+      "title": "IPC handler 可操作用户蓝牙或网络连接",
+      "description": "IPC 服务缺少调用方鉴权直接暴露了开启蓝牙搜寻、初始化网络 Socket 等物理端口连接操作方法，可被第三方越权利用实施二次端口扫描。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "bluetooth.BluetoothManager",
+          "bluetooth.startBluetoothDiscovery",
+          "wifi.WifiManager",
+          "socket.constructTCPSocket"
+        ]
+      },
+      "audit_guide": "分析端口劫持风险：确认无 calling Uid 身份拦截直接启动 startBluetooth 或 socket.connect，中等风险业务漏洞成立。",
+      "severity_modifiers": [
+        {
+          "condition": "handler 内部有调用方身份校验",
+          "effect": "downgrade_one",
+          "reason": "已使用 getCallingUid 进行了安全防御"
+        }
+      ],
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.10",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-bluetooth"
+      }
+    }
+  ]
+}

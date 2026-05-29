@@ -1,0 +1,30 @@
+{
+  "rules": [
+    {
+      "id": "WEB-011",
+      "severity": "medium",
+      "title": "Web Cookie 未设置安全属性",
+      "description": "在网页传输包含会话、凭证的敏感 Cookie 数据时，未标记 HttpOnly 或 Secure 属性，容易遭受 XSS 窃取或中间人明文窃听。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "setCookie",
+          "saveCookieAsync",
+          "configCookie",
+          "WebCookie"
+        ],
+        "negative_patterns": [
+          "Secure",
+          "HttpOnly",
+          "SameSite"
+        ]
+      },
+      "audit_guide": "分析 Cookie 设值：确认 setCookie 时写入敏感登录或身份标识数据，但完全缺少 Secure/HttpOnly/SameSite 等安全前缀防护，判定成立为中风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.11",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-web-webview#setcookie"
+      }
+    }
+  ]
+}

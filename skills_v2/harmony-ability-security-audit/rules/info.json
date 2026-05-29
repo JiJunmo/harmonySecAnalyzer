@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "id": "ABILITY-I01",
+      "severity": "info",
+      "title": "项目使用了 UIAbility 组件",
+      "description": "标记应用中包含 UIAbility 导出与基础，作为安全审计的基础视图指引。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/module.json5",
+        "positive_patterns": [
+          "UIAbility",
+          "abilities"
+        ]
+      },
+      "audit_guide": "辅助指示规则，检测到 UIAbility 后自动在报告审计概览的覆盖范围中列出“UIAbility 边界安全审计”一栏，无级别风险。",
+      "reference": {
+        "internal": "ABILITY_REFERENCE.md#3.7",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-app-ability-uiability"
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "rules": [
+    {
+      "id": "IPC-006",
+      "severity": "critical",
+      "title": "Parcelable.unmarshalling 未校验反序列化数据",
+      "description": "在 unmarshalling 还原 Parcelable 传输对象数据时，完全未检验反序列化入参的合法长度与类型强度，容易引发反序列化逻辑漏洞或越界内存溢出。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "unmarshalling"
+        ]
+      },
+      "audit_guide": "深入审计 unmarshalling 逻辑：确认反序列化读取数据后，是否没有进行类型判定和长度检验即直接进行强制类型转换或赋值。判定成立：存在漏洞。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.6",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc#parcelable"
+      }
+    },
+    {
+      "id": "IPC-008",
+      "severity": "critical",
+      "title": "readArrayBuffer 后未校验数据长度",
+      "description": "调用 data.readArrayBuffer() 从 IPC 缓存管道中读取数组时，未校验 byteLength 的大小，容易诱发缓冲区溢出漏洞。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "readArrayBuffer"
+        ],
+        "negative_patterns": [
+          "byteLength",
+          "length"
+        ]
+      },
+      "audit_guide": "检查 Buffer 长度限制：确认调用了 readArrayBuffer，但对读取产生的 ArrayBuffer 的大小没有任何上限约束（未与预期长度进行限制），判定为严重严重风险。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.8",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc#messageparcel"
+      }
+    }
+  ]
+}

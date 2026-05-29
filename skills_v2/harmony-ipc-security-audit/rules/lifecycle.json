@@ -1,0 +1,64 @@
+{
+  "rules": [
+    {
+      "id": "IPC-005",
+      "severity": "low",
+      "title": "IPC 数据传输未经加密",
+      "description": "在 writeParcelable 传输敏感凭证或个人资产时使用了明文传输。虽然在 HarmonyOS 沙箱环境下威胁有限，但在系统或跨设备传输中存在窃听隐患，仅在系统应用或跨设备场景下风险显著。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "writeParcelable",
+          "writeArrayBuffer",
+          "writeString"
+        ]
+      },
+      "audit_guide": "分析加密需求：确认 write 传输的是否是敏感账户、高密凭证，且完全是明文流转，低风险提示。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.5",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc#messageparcel"
+      }
+    },
+    {
+      "id": "IPC-012",
+      "severity": "medium",
+      "title": "IPC 连接断开后未正确清理 proxy 引用",
+      "description": "在 disconnectServiceExtensionAbility 回调触发连接断开后，未将保存的 Proxy 代理指针置为 null/undefined，可能导致后续连接发生空指针或内存泄露。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "disconnectServiceExtensionAbility"
+        ],
+        "negative_patterns": [
+          "proxy = undefined",
+          "proxy = null"
+        ]
+      },
+      "audit_guide": "核实代理回收：检查 disconnect 发生时，是否有对已持有代理引用的强制清空与重置。若是无清理，判定为中风险。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.12",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-app-ability-common#disconnectserviceextensionability"
+      }
+    },
+    {
+      "id": "IPC-016",
+      "severity": "low",
+      "title": "IPC 连接缺少超时处理",
+      "description": "在 connectServiceExtensionAbility 调用中未设置超时重试或超时回调逻辑，这在对端服务异常挂起时会导致调用方长时间等待而死锁。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "connectServiceExtensionAbility"
+        ]
+      },
+      "audit_guide": "核对超时兜底：确认绑定服务时未配置超时容错回调，低风险。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.16",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-app-ability-common#connectserviceextensionability"
+      }
+    }
+  ]
+}

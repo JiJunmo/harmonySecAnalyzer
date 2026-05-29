@@ -1,0 +1,131 @@
+{
+  "rules": [
+    {
+      "id": "WEB-001",
+      "severity": "critical",
+      "title": "registerJavaScriptProxy 注入可执行任意系统 API 的对象",
+      "description": "使用 JS Bridge 注入 Native 对象，如果该对象含有读取文件、操作数据、访问网络等本地系统级能力，恶意页面可实现完美越权突破。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "registerJavaScriptProxy"
+        ]
+      },
+      "audit_guide": "重点审计 registerJavaScriptProxy 的注入对象：1) 确认该对象暴露给 JS 的 Native 方法中是否包含操作 @ohos.file (fileIo)、@ohos.data (rdbStore) 等系统模块；2) 若暴露的方法仅为 UI 交互（showToast 等），无系统权限接口，在下方补充 modifiers 降级；3) 判定成立：注入的对象方法包含高危本地系统能力且未作 origin 鉴权保护。",
+      "severity_modifiers": [
+        {
+          "condition": "bridge_methods_are_ui_only",
+          "effect": "downgrade_one",
+          "reason": "暴露的方法仅为 showToast 等 UI 交互，无高危系统 API 调用"
+        }
+      ],
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.1",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-web-webview#registerjavascriptproxy"
+      }
+    },
+    {
+      "id": "WEB-002",
+      "severity": "critical",
+      "title": "onInterceptRequest 未校验外部 URL 即加载",
+      "description": "实现对请求的自定义网络拦截和本地重定向，如果对获取的 Request URL 缺少强安全性过滤，可能导致恶意页面读取私有沙箱文件或跨域劫持。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "onInterceptRequest"
+        ],
+        "negative_patterns": [
+          "url.startsWith",
+          "indexOf",
+          "URL_CHECK",
+          "ALLOWED_HOSTS"
+        ]
+      },
+      "audit_guide": "检查 onInterceptRequest 回调：1) 确认拦截并返回本地资源的逻辑是否对传入的请求 URL 进行了合法域的过滤校验；2) 若无安全过滤，直接拦截返回应用私有文件资源，判定为严重。3) 判定成立：无 URL 域校验 + 拦截读取并返回本地敏感资源。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.2",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#oninterceptrequest"
+      }
+    },
+    {
+      "id": "WEB-006",
+      "severity": "high",
+      "title": "onLoadIntercept 逻辑存在绕过风险",
+      "description": "使用 onLoadIntercept 回调阻断不受信 URL 加载，如果 URL 安全过滤逻辑粗糙（如包含 includes、startsWith），容易发生伪域或二级域名绕过漏洞。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "onLoadIntercept"
+        ],
+        "negative_patterns": [
+          "new URL",
+          "URL.parse",
+          "Uri.parse",
+          "URL_CHECK"
+        ]
+      },
+      "audit_guide": "深入审计 URL 白名单过滤算法：1) 确认是否对 URL 进行了正规的主机名 (Host) 提取，而非简单 includes 或是 startsWith 前缀比较；2) 确认是否存在 com.trusted.com.attack.com 类伪子域名绕过漏洞；3) 判定成立：对 onLoadIntercept 设置了过滤，但匹配逻辑存在结构性漏洞可被劫持绕过。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.6",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#onloadintercept"
+      }
+    },
+    {
+      "id": "WEB-007",
+      "severity": "high",
+      "title": "JS Bridge 暴露的方法未限制调用域",
+      "description": "JS Bridge 对象被任意页面调用。未限制 allowedOriginRules 会导致恶意第三方页面可越权使用暴露出的本地 Native 敏感桥方法。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "registerJavaScriptProxy"
+        ],
+        "negative_patterns": [
+          "allowedOriginRules",
+          "getUrl(",
+          "getOriginalUrl(",
+          "origin"
+        ]
+      },
+      "audit_guide": "检查 registerJavaScriptProxy 是否限定了 allowedOriginRules 域名白名单：1) 确认是否配置了 allowedOriginRules；2) 若无，检查是否在 onInterceptRequest 中手动获取 getOriginalUrl() 进行了严格校验；3) 判定成立：暴露 Bridge 方法，但完全没有对加载源 (Origin) 限制白名单或在 Native 进行校验。",
+      "severity_modifiers": [
+        {
+          "condition": "bridge_methods_are_ui_only",
+          "effect": "downgrade_one",
+          "reason": "暴露的方法仅为 UI 交互，无高危本地 API 调用"
+        }
+      ],
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.7",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-web-webview#registerjavascriptproxy"
+      }
+    },
+    {
+      "id": "WEB-008",
+      "severity": "medium",
+      "title": "onUrlLoadIntercept 未设置 URL 加载拦截",
+      "description": "未配置对 WebView 新开 URL 加载请求的监听拦截，导致无法管控 WebView 内的用户任意导航与恶意跳转跳转行为。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "web_webview.WebviewController",
+          "@kit.ArkWeb"
+        ],
+        "negative_patterns": [
+          "onUrlLoadIntercept",
+          "onLoadIntercept"
+        ]
+      },
+      "audit_guide": "核对事件拦截：1) 确认是否完全未注册 onUrlLoadIntercept 回调；2) 确认是否存在由于放行任意页面导致可加载钓鱼站点的威胁。3) 判定：未配置页面加载拦截控制，属于中风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.8",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#onurlloadintercept"
+      }
+    }
+  ]
+}

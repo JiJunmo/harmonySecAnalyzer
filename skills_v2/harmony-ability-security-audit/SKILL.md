@@ -85,16 +85,13 @@ gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
 
 ---
 
-### Step 3：对照安全规则深入研判 (Lazy Rules Retrieval)
+### Step 3：对照安全规则与语义判定 (AI Audit Guide Verification)
 
-结合匹配的特征 API，使用 `grep_search` 在 `rules` 目录下检索具体规则加载，重点关注以下风险模式：
+请根据特征 API，精准检索并加载 `rules/` 目录下（`config.json`、`handler.json`、`business.json`）的匹配规则。
 
-| 风险类别 | 对应规则 | 重点关注 |
-|--------|---------|---------|
-| 越权 Ability 重定向 | ABILITY-001 | 是否将 `want.parameters` 转换为了新的 `Want` 并启动？ |
-| 敏感信息回传泄露 | ABILITY-002 | `terminateSelfWithResult` 是否回传了未加密敏感信息？是否校验了 `getCallingBundleName`？ |
-| 本地命令/越权操作 | ABILITY-003 | 外部 want 参数是否流向了 `fileIo` / `relationalStore` 等高危 API？ |
-| 弱包名白名单校验 | ABILITY-004 | 校验调用包名时是否使用了 `includes` 或脆弱的前缀正则（可伪造）？ |
+**必须严格执行以下两条标准进行漏洞判定**：
+1. **严格对照并执行规则中的 `audit_guide` 自然语言因果校验向导**：绝对禁止仅凭正向关键字（如看到 `startAbility` 就盲报 `ABILITY-001` 能力重定向），必须按照 `audit_guide` 的逻辑步骤深度分析受污参数在 AST/数据流上的真实传导链和因果逻辑，证明漏洞切实成立。
+2. **读取并应用 `severity_modifiers` 结构化降级场景**：仔细核对代码上下文事实（如 startAbility 的 Want 目标是否其实完全是写死的硬编码组件 `want_contains_predefined_hardcoded_target_only`，是则必须直接 `skip` 跳过不报），执行相应的等级修正。
 
 ---
 

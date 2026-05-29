@@ -90,27 +90,13 @@ reply 回包 / 全局状态变更 / 文件写入 / 数据库操作 / 网络请�
 
 **只要存在至少一个敏感分支，该服务就是敏感服务 → 继续 Step 3。** 在 Step 4 输出时，敏感分支和非敏感分支都要列出来（非敏感分支说明为何无需关注）。
 
-### Step 3：对照规则检查安全风险
+### Step 3：对照安全规则与语义判定 (AI Audit Guide Verification)
 
-确定是敏感业务后，请结合发现的特征 API（如 `fileIo`, `getCallingUid` 等），使用 `grep_search` 工具在 `rules` 目录下搜索相关关键字，仅加载和阅读匹配的具体规则。避免盲目加载全部规则导致上下文膨胀。逐条检查：
+确定是敏感业务后，请精准加载并阅读 `rules/` 目录下（`config.json`、`handler.json`、`data.json`、`lifecycle.json`、`business.json`）的匹配规则。
 
-**检查清单**：
-
-| 检查项 | 对应规则 | 查看什么 |
-|--------|---------|---------|
-| 身份校验是否缺失 | IPC-003, IPC-011-CONNECT | `onRemoteMessageRequest` 中是否调用了 `getCallingUid()` 且使用了返回值？`onConnect` 是否校验了 want？ |
-| InterfaceToken 认证强度 | IPC-004 | 是否仅依赖 descriptor 字符串比较？descriptor 是否硬编码？ |
-| 操作码分发安全 | IPC-007 | switch(code) 的 default 分支是否有副作用？code 有无白名单？ |
-| 数据校验 | IPC-006, IPC-008 | `unmarshalling` 是否校验了数据范围？`readArrayBuffer` 后是否检查了长度？ |
-| 数据传输安全 | IPC-005 | Parcelable/ArrayBuffer 的数据是否明文传输？ |
-| 实例隔离 | IPC-009 | Stub 是否是全局单例？多客户端是否存在数据串扰？ |
-| 日志泄露 | IPC-010-LOG | `hilog.info` 是否打印了 IPC 通信数据内容？ |
-| 返回值正确性 | IPC-010-RETURN | `onRemoteMessageRequest` 是否无论处理成功与否都返回 true？ |
-| 连接生命周期 | IPC-016, IPC-012-CLEANUP | 连接是否有超时？断连后是否清理了 proxy？ |
-
-**注意**：
-- 规则中的 severity 是默认值，结合实际情况可上调或下调
-- 例如：规则 IPC-003 默认 severity=critical，但如果该服务只返回固定字符串"ok"，已在 Step 2 判定为非敏感 → 不报告
+**必须严格执行以下两条标准进行漏洞判定**：
+1. **严格对照并执行规则中的 `audit_guide` 自然语言因果校验向导**：绝对禁止仅凭特征关键字触发（如看到 `onRemoteMessageRequest` 就盲报 `IPC-003`），必须按照 `audit_guide` 的语义因果链分析 getCallingUid() 等是否真的起到了条件分支拦截逻辑，证明漏洞确实可被第三方利用。
+2. **读取并应用 `severity_modifiers` 结构化条件降级场景**：仔细核对代码上下文事实（如服务端业务逻辑是否其实仅返回了固定字符串 `服务端业务逻辑仅返回固定字符串，无任何敏感数据或操作`，若是则必须直接 `skip` 跳过不报），执行相应的漏洞严重级别等级修正。
 
 ### Step 4：记录漏洞
 

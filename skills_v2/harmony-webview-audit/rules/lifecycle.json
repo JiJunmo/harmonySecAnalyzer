@@ -1,0 +1,73 @@
+{
+  "rules": [
+    {
+      "id": "WEB-009",
+      "severity": "medium",
+      "title": "SSL 证书校验被关闭或自定义校验信任所有证书",
+      "description": "在 SSL 握手出错时强制忽略证书错误并继续执行（如配置 certificateVerification 为 false），极易遭受中间人（MITM）劫持。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "certificateVerification",
+          "X509TrustManager"
+        ],
+        "negative_patterns": [
+          "checkServerTrusted",
+          "isValid"
+        ]
+      },
+      "audit_guide": "检查证书忽略逻辑：1) 确认 certificateVerification 是否显式配置为 false；2) 检查 handleSslErrorEvent 等回调函数体内是否直接调用了事件的放行方法而未做真实证书验证。3) 判定成立：无差别信任一切 SSL 证书错误，严重中风险漏洞。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.9",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#certificateverification"
+      }
+    },
+    {
+      "id": "WEB-013",
+      "severity": "medium",
+      "title": "onWindowNew / window.open 弹窗未管控",
+      "description": "对于通过 window.open 新开多窗口的 WebView 回调没有加锁过滤，可导致恶意页面可以无限弹出新页面从而耗尽系统资源或钓鱼攻击。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "onWindowNew"
+        ],
+        "negative_patterns": [
+          "isAllowed",
+          "url.startsWith",
+          "checkUrl",
+          "return false"
+        ]
+      },
+      "audit_guide": "确认弹窗防卫逻辑：确认已实现 onWindowNew，但是在回调方法体内未编写对目标弹出 URL 的任何白名单域名过滤，直接无条件准许新开窗口加载。判定成立：中风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.13",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#onwindownew"
+      }
+    },
+    {
+      "id": "WEB-016",
+      "severity": "low",
+      "title": "onPageVisible 未做敏感页面可见性处理",
+      "description": "敏感 WebView 页面在进入后台、切走或进入生命周期隐藏（onPageVisible 退出）时没有对关键界面进行覆盖保护，可能引发凭证被截屏窃取。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "web_webview.WebviewController",
+          "@kit.ArkWeb"
+        ],
+        "negative_patterns": [
+          "onPageVisible"
+        ]
+      },
+      "audit_guide": "核实可见性销毁逻辑：分析高保密性 WebView 的逻辑，确认未注册 onPageVisible / onPageHide 机制去清理表单域，低风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#3.16",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#onpagevisible"
+      }
+    }
+  ]
+}

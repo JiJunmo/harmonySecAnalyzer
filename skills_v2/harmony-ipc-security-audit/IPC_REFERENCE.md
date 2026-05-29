@@ -540,20 +540,34 @@ function disConnectIpc(context: common.UIAbilityContext) {
 
 | 规则 ID | 严重度 | CWE | OWASP | 检测项 | 检测模式 |
 |---------|--------|-----|-------|--------|----------|
-| IPC-001 | High | CWE-927 | M1 | ServiceExtensionAbility exported:true 无 visible 白名单 | module.json5 模式匹配 |
-| IPC-002 | High | CWE-862 | M1 | extensionAbilities 缺少 permissions 守卫 | module.json5 模式匹配 |
-| IPC-003 | Critical | CWE-862 | M1 | onRemoteMessageRequest 未校验调用方身份 | 代码 AST/String Search |
-| IPC-004 | High | CWE-290 | M1 | 仅依赖 InterfaceToken 字符串做认证 | 代码 + 配置联合分析 |
-| IPC-005 | Medium | CWE-319 | M3 | IPC 数据明文传输 | 代码 String Search |
-| IPC-006 | Medium | CWE-1287 | M8 | Parcelable.unmarshalling 未校验数据 | 代码 AST/Search |
-| IPC-007 | High | CWE-20 | M8 | onRemoteMessageRequest code 未校验范围 | 代码 AST/Search |
-| IPC-008 | Medium | CWE-20 | M8 | readArrayBuffer 未校验长度 | 代码 AST/Search |
-| IPC-009 | Medium | CWE-543 | M5 | Stub 全局单例缺乏会话隔离 | 代码 Search |
-| IPC-010 | Low | CWE-252 | M8 | onRemoteMessageRequest 返回值恒为 true | 代码 AST/Search |
-| IPC-011 | Medium | CWE-532 | M9 | hilog 打印 IPC 通信数据 | 代码 Grep |
-| IPC-012 | Low | CWE-404 | M7 | 断连后未清理 proxy 引用 | 代码 AST |
-| IPC-013 | Medium | CWE-250 | M1 | 不必要地使用 Full SDK / 系统权限 | build-profile + module.json5 联合分析 |
-| IPC-014 | Low | CWE-1104 | M9 | ServiceExtensionAbility 过度导出 | module.json5 模式匹配 |
+| IPC-002 | Medium | CWE-862 | M1 | extensionAbilities 缺少 permissions 权限守卫 | 配置级检测 (module.json5) |
+| IPC-003 | Critical | CWE-862 | M1 | onRemoteMessageRequest 未校验调用方身份 | 代码因果语义分析 |
+| IPC-004 | High | CWE-290 | M1 | IPC 认证仅依赖 InterfaceToken 字符串比较 | 代码因果语义分析 |
+| IPC-005 | Low | CWE-319 | M3 | IPC 数据传输未经加密 | 代码特征检索 |
+| IPC-006 | Critical | CWE-1287 | M8 | Parcelable.unmarshalling 未校验反序列化数据 | 代码因果语义分析 |
+| IPC-007 | High | CWE-20 | M8 | onRemoteMessageRequest 中操作码 code 的 default 分支有副作用操作 | 代码分支深度分析 |
+| IPC-008 | Critical | CWE-20 | M8 | readArrayBuffer 后未校验数据长度 | 代码特征检索 |
+| IPC-009 | High | CWE-543 | M5 | Stub/RemoteObject 全局单例缺乏会话隔离 | 代码特征检索 |
+| IPC-011 | Low | CWE-252 | M8 | onRemoteMessageRequest 返回值恒为 true | 代码分支深度分析 |
+| IPC-012 | Medium | CWE-404 | M7 | IPC 连接断开后未正确清理 proxy 引用 | 代码特征检索 |
+| IPC-014 | Low | CWE-1104 | M9 | ServiceExtensionAbility 过度导出 | 配置级检测 (module.json5) |
+| IPC-015 | Low | CWE-330 | M2 | descriptor 字符串硬编码且可预测 | 代码因果语义分析 |
+| IPC-016 | Low | CWE-400 | M7 | IPC 连接缺少超时处理 | 代码因果语义分析 |
+| IPC-B01 | Critical | CWE-927 | M1 | IPC handler 可触发拨打电话 | 业务敏感操作深度分析 |
+| IPC-B02 | Critical | CWE-927 | M1 | IPC handler 可读取短信 | 业务敏感操作深度分析 |
+| IPC-B03 | Critical | CWE-927 | M1 | IPC handler 可操作摄像头或麦克风 | 业务敏感操作深度分析 |
+| IPC-B04 | High | CWE-927 | M1 | IPC handler 可读取联系人 | 业务敏感操作深度分析 |
+| IPC-B05 | High | CWE-927 | M1 | IPC handler 可读取日历 | 业务敏感操作深度分析 |
+| IPC-B06 | High | CWE-927 | M1 | IPC handler 可读取照片或媒体文件 | 业务敏感操作深度分析 |
+| IPC-B07 | High | CWE-927 | M1 | IPC handler 可获取位置信息 | 业务敏感操作深度分析 |
+| IPC-B08 | High | CWE-927 | M1 | IPC handler 可读取剪贴板内容 | 业务敏感操作深度分析 |
+| IPC-B09 | High | CWE-927 | M1 | IPC handler 可访问分布式数据 | 业务敏感操作深度分析 |
+| IPC-B10 | High | CWE-22 | M9 | IPC handler 中用户输入被用作文件路径 | 业务路径遍历深度分析 |
+| IPC-B11 | High | CWE-94 | M9 | IPC handler 中用户输入被拼接为 SQL 或命令 | 业务注入风险深度分析 |
+| IPC-B12 | Medium | CWE-862 | M1 | IPC handler 执行写入/删除操作且无身份校验 | 业务越权行为分析 |
+| IPC-B13 | Medium | CWE-200 | M9 | IPC handler 返回系统内部状态或调试信息 | 业务敏感信息泄露分析 |
+| IPC-B14 | Medium | CWE-862 | M1 | IPC handler 可操作用户蓝牙或网络连接 | 业务越权行为分析 |
+| IPC-I01 | Info | N/A | N/A | 项目使用了 IPC 通信机制 | 基线指标发现 |
 
 ---
 

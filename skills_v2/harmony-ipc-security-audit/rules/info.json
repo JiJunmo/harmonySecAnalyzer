@@ -1,0 +1,23 @@
+{
+  "rules": [
+    {
+      "id": "IPC-I01",
+      "severity": "info",
+      "title": "项目使用了 IPC 通信机制",
+      "description": "标记应用中包含 IPC 跨进程通信能力，作为安全审计的基础视图指引。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "@ohos.rpc",
+          "@kit.IPCKit"
+        ]
+      },
+      "audit_guide": "辅助指示规则，检测到 IPC 依赖后，自动在报告审计总结的覆盖攻击面中列出“IPC 跨进程安全审计”一栏，无级别风险。",
+      "reference": {
+        "internal": "IPC_REFERENCE.md#3.17",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc"
+      }
+    }
+  ]
+}
