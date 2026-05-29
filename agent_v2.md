@@ -50,27 +50,34 @@ mkdir -p "$AUDIT_DIR"
 cd <project_path> && npx gitnexus analyze --skip-git
 ```
 
-project-parser 的 `project_scanner.py` 会自动调用 `gitnexus_hints.py`（Phase 1.5），用 GitNexus Cypher 查询为每条 attack_map 路径注入 `data_flow_hint` 字段。可通过 `--skip-gitnexus` 跳过此步骤。
+project-parser 的 `project_scanner.py` 会自动调用 `path_discovery.py`（Phase 1.5），使用 **GitNexus 图遍历** 自动发现 entry→sink 路径：
 
-### data_flow_hint 字段说明
+1. **CALLS BFS（主策略，深度 10）**：从 entry 方法沿 CALLS 边遍历，命中 sink 时记录完整调用链。适用于 IPC 等有真实函数调用的场景。
+2. **ACCESSES 回退（补漏策略）**：对 CALLS 未覆盖的 entry，用属性写入关系 + 同模块匹配发现潜在数据流。适用于 Deeplink/Ability 等通过路由传输的场景。
+
+可通过 `--skip-gitnexus` 跳过。
+
+### data_flow_hint 字段
 
 ```json
 {
-  "id": "path-001",
-  "confidence": "high_verified_deeplink",
+  "id": "path-007",
+  "entry_type": "ipc",
   "data_flow_hint": {
     "trace": [
-      "onCreate → write(externalUrl) (EntryAbility.ets) [外部参数注入]",
-      "onNewWant → write(externalUrl) (EntryAbility.ets) [外部参数注入]"
+      "onRemoteMessageRequest (IPC_Service.ets)",
+      "onHandleClientReq (IPC_Service.ets)"
     ],
     "verified": true,
-    "source": "gitnexus_cypher"
+    "hops": 1,
+    "source": "gitnexus_bfs"
   }
 }
 ```
 
-- `verified=true`：GitNexus 确认入口方法存在对属性的写入操作，数据流可达性高
-- `verified=false`：找到部分连接但不够完整，仍需 AI 深度验证
+- `source: "gitnexus_bfs"`：CALLS 图遍历发现，高置信度
+- `source: "gitnexus_accesses"`：ACCESSES 回退发现，中等置信度
+- `hops`：从 entry 到 sink 的步数（hops ≤ 3 为 high 置信度）
 
 ### 输出
 

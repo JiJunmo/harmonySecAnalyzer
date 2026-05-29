@@ -389,142 +389,6 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
 
 
 # ============================================================
-#  Attack Map (预判入口→sink 可连性)
-# ============================================================
-
-def build_attack_map(entries: list[dict], sinks: list[dict]) -> list[dict]:
-    """将入口和 sink 配对，根据同文件/同模块/跨模块做可连性预判，并按 (entry_id, sink_file) 进行归并去重。"""
-    grouped_paths = {}  # dict[tuple[str, str], list[dict]]
-
-    # 需要跨模块配对的 entry_type → sink_type 组合
-    # 这些组合即使不在同一文件/目录下，也应生成攻击路径让 AI 验证
-    CROSS_MODULE_PAIRS = {
-        ("deeplink", "webview"),
-        ("deeplink", "file_write"),
-        ("deeplink", "database"),
-        ("deeplink", "network"),
-        ("deeplink", "state_mutation"),
-        ("deeplink", "data_exfil"),
-        ("url_callback", "webview"),
-        ("ipc", "data_exfil"),
-        ("ipc", "file_write"),
-        ("ipc_service", "data_exfil"),
-        ("ipc_service", "file_write"),
-        ("exported_ability", "start_ability"),
-        ("exported_ability", "terminate_result"),
-        ("exported_ability", "webview"),
-        ("exported_ability", "file_write"),
-        ("exported_ability", "database"),
-        ("exported_ability", "network"),
-    }
-
-    for entry in entries:
-        for sink in sinks:
-            is_valid_pair = False
-            conf = "same_module"
-            note = ""
-
-            if entry["file"] == sink["file"]:
-                is_valid_pair = True
-                is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
-                is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
-                conf = "high_verified_deeplink" if is_high_verified else ("high_verified_ability" if is_high_ability else "same_file")
-                note = f"入口通过同文件直接流向终点，极高置信度"
-
-            elif os.path.dirname(entry["file"]) == os.path.dirname(sink["file"]):
-                is_valid_pair = True
-                is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
-                is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
-                conf = "high_verified_deeplink" if is_high_verified else ("high_verified_ability" if is_high_ability else "same_dir")
-                note = f"入口与终点在同目录，可能通过函数直接到达，高置信度"
-
-            elif (entry["type"], sink["type"]) in CROSS_MODULE_PAIRS:
-                is_valid_pair = True
-                entry_parts = entry["file"].split("/")
-                sink_parts = sink["file"].split("/")
-                entry_module = entry_parts[0] if len(entry_parts) > 1 else ""
-                sink_module = sink_parts[0] if len(sink_parts) > 1 else ""
-
-                is_high_verified = entry.get("verified_deeplink") is True and sink.get("type") == "webview"
-                is_high_ability = entry.get("type") == "exported_ability" and sink.get("type") in ("start_ability", "terminate_result", "webview")
-
-                if is_high_verified:
-                    conf = "high_verified_deeplink"
-                elif is_high_ability:
-                    conf = "high_verified_ability"
-                else:
-                    conf = "same_module" if entry_module == sink_module else "cross_module"
-                note = f"外部入口可能通过路由/状态管理到达跨文件终点，需 AI 验证可达性"
-
-            if is_valid_pair:
-                key = (entry["id"], sink["file"])
-                if key not in grouped_paths:
-                    grouped_paths[key] = []
-                grouped_paths[key].append({
-                    "sink_id": sink["id"],
-                    "sink_type": sink["type"],
-                    "confidence": conf,
-                    "target": sink.get("target", sink["type"]),
-                    "entry": entry
-                })
-
-    # 合并并生成最终的 attack_map
-    paths = []
-    counter = 0
-
-    # 评级优先级权重表 (用于选举合并路径后的最终置信度)
-    CONFIDENCE_WEIGHTS = {
-        "high_verified_deeplink": 6,
-        "high_verified_ability": 5,
-        "same_file": 4,
-        "same_dir": 3,
-        "same_module": 2,
-        "cross_module": 1
-    }
-
-    # 排序使输出更加确定有序
-    for key in sorted(grouped_paths.keys()):
-        entry_id, sink_file = key
-        sub_pairs = grouped_paths[key]
-
-        counter += 1
-        entry = sub_pairs[0]["entry"]
-
-        # 归并 Sinks
-        sink_ids = sorted(list(set(sp["sink_id"] for sp in sub_pairs)))
-        sink_types = sorted(list(set(sp["sink_type"] for sp in sub_pairs)))
-
-        # 选举最高的置信度
-        highest_conf = "cross_module"
-        highest_weight = 0
-        for sp in sub_pairs:
-            w = CONFIDENCE_WEIGHTS.get(sp["confidence"], 0)
-            if w > highest_weight:
-                highest_weight = w
-                highest_conf = sp["confidence"]
-
-        # 组合生成说明 Note
-        targets_str = ", ".join(sorted(list(set(sp["target"] for sp in sub_pairs))))
-        if entry["file"] == sink_file:
-            note = f"真实入口 {entry['handler']} ➜ 同文件所有高危终点 [{targets_str}]，置信度: {highest_conf}"
-        else:
-            note = f"真实入口 {entry['handler']} ➜ 跨文件终点 [{targets_str}]，置信度: {highest_conf}"
-
-        paths.append({
-            "id": f"path-{counter:03d}",
-            "entry_id": entry_id,
-            "sink_ids": sink_ids,
-            "sink_types": sink_types,
-            "entry_type": entry["type"],
-            "file": entry["file"] if entry["file"] == sink_file else f"{entry['file']} ↔ {sink_file}",
-            "confidence": highest_conf,
-            "note": note
-        })
-
-    return paths
-
-
-# ============================================================
 #  Main
 # ============================================================
 
@@ -533,7 +397,7 @@ def main():
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")
     parser.add_argument("-o", "--output-dir", required=True, help="输出目录路径")
     parser.add_argument("--pretty", action="store_true", help="格式化 JSON")
-    parser.add_argument("--skip-gitnexus", action="store_true", help="跳过 GitNexus 数据流预分析")
+    parser.add_argument("--skip-gitnexus", action="store_true", help="跳过 GitNexus 图遍历路径发现")
     args = parser.parse_args()
 
     project_root = Path(args.project_path).resolve()
@@ -563,38 +427,50 @@ def main():
     }
     (out_dir / "sinks.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
 
-    # Attack Map
-    attack_map = build_attack_map(entries, sinks)
-    map_json = {
-        "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(attack_map)},
-        "attack_map": attack_map,
-    }
-    (out_dir / "attack_map.json").write_text(json.dumps(map_json, ensure_ascii=False, indent=indent), encoding="utf-8")
-
-    # Phase 1.5: GitNexus 数据流预分析
+    # Phase 1.5: GitNexus 图遍历路径发现（替代旧的邻近度配对）
     if not args.skip_gitnexus:
-        _run_gitnexus_hints(str(project_root), str(out_dir), indent)
+        discovery_script = Path(__file__).resolve().parent / "path_discovery.py"
+        if discovery_script.exists():
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(discovery_script), str(project_root), str(out_dir), "--pretty"],
+                    capture_output=True, text=True, timeout=60
+                )
+                print(result.stdout.strip())
+                if result.stderr:
+                    print(result.stderr.strip(), file=sys.stderr)
+                if result.returncode != 0:
+                    print("[WARN] path_discovery 异常，fallback: 写空 attack_map", file=sys.stderr)
+                    _write_empty_attack_map(out_dir, entries, sinks, indent)
+            except Exception as e:
+                print(f"[WARN] path_discovery 执行失败: {e}，fallback: 写空 attack_map", file=sys.stderr)
+                _write_empty_attack_map(out_dir, entries, sinks, indent)
+        else:
+            print("[SKIP] path_discovery.py 未找到，写空 attack_map")
+            _write_empty_attack_map(out_dir, entries, sinks, indent)
+    else:
+        _write_empty_attack_map(out_dir, entries, sinks, indent)
 
-    print(f"[DONE] v2 攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点, {len(attack_map)} 潜在路径 → {out_dir}")
+    # 读取 path_discovery 产出的 attack_map 以显示统计
+    amap_count = 0
+    amap_file = out_dir / "attack_map.json"
+    if amap_file.exists():
+        try:
+            amap_count = json.loads(amap_file.read_text(encoding="utf-8")).get("_meta", {}).get("final_paths", 0)
+        except Exception:
+            pass
+
+    print(f"[DONE] v2 攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点, {amap_count} 条图发现路径 → {out_dir}")
 
 
-def _run_gitnexus_hints(project_root: str, out_dir: str, indent):
-    """调用 gitnexus_hints.py 进行数据流预分析。"""
-    hints_script = Path(__file__).resolve().parent / "gitnexus_hints.py"
-    if not hints_script.exists():
-        print("[SKIP] gitnexus_hints.py 未找到，跳过数据流预分析")
-        return
-    try:
-        result = subprocess.run(
-            [sys.executable, str(hints_script), project_root, out_dir, "--pretty"] if indent != None
-            else [sys.executable, str(hints_script), project_root, out_dir],
-            capture_output=True, text=True, timeout=60
-        )
-        print(result.stdout.strip())
-        if result.stderr:
-            print(result.stderr.strip(), file=sys.stderr)
-    except Exception as e:
-        print(f"[WARN] GitNexus hints 失败: {e}", file=sys.stderr)
+def _write_empty_attack_map(out_dir: Path, entries, sinks, indent):
+    """写一个空 attack_map，让下游流程不会中断。"""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    amap = {
+        "_meta": {"version": VERSION, "count": 0, "discovery": "skipped"},
+        "attack_map": [],
+    }
+    (out_dir / "attack_map.json").write_text(json.dumps(amap, ensure_ascii=False, indent=indent), encoding="utf-8")
 
 
 if __name__ == "__main__":
