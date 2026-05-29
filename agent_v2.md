@@ -9,28 +9,25 @@
 ## 审计流程
 
 ```
-Phase 1: 发现（harmony-project-parser）
-  → entries.json    所有外部入口
-  → sinks.json      所有攻击终点
-  → attack_map.json 入口→终点的可连性预判
+Phase 1: 静态特征扫描（harmony-project-parser）
+  → entries.json    所有外部可触达入口（静态扫描）
+  → sinks.json      所有攻击终点（静态扫描）
 
-Phase 1.5: 数据流预分析（gitnexus_hints.py）
-  → 用 GitNexus Cypher 查询 ACCESSES/CALLS 边
-  → attack_map 路径追加 data_flow_hint 字段
-  → verified=true 表示确认存在数据流连接
+Phase 1.5: 智能体语义图路径发现与装配（Agent MCP 直连）
+  → Agent 自动拉取 entries.json 和 sinks.json
+  → Agent 原生直连调用 GitNexus MCP Tool（gitnexus_cypher）
+  → CALLS BFS 调用链拉取 + ACCESSES 属性写入跨模块补漏
+  → AI 语义分析与去重合并，在内存中装配 attack_map.json 并落库
+  → verified=true 且携带精细的 data_flow_hint 上下文
 
 Phase 2: 验证（各 audit skill 并行）
   → 对 attack_map 中每条潜在路径，AI 验证是否真实可达
   → 优先处理 verified=true 的路径（数据流已确认）
   → 可达 → 生成 AttackPath（含 entry + flow + impact + payload + output_example）
   → 不可达 → 跳过
-
-Phase 3: 报告（harmony-report-generator）
-  → 读取所有 *-attack-paths.json
-  → 聚合统计 + 生成 audit-report.md
 ```
 
-## Phase 1: 发现
+## Phase 1: 静态特征扫描
 
 ### 执行
 
@@ -44,47 +41,83 @@ AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$AUDIT_DIR"
 ```
 
-扫描完成后，**确保项目已被 GitNexus 索引**，后续 skill 将用它做跨文件调用链追踪：
+## Phase 1.5: 智能体语义图路径发现与装配 (Agent MCP)
 
+在 Phase 1 扫描产生基础的 `entries.json` 与 `sinks.json` 后，**Agent（你）必须实时接管路径发现流程**，直接通过原生的 GitNexus MCP 进行数据流拉取与组装。
+
+### 1. 确保 GitNexus 索引
+首先，确保靶场项目已经被 GitNexus 索引。若无索引，调用终端命令进行快速构建：
 ```bash
 cd <project_path> && npx gitnexus analyze --skip-git
 ```
 
-project-parser 的 `project_scanner.py` 会自动调用 `path_discovery.py`（Phase 1.5），使用 **GitNexus 图遍历** 自动发现 entry→sink 路径：
+### 2. 执行图数据流拉取 (MCP 直连)
+利用你身上的 MCP 工具 `gitnexus_cypher`，对该靶场项目并行发起以下图遍历查询：
 
-1. **CALLS BFS（主策略，深度 10）**：从 entry 方法沿 CALLS 边遍历，命中 sink 时记录完整调用链。适用于 IPC 等有真实函数调用的场景。
-2. **ACCESSES 回退（补漏策略）**：对 CALLS 未覆盖的 entry，用属性写入关系 + 同模块匹配发现潜在数据流。适用于 Deeplink/Ability 等通过路由传输的场景。
+* **查询 A（有向 CALLS 边拉取）**：
+  ```cypher
+  MATCH (a)-[r:CodeRelation {type: 'CALLS'}]->(b)
+  RETURN a.name as caller, a.filePath as caller_file, b.name as callee, b.filePath as callee_file
+  ```
+  同时查询所有的 `Method` 和 `Function` 节点，构建内存调用邻接表。
+  
+* **查询 B（ACCESSES 属性写入补漏）**：针对通过状态管理或路由传输的跨组件场景，拉取 Entry 对属性的 `write` 操作：
+  ```cypher
+  MATCH (a)-[r:CodeRelation {type: 'ACCESSES', reason: 'write'}]->(p:Property)
+  RETURN a.name as method, a.filePath as method_file, p.name as property, p.filePath as property_file
+  ```
 
-可通过 `--skip-gitnexus` 跳过。
+### 3. AI 内存图遍历与语义装配
+在内存中，AI 执行以下图算法进行漏洞攻击路径判定与装配：
+1. **节点映射**：将 `entries.json` 中的入口（匹配 `onCreate`/`onNewWant` 等生命周期方法）和 `sinks.json` 中的终点映射为图节点。
+2. **正向 & 反向 BFS 遍历 (最大深度 10)**：从 Entry 节点出发沿 CALLS 边 BFS，命中 Sink 方法时记录完整链路，还原步数 `hops`。对孤立 Sink 沿反向图进行 BFS 回溯补漏。
+3. **ACCESSES 同模块补漏**：对无 CALLS 调用的孤立 Entry，若其写入的属性（Property）与某个 Sink 处于相同的模块，则判定其通过同模块数据共享可达，生成包含属性写入痕迹的 trace。
+4. **去重与合并**：将所有的发现路径按照 `(entry_id, sink_file)` 进行归并去重，保留最短 hops 的链路作为最优 trace。
 
-### data_flow_hint 字段
+### 4. 组装并写入 `attack_map.json`
+
+AI 将装配好的数据生成符合以下结构的 `attack_map.json`，并使用写工具直接写入 `<audit_dir>/attack_map.json`，以无缝交付给 Phase 2：
 
 ```json
 {
-  "id": "path-007",
-  "entry_type": "ipc",
-  "data_flow_hint": {
-    "trace": [
-      "onRemoteMessageRequest (IPC_Service.ets)",
-      "onHandleClientReq (IPC_Service.ets)"
-    ],
-    "verified": true,
-    "hops": 1,
-    "source": "gitnexus_bfs"
-  }
+  "_meta": {
+    "version": "2.2.0",
+    "discovery": "agent_mcp_bfs",
+    "final_paths": 2
+  },
+  "attack_map": [
+    {
+      "id": "path-001",
+      "entry_id": "entry-001",
+      "sink_ids": ["sink-001"],
+      "sink_types": ["webview"],
+      "entry_type": "deeplink",
+      "file": "EntryAbility.ets ↔ WebViewPage.ets",
+      "confidence": "high",
+      "note": "want.parameters → 2 步到达 WebViewPage.ets（webview）",
+      "data_flow_hint": {
+        "trace": [
+          "onNewWant → write(externalUrl) (EntryAbility.ets) [属性写入，外部参数注入]",
+          "externalUrl → Sink [sink-001] (WebViewPage.ets) [同模块数据流: entry]"
+        ],
+        "verified": true,
+        "hops": 2,
+        "source": "gitnexus_bfs"
+      }
+    }
+  ]
 }
 ```
 
-- `source: "gitnexus_bfs"`：CALLS 图遍历发现，高置信度
-- `source: "gitnexus_accesses"`：ACCESSES 回退发现，中等置信度
-- `hops`：从 entry 到 sink 的步数（hops ≤ 3 为 high 置信度）
+- `source: "gitnexus_bfs"`：CALLS 链 BFS 发现，置信度高。
+- `source: "gitnexus_accesses"`：ACCESSES 属性写入发现，置信度中。
+- `hops`：从入口方法到终点方法的跨文件步数（hops ≤ 3 为高可信度）。
 
 ### 输出
-
-读 `<audit_dir>/entries.json` 和 `<audit_dir>/attack_map.json`，向用户展示：
-- 发现了多少外部入口（按 type 分类）
-- 发现了多少攻击终点（按 type 分类）
-- 预判了多少条潜在攻击路径
+向用户展示：
+- 静态扫描提取了多少个外部入口
+- 静态扫描提取了多少个攻击终点
+- AI 驱动 MCP 成功追踪并装配出多少条真实的图遍历可达路径（Verified Paths）
 
 ## Phase 2: 验证
 

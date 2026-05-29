@@ -6,12 +6,12 @@
 
 ## 🛠️ 核心架构与模块设计
 
-本项目采用**混合智能双轨安全审计架构 (Hybrid Smart-Penetration Dual-Track Architecture)**，将审计流程划分为以下阶段：
+本项目采用**智能体驱动原生双轨安全审计架构 (Agent MCP-Driven Dual-Track Architecture)**，将审计流程划分为以下阶段：
 
 ```
-Phase 1: 发现 (harmony-project-parser) ➔ 扫描入口与攻击终点，生成基础连通性关系图
+Phase 1: 静态特征扫描 (harmony-project-parser) ➔ 快速扫描并发现项目所有的外部入口与攻击终点
   │
-Phase 1.5: 预分析 (gitnexus_hints.py) ➔ 利用 GitNexus Cypher 检测代码物理数据流，标记置信度
+Phase 1.5: 智能体语义图路径发现 (Agent MCP Assembly) ➔ AI 直连 MCP 工具进行图遍历与路径语义组装
   │
 Phase 2: 验证 (双轨并行与级联调度)
   ├── 轨道一 (Track 1): IPC 垂直自闭环审计 (onConnect ➔ switch-case 业务分支深度挖掘)
@@ -22,18 +22,17 @@ Phase 2: 验证 (双轨并行与级联调度)
 Phase 3: 报告生成 (harmony-report-generator) ➔ 聚合各阶段生成的漏洞分片并生成结构化报告
 ```
 
-### 1. 发现阶段 (Phase 1: Discovery)
+### 1. 静态特征扫描阶段 (Phase 1: Discovery)
 *   **实现模块**：`skills_v2/harmony-project-parser/`
-*   **功能**：静态解析配置文件（`module.json5`、`config.json`）及源码文件，提取所有暴露的外部入口（Entry，如导出的 UIAbility、IPC 服务、DeepLink 等）和高危操作终点（Sink，如 WebView 加载、文件写入、敏感 API 调用等）。
+*   **功能**：静态解析配置文件（`module.json5`、`config.json`）及源码文件，提取所有暴露的外部可控入口（Entry，如导出的 UIAbility、IPC 服务、DeepLink 等）和高危操作终点（Sink，如 WebView 加载、文件写入、敏感 API 调用等）。
 *   **产出物**：
-    *   `<audit_dir>/entries.json`（外部可控入口）
-    *   `<audit_dir>/sinks.json`（攻击终点）
-    *   `<audit_dir>/attack_map.json`（基于邻近度的潜在连通对）
+    *   `<audit_dir>/entries.json`（外部可控入口列表）
+    *   `<audit_dir>/sinks.json`（攻击终点列表）
 
-### 2. 数据流预分析阶段 (Phase 1.5: Pre-Analysis)
-*   **实现模块**：`skills_v2/harmony-project-parser/scripts/gitnexus_hints.py`
-*   **功能**：在项目被 GitNexus 索引后，通过 Cypher 执行图查询，提取 `ACCESSES`（属性写入）和 `CALLS`（方法/函数调用）关系，分析入口到终点的数据流走向。
-*   **产出物**：为 `attack_map.json` 中的每条路径注入 `data_flow_hint` 属性，标记数据流调用链并标注 `verified=true/false`。
+### 2. 智能体语义图路径发现阶段 (Phase 1.5: Agent MCP Assembly)
+*   **实现模块**：由 **AI Agent（本智能体）** 直接接管，无需多余胶水脚本。
+*   **功能**：在项目被 GitNexus 索引后，AI 原生直连调用 MCP 工具 `gitnexus_cypher`，在内存中执行正向/反向 BFS 调用链搜索与 ACCESSES 属性写入跨模块关联补漏，将 Entry 与 Sink 成功连通的节点自动映射。
+*   **产出物**：在内存中将所有链路去重并装配为高置信度路径，直接写入 `<audit_dir>/attack_map.json`（含完整 data_flow_hint 上下文）交付给 Phase 2。
 
 ### 3. 验证阶段 (Phase 2: Verification)
 由 AI 编排器（`agent_v2.md`）调度不同的审计 Skill 进行并行或级联分析：
@@ -57,20 +56,19 @@ Phase 3: 报告生成 (harmony-report-generator) ➔ 聚合各阶段生成的漏
 ```
 ├── README.md                              # 项目说明文档
 ├── AGENTS.md / CLAUDE.md                 # GitNexus 代码智能协作契约手册
-├── agent_v2.md                           # 混合智能双轨编排管线核心说明
+├── agent_v2.md                           # 智能体原生双轨编排管线核心说明
 ├── v2_weaknesses.md                      # 架构缺陷客观剖析与中长期演进蓝图
 ├── PLAN.md / PLAN_NEW.md                 # 历史设计规划备份
 ├── skills_v2/                            # 审计技能库 (Skills)
-│   ├── harmony-project-parser/           # 项目扫描与连通性分析技能
+│   ├── harmony-project-parser/           # 项目扫描与特征发现技能 (Phase 1)
 │   │   └── scripts/
-│   │       ├── project_scanner.py        # 静态资源与入口发现核心脚本
-│   │       └── gitnexus_hints.py         # 自动执行的 Cypher 数据流预分析脚本
-│   ├── harmony-ipc-security-audit/       # 轨道一：IPC 通信安全审计技能
-│   ├── harmony-ability-security-audit/   # 轨道二：UIAbility 入口防卫与状态流向追踪技能
-│   ├── harmony-webview-audit/            # 轨道二：WebView JS Bridge 与拦截器专项分析技能
+│   │       └── project_scanner.py        # 静态资源与入口/Sink 发现核心脚本
+│   ├── harmony-ipc-security-audit/       # 轨道一：IPC 通信安全审计技能 (Phase 2)
+│   ├── harmony-ability-security-audit/   # 轨道二：UIAbility 入口防卫与状态流向追踪技能 (Phase 2)
+│   ├── harmony-webview-audit/            # 轨道二：WebView JS Bridge 与拦截器专项分析技能 (Phase 2)
 │   └── harmony-report-generator/         # Phase 3：多源报告校验、缝合与聚合生成技能
 │       └── scripts/
-│           └── report_aggregator.py      # 报告数据处理与任务数漏审动态校验脚本
+│           └── report_aggregator.py      # 报告数据聚合、Deduplication 与多路径归并脚本
 └── skills/                               # v1 遗留技能文件夹 (备份/参考)
 ```
 
@@ -93,11 +91,8 @@ cd <target_project_path>
 npx gitnexus analyze --skip-git
 ```
 
-### 3. 执行数据流预分析 (Phase 1.5)
-如果第一步中没有包含 GitNexus，可再次手动执行 `gitnexus_hints.py`（通常由 `project_scanner.py` 内部自动调用）：
-```bash
-python skills_v2/harmony-project-parser/scripts/gitnexus_hints.py <target_project_path> <audit_output_dir> --pretty
-```
+### 3. AI 驱动图发现与装配 (Phase 1.5)
+该步骤**完全由 AI 编排器自动、实时直连 GitNexus MCP 接口执行**，无需用户在终端拉起任何脚本。AI 将直接读取 `entries.json` 与 `sinks.json`，在图上执行 BFS 遍历，自动输出 `attack_map.json`！
 
 ### 4. 驱动 AI Agent 执行路径验证
 根据 `agent_v2.md` 的编排流程：

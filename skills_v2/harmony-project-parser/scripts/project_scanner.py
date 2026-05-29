@@ -397,7 +397,6 @@ def main():
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")
     parser.add_argument("-o", "--output-dir", required=True, help="输出目录路径")
     parser.add_argument("--pretty", action="store_true", help="格式化 JSON")
-    parser.add_argument("--skip-gitnexus", action="store_true", help="跳过 GitNexus 图遍历路径发现")
     args = parser.parse_args()
 
     project_root = Path(args.project_path).resolve()
@@ -427,50 +426,7 @@ def main():
     }
     (out_dir / "sinks.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
 
-    # Phase 1.5: GitNexus 图遍历路径发现（替代旧的邻近度配对）
-    if not args.skip_gitnexus:
-        discovery_script = Path(__file__).resolve().parent / "path_discovery.py"
-        if discovery_script.exists():
-            try:
-                result = subprocess.run(
-                    [sys.executable, str(discovery_script), str(project_root), str(out_dir), "--pretty"],
-                    capture_output=True, text=True, timeout=60
-                )
-                print(result.stdout.strip())
-                if result.stderr:
-                    print(result.stderr.strip(), file=sys.stderr)
-                if result.returncode != 0:
-                    print("[WARN] path_discovery 异常，fallback: 写空 attack_map", file=sys.stderr)
-                    _write_empty_attack_map(out_dir, entries, sinks, indent)
-            except Exception as e:
-                print(f"[WARN] path_discovery 执行失败: {e}，fallback: 写空 attack_map", file=sys.stderr)
-                _write_empty_attack_map(out_dir, entries, sinks, indent)
-        else:
-            print("[SKIP] path_discovery.py 未找到，写空 attack_map")
-            _write_empty_attack_map(out_dir, entries, sinks, indent)
-    else:
-        _write_empty_attack_map(out_dir, entries, sinks, indent)
-
-    # 读取 path_discovery 产出的 attack_map 以显示统计
-    amap_count = 0
-    amap_file = out_dir / "attack_map.json"
-    if amap_file.exists():
-        try:
-            amap_count = json.loads(amap_file.read_text(encoding="utf-8")).get("_meta", {}).get("final_paths", 0)
-        except Exception:
-            pass
-
-    print(f"[DONE] v2 攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点, {amap_count} 条图发现路径 → {out_dir}")
-
-
-def _write_empty_attack_map(out_dir: Path, entries, sinks, indent):
-    """写一个空 attack_map，让下游流程不会中断。"""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    amap = {
-        "_meta": {"version": VERSION, "count": 0, "discovery": "skipped"},
-        "attack_map": [],
-    }
-    (out_dir / "attack_map.json").write_text(json.dumps(amap, ensure_ascii=False, indent=indent), encoding="utf-8")
+    print(f"[DONE] v2 攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点 ➜ {out_dir}")
 
 
 if __name__ == "__main__":
