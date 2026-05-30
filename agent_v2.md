@@ -14,9 +14,10 @@ Phase 1: 静态特征扫描（harmony-project-parser）
   → sinks.json      所有攻击终点（静态扫描）
 
 Phase 1.5: 智能体语义图路径发现与装配（Agent MCP 直连）
+Phase 1.5: 智能体级联式双向断裂与 AI 语义搭桥 (Cascade Hybrid v2.5)
   → Agent 自动拉取 entries.json 和 sinks.json
-  → Agent 原生直连调用 GitNexus MCP Tool（gitnexus_cypher）
-  → CALLS BFS 调用链拉取 + ACCESSES 属性写入跨模块补漏
+  → 触发 fragment_finder 提取路径碎片
+  → Agent 原生直连调用 MCP 工具进行语义桥接验证
   → AI 语义分析与去重合并，在内存中装配 attack_map.json 并落库
   → verified=true 且携带精细的 data_flow_hint 上下文
 
@@ -41,40 +42,29 @@ AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$AUDIT_DIR"
 ```
 
-## Phase 1.5: 智能体语义图路径发现与装配 (Agent MCP)
+## Phase 1.5: 智能体级联式双向断裂与 AI 语义搭桥 (Cascade Hybrid v2.5)
 
-在 Phase 1 扫描产生基础的 `entries.json` 与 `sinks.json` 后，**Agent（你）必须实时接管路径发现流程**，直接通过原生的 GitNexus MCP 进行数据流拉取与组装。
+在 Phase 1 扫描产生基础的 `entries.json` 与 `sinks.json` 后，**系统将采用级联式拓扑设计解决复杂/动态传递（如 AppStorage、Emitter 事件总线、动态路由）问题**：
 
-### 1. 确保 GitNexus 索引
-首先，确保靶场项目已经被 GitNexus 索引。若无索引，调用终端命令进行快速构建：
+### 1. 触发双向断裂路径碎片提取 (PathFinder 脚本粗筛)
+运行本地高精度拓扑碎片扫描器，提取前向与后向碎片并生成匹配候选桥（Candidate Bridges）：
 ```bash
-cd <project_path> && npx gitnexus analyze --skip-git
+python3 skills_v2/harmony-project-parser/scripts/fragment_finder.py <project_path> -o <audit_dir>
 ```
+* **输出**：在 `<audit_dir>/fragments.json` 中保存：
+  - `forward_fragments`：从 `entries.json` 入口出发，截止于物理终点或隐式卡口（AppStorage.setOrCreate、emitter.emit、router.pushUrl）的正向拼图。
+  - `reverse_fragments`：从隐式入口（@StorageLink、emitter.on、router pages）触发，连通到物理 `sinks.json` 的反向拼图。
+  - `candidate_bridges`：脚本基于 Key 通配符及常量折叠预先碰撞筛出的潜在匹配对（Jigsaw Pairs）。
 
-### 2. 执行图数据流拉取 (MCP 直连)
-利用你身上的 MCP 工具 `gitnexus_cypher`，对该靶场项目并行发起以下图遍历查询：
+### 2. 智能体语义直连桥接验证 (AI MCP Bridging & Verification)
+AI Agent（你）实时读取 `<audit_dir>/fragments.json`。对其中的每一个 `candidate_bridges`，使用你的 MCP 图关系或 `view_file` 工具调阅关联文件的定义与上下文源码，核实：
+1. **Key/Event 运行时交联度**：分析动态生成的键值或事件，确认它们在运行时是否确实共享同一个全局槽（排除因为模糊匹配引起的不交联误报）。
+2. **传导可利用性**：确认参数是否未加过滤直接流入下游物理 Sink。
 
-* **查询 A（有向 CALLS 边拉取）**：
-  ```cypher
-  MATCH (a)-[r:CodeRelation {type: 'CALLS'}]->(b)
-  RETURN a.name as caller, a.filePath as caller_file, b.name as callee, b.filePath as callee_file
-  ```
-  同时查询所有的 `Method` 和 `Function` 节点，构建内存调用邻接表。
-  
-* **查询 B（ACCESSES 属性写入补漏）**：针对通过状态管理或路由传输的跨组件场景，拉取 Entry 对属性的 `write` 操作：
-  ```cypher
-  MATCH (a)-[r:CodeRelation {type: 'ACCESSES', reason: 'write'}]->(p:Property)
-  RETURN a.name as method, a.filePath as method_file, p.name as property, p.filePath as property_file
-  ```
+### 3. 首尾缝合并写入 `attack_map.json`
+对通过 AI 语义验证的所有拼图对，AI 在内存中将其进行首尾缝合，拼装成符合以下结构的完整调用 Trace 并落库为 `attack_map.json`，无缝交付给 Phase 2 深度审计：
 
-### 3. AI 内存图遍历与语义装配
-在内存中，AI 执行以下图算法进行漏洞攻击路径判定与装配：
-1. **节点映射**：将 `entries.json` 中的入口（匹配 `onCreate`/`onNewWant` 等生命周期方法）和 `sinks.json` 中的终点映射为图节点。
-2. **正向 & 反向 BFS 遍历 (最大深度 10)**：从 Entry 节点出发沿 CALLS 边 BFS，命中 Sink 方法时记录完整链路，还原步数 `hops`。对孤立 Sink 沿反向图进行 BFS 回溯补漏。
-3. **ACCESSES 同模块补漏**：对无 CALLS 调用的孤立 Entry，若其写入的属性（Property）与某个 Sink 处于相同的模块，则判定其通过同模块数据共享可达，生成包含属性写入痕迹的 trace。
-4. **去重与合并**：将所有的发现路径按照 `(entry_id, sink_file)` 进行归并去重，保留最短 hops 的链路作为最优 trace。
 
-### 4. 组装并写入 `attack_map.json`
 
 AI 将装配好的数据生成符合以下结构的 `attack_map.json`，并使用写工具直接写入 `<audit_dir>/attack_map.json`，以无缝交付给 Phase 2：
 

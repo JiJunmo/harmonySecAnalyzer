@@ -1,0 +1,94 @@
+{
+  "_meta": {
+    "version": "2.5.0",
+    "discovery": "cascade_hybrid_bridge",
+    "total_paths": 3,
+    "verified_paths": 2
+  },
+  "attack_map": [
+    {
+      "id": "path-001",
+      "entry_id": "entry-001",
+      "sink_ids": [
+        "sink-001"
+      ],
+      "sink_types": [
+        "webview"
+      ],
+      "entry_type": "deeplink",
+      "file": "EntryAbility.ets ↔ WebViewPage.ets",
+      "confidence": "high",
+      "note": "want.parameters.externalUrl ➔ AppStorage('global_web_url_phone') ➔ WebViewPage.ets (Web component)",
+      "data_flow_hint": {
+        "trace": [
+          "onCreate(want) (EntryAbility.ets:L18) [外部参数获取]",
+          "let externalUrl = want.parameters?.externalUrl as string (EntryAbility.ets:L19) [数据流提取]",
+          "let storageKey = 'global_web_url_' + this.deviceSuffix (EntryAbility.ets:L24) [动态 Key 构建 ➔ 'global_web_url_phone']",
+          "AppStorage.setOrCreate(storageKey, externalUrl) (EntryAbility.ets:L25) [动态 AppStorage 写入]",
+          "State Storage Bridge Spliced ➔ Key: 'global_web_url_phone' [级联式 AI 语义搭桥]",
+          "@StorageLink('global_web_url_phone') currentWebUrl: string (WebViewPage.ets:L26) [隐式属性读取]",
+          "Web({ src: this.currentWebUrl, ... }) (WebViewPage.ets:L43) [物理攻击终点 Sink]"
+        ],
+        "verified": true,
+        "hops": 4,
+        "source": "cascade_hybrid_bridge"
+      }
+    },
+    {
+      "id": "path-002",
+      "entry_id": "entry-002",
+      "sink_ids": [
+        "sink-001"
+      ],
+      "sink_types": [
+        "webview"
+      ],
+      "entry_type": "deeplink",
+      "file": "EntryAbility.ets ↔ WebViewPage.ets",
+      "confidence": "high",
+      "note": "want.parameters.externalUrl ➔ AppStorage('global_web_url_phone') ➔ WebViewPage.ets (Web component)",
+      "data_flow_hint": {
+        "trace": [
+          "onNewWant(want) (EntryAbility.ets:L38) [外部参数获取]",
+          "let externalUrl = want.parameters?.externalUrl as string (EntryAbility.ets:L39) [数据流提取]",
+          "let storageKey = 'global_web_url_' + this.deviceSuffix (EntryAbility.ets:L43) [动态 Key 构建 ➔ 'global_web_url_phone']",
+          "AppStorage.setOrCreate(storageKey, externalUrl) (EntryAbility.ets:L44) [动态 AppStorage 写入]",
+          "State Storage Bridge Spliced ➔ Key: 'global_web_url_phone' [级联式 AI 语义搭桥]",
+          "@StorageLink('global_web_url_phone') currentWebUrl: string (WebViewPage.ets:L26) [隐式属性读取]",
+          "Web({ src: this.currentWebUrl, ... }) (WebViewPage.ets:L43) [物理攻击终点 Sink]"
+        ],
+        "verified": true,
+        "hops": 4,
+        "source": "cascade_hybrid_bridge"
+      }
+    },
+    {
+      "id": "path-003",
+      "entry_id": "entry-003",
+      "sink_ids": [
+        "sink-002"
+      ],
+      "sink_types": [
+        "webview_javascript"
+      ],
+      "entry_type": "event_emitter",
+      "file": "MainPage.ets ↔ WebViewPage.ets",
+      "confidence": "medium",
+      "note": "MainPage event load_web (10001) ➔ WebViewPage emitter.on ➔ runJavaScript(token)",
+      "data_flow_hint": {
+        "trace": [
+          "aboutToAppear() (MainPage.ets:L10) [组件初始化入口]",
+          "let eventData = { data: { targetToken: '...' } } (MainPage.ets:L12) [事件载荷构建]",
+          "emitter.emit({ eventId: EVENT_LOAD_WEB }, eventData) (MainPage.ets:L17) [全局事件发射 EVENT_LOAD_WEB ➔ 10001]",
+          "Event Emitter Bridge Spliced ➔ EventID: '10001' [级联式 AI 语义搭桥]",
+          "emitter.on({ eventId: EVENT_LOAD_WEB }, (eventData) => { ... }) (WebViewPage.ets:L31) [事件异步监听]",
+          "let token = eventData.data?.targetToken as string (WebViewPage.ets:L32) [载荷数据提取]",
+          "this.controller.runJavaScript('onTokenLoaded(\'' + token + '\')') (WebViewPage.ets:L35) [未净化 JS 注入执行 Sink]"
+        ],
+        "verified": true,
+        "hops": 4,
+        "source": "cascade_hybrid_bridge"
+      }
+    }
+  ]
+}
