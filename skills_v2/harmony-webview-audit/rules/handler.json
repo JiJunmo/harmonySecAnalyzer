@@ -61,13 +61,10 @@
           "onLoadIntercept"
         ],
         "negative_patterns": [
-          "new URL",
-          "URL.parse",
-          "Uri.parse",
           "URL_CHECK"
         ]
       },
-      "audit_guide": "深入审计 URL 白名单过滤算法：1) 确认是否对 URL 进行了正规的主机名 (Host) 提取，而非简单 includes 或是 startsWith 前缀比较；2) 确认是否存在 com.trusted.com.attack.com 类伪子域名绕过漏洞；3) 判定成立：对 onLoadIntercept 设置了过滤，但匹配逻辑存在结构性漏洞可被劫持绕过。",
+      "audit_guide": "深入审计 URL 白名单过滤算法：1) 明确 API 阻断逻辑：onLoadIntercept 返回 true 表示拦截/阻断加载，返回 false 表示放行/允许加载（大模型极易在此逻辑混淆）。2) 漏洞成因审查：若使用 url.includes() 或 startsWith() 做白名单判定，请核实是否存在安全绕过。模糊匹配漏洞（includes）：例如 if(url.includes('trusted.com')) return false; 攻击者可通过 http://attacker.com/trusted.com 轻松绕过，因为 URL 整体串中包含该关键字；子域名/前缀绕过（startsWith）：若未校验主机名边界，攻击者可注册 trusted.com.attacker.com 域名绕过。3) 即使使用了 new URL() 或 URL.parse()，但如果随后对 hostname 依然使用了 includes/indexOf 进行模糊匹配，依然判定为漏洞成立。4) 判定成立：onLoadIntercept 的 URL 过滤逻辑可被攻击者构造包含白名单关键字的恶意域（如 http://attacker.com/trusted.com）或伪子域（http://trusted.com.attacker.com）直接绕过。",
       "reference": {
         "internal": "WEB_REFERENCE.md#3.6",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#onloadintercept"
