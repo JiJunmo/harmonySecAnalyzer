@@ -279,11 +279,10 @@
           "fs.write"
         ],
         "negative_patterns": [
-          "normalizePath",
-          "resolve"
+          "PATH_CHECK"
         ]
       },
-      "audit_guide": "检查文件路径防御：1) 确认路径是否完全是由用户传入的字符串动态拼接；2) 确认完全没有对路径进行 normalize 规范化或阻断 '../' 跨越前缀；3) 判定成立：受污路径参数流向文件 open，且无有效路径安全白名单或防穿越过滤。",
+      "audit_guide": "检查文件路径防御：1) 确认路径是否完全是由用户传入的字符串动态拼接；2) 确认完全没有对路径进行 normalize 规范化或阻断 '../' 跨越前缀；即使调用了 resolve，若未限制目录边界依然算高危。3) 判定成立：受污路径参数流向文件 open，且无有效路径安全白名单或防穿越过滤。",
       "severity_modifiers": [
         {
           "condition": "文件路径限制在应用沙箱内",
@@ -315,12 +314,10 @@
           "rdbStore.getRdbStore"
         ],
         "negative_patterns": [
-          "parameterized",
-          "args",
-          "Array<ValueType>"
+          "SQL_CHECK"
         ]
       },
-      "audit_guide": "审查 SQL 注入：确认 executeSql 中的 SQL 语句是由外部受污输入拼接而成，且未使用带占位符的参数化查询 args。判定成立高风险。",
+      "audit_guide": "审查 SQL 注入：1) 确认 executeSql 或是 querySql 中的 SQL 语句是否包含由外部受污输入直接动态拼接的内容；2) 确认是否真正使用了带占位符的参数化查询（如 args/Array<ValueType>）。如果只是使用普通字符串插值，或虽然定义了 args 却并未在 SQL 占位符中实际消费，仍判定漏洞成立。3) 判定成立：动态拼接外部数据到 SQL 执行中，且未实施参数化绑定，高风险 SQL 注入成立。",
       "reference": {
         "internal": "IPC_REFERENCE.md#3.10",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-data-rdb"
@@ -343,11 +340,10 @@
           "rdbStore.executeSql"
         ],
         "negative_patterns": [
-          "getCallingUid",
-          "getCallingPid"
+          "WRITE_CHECK"
         ]
       },
-      "audit_guide": "检查写越权风险：确认无 calling Uid 验证执行了敏感的物理删除/覆写接口，中等风险业务漏洞成立。",
+      "audit_guide": "检查写越权风险：1) 确认在 IPC 消息回调（onRemoteMessageRequest）中，是否触发了对系统数据状态有副作用的敏感操作（如 fs.write、unlink、数据库修改等）。2) 确认该分发路径上是否确实缺乏合法的调用方身份安全校验（如 getCallingUid() 拦截）。即使调用了 getCallingUid()，如果只是用来写日志而未做鉴权拦截阻断，判定为漏洞成立。3) 判定成立：无有效调用方身份校验执行了敏感的物理删除/覆写接口，中等风险业务漏洞成立。",
       "severity_modifiers": [
         {
           "condition": "写入操作仅影响调用方自身的独立数据空间",

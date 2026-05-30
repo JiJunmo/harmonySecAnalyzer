@@ -37,13 +37,10 @@
           "onInterceptRequest"
         ],
         "negative_patterns": [
-          "url.startsWith",
-          "indexOf",
-          "URL_CHECK",
-          "ALLOWED_HOSTS"
+          "INTERCEPT_CHECK"
         ]
       },
-      "audit_guide": "检查 onInterceptRequest 回调：1) 确认拦截并返回本地资源的逻辑是否对传入的请求 URL 进行了合法域的过滤校验；2) 若无安全过滤，直接拦截返回应用私有文件资源，判定为严重。3) 判定成立：无 URL 域校验 + 拦截读取并返回本地敏感资源。",
+      "audit_guide": "检查 onInterceptRequest 回调：1) 确认拦截并返回本地资源的逻辑中，是否对传入的请求 URL 进行了安全的主机域校验（需警惕类似 includes()、startsWith() 或是 indexOf() 的模糊匹配逻辑漏洞可被劫持绕过）。2) 若无安全过滤，或者过滤机制能被轻易绕过，且直接拦截并读取返回了应用内部的私有沙箱敏感资源（如 fileIo.openSync），则判定为漏洞成立。3) 判定成立：无 URL 安全校验（或校验存在结构性旁路），直接拦截读取并返回本地敏感资源。",
       "reference": {
         "internal": "WEB_REFERENCE.md#3.2",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#oninterceptrequest"
@@ -82,13 +79,10 @@
           "registerJavaScriptProxy"
         ],
         "negative_patterns": [
-          "allowedOriginRules",
-          "getUrl(",
-          "getOriginalUrl(",
-          "origin"
+          "BRIDGE_CHECK"
         ]
       },
-      "audit_guide": "检查 registerJavaScriptProxy 是否限定了 allowedOriginRules 域名白名单：1) 确认是否配置了 allowedOriginRules；2) 若无，检查是否在 onInterceptRequest 中手动获取 getOriginalUrl() 进行了严格校验；3) 判定成立：暴露 Bridge 方法，但完全没有对加载源 (Origin) 限制白名单或在 Native 进行校验。",
+      "audit_guide": "检查 registerJavaScriptProxy 是否限定了 allowedOriginRules 域名白名单：1) 确认是否配置了 allowedOriginRules。若配置了，需进一步审查白名单中是否包含通配符 '*'（无限制放行，仍算高危）。2) 若未配置 allowedOriginRules，核对是否在其他生命周期回调中手动获取 getOriginalUrl() 进行了极其严格的域名白名单匹配。如果只是简单 includes 校验或根本未做校验，仍判定漏洞成立。3) 判定成立：向 Web 注入并暴露了敏感 Bridge 对象，但完全没有对加载源 (Origin) 限制白名单或在 Native 侧进行有效鉴权校验。",
       "severity_modifiers": [
         {
           "condition": "bridge_methods_are_ui_only",

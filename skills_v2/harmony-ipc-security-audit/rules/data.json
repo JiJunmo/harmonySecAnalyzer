@@ -30,11 +30,10 @@
           "readArrayBuffer"
         ],
         "negative_patterns": [
-          "byteLength",
-          "length"
+          "BUFFER_CHECK"
         ]
       },
-      "audit_guide": "检查 Buffer 长度限制：确认调用了 readArrayBuffer，但对读取产生的 ArrayBuffer 的大小没有任何上限约束（未与预期长度进行限制），判定为严重严重风险。",
+      "audit_guide": "检查 Buffer 长度限制：1) 确认代码中是否调用了 readArrayBuffer。2) 深入审查是否对读取产生的 ArrayBuffer 的 byteLength/length 进行了实际的上限阈值约束或边界校验（如校验是否大于最大安全字节限制并做拒绝处理）。如果仅仅是打印了长度日志或只做无意义的引用，仍判定为漏洞成立。3) 判定成立：调用了 readArrayBuffer，但对输入数据包大小没有硬性的边界校验和限制，可能导致内存耗尽或缓冲区溢出。",
       "reference": {
         "internal": "IPC_REFERENCE.md#3.8",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-rpc#messageparcel"

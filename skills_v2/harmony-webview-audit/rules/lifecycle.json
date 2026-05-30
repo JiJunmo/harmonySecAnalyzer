@@ -13,11 +13,10 @@
           "X509TrustManager"
         ],
         "negative_patterns": [
-          "checkServerTrusted",
-          "isValid"
+          "SSL_CHECK"
         ]
       },
-      "audit_guide": "检查证书忽略逻辑：1) 确认 certificateVerification 是否显式配置为 false；2) 检查 handleSslErrorEvent 等回调函数体内是否直接调用了事件的放行方法而未做真实证书验证。3) 判定成立：无差别信任一切 SSL 证书错误，严重中风险漏洞。",
+      "audit_guide": "检查证书忽略逻辑：1) 确认 certificateVerification 是否显式配置为 false（直接阻断校验，判定为高危）；2) 检查 handleSslErrorEvent 等回调或 certificateVerification 回调，确认是否在出错时直接调用了 event.data.keepOn() 或返回 CertErrorAction.SUCCESS 放行。3) 即使实现了校验回调，如果方法体内没有做真实的公钥、指纹或 CA 链校验，而是直接放行，仍判定为漏洞成立。4) 判定成立：无差别信任一切 SSL 证书错误，严重中风险漏洞。",
       "reference": {
         "internal": "WEB_REFERENCE.md#3.9",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#certificateverification"
@@ -27,7 +26,7 @@
       "id": "WEB-013",
       "severity": "medium",
       "title": "onWindowNew / window.open 弹窗未管控",
-      "description": "对于通过 window.open 新开多窗口的 WebView 回调没有加锁过滤，可导致恶意页面可以无限弹出新页面从而耗尽系统资源或钓鱼攻击。",
+      "description": "对于通过 window.open 新开多窗口 of WebView 回调没有加锁过滤，可导致恶意页面可以无限弹出新页面从而耗尽系统资源或钓鱼攻击。",
       "detection": {
         "type": "code_pattern",
         "file_pattern": "**/*.ets",
@@ -35,13 +34,10 @@
           "onWindowNew"
         ],
         "negative_patterns": [
-          "isAllowed",
-          "url.startsWith",
-          "checkUrl",
-          "return false"
+          "WINDOW_CHECK"
         ]
       },
-      "audit_guide": "确认弹窗防卫逻辑：确认已实现 onWindowNew，但是在回调方法体内未编写对目标弹出 URL 的任何白名单域名过滤，直接无条件准许新开窗口加载。判定成立：中风险。",
+      "audit_guide": "确认新窗口弹窗防护逻辑：1) 明确 API 返回值语义：在 onWindowNew 回调中，返回 false 表示拦截并拒绝新窗口弹出，返回 true 表示放行并允许打开新窗口（模型极易在这里逻辑混淆，请仔细核对）。2) 漏洞成因审查：如果实现了 onWindowNew，但在回调方法体内无条件返回 true，或者仅进行了粗糙的模糊域名匹配（如 url.includes('trusted.com') 或 url.startsWith()），仍然判定漏洞成立，因为攻击者可通过伪域名或路径参数轻松绕过。3) 判定成立：onWindowNew 允许打开新窗口，但缺乏严格的白名单限定，或过滤机制存在结构性绕过缺陷。",
       "reference": {
         "internal": "WEB_REFERENCE.md#3.13",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#onwindownew"
