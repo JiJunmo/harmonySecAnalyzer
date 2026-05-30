@@ -1,6 +1,0 @@
-{
-  "name": "demo_cascade_scanner",
-  "version": "1.0.0",
-  "description": "A complex HarmonyOS application with dynamic routing, state keys and event emitters.",
-  "dependencies": {}
-}
