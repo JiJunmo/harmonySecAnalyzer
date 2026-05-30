@@ -12,6 +12,7 @@ v2 攻击路径聚合器。扫描审计目录中所有 skill 的 attack-paths.js
 import argparse
 import json
 import sys
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
