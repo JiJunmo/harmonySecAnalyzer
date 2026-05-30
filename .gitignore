@@ -1,1 +1,9 @@
 ipc-demo
+
+# AI & Local Metadata Files
+AGENTS.md
+CLAUDE.md
+
+# Architectural & Design Plans
+v2_weaknesses.md
+skills_v2/RULES_OPTIMIZATION_PLAN.md
