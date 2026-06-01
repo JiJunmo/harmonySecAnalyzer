@@ -32,9 +32,9 @@ python skills_v2/harmony-project-parser/scripts/fragment_finder.py <project_path
 | `entries.json` | 所有外部可控入口（DeepLink/Want 参数/IPC 消息/URL 回调） |
 | `sinks.json` | 所有攻击终点（WebView 加载/文件写入/数据库/网络） |
 | `fragments.json` | 包含 `forward_fragments` (前向拼图)、`reverse_fragments` (反向拼图) 与 `candidate_bridges` (候选桥配对) |
-| `attack_map.json` | 入口→sink 完整缝合配对，标记置信度 + **data_flow_hint**（Phase 1.5 AI 研判缝合注入） |
+| `attack_map.json` | 入口→sink 完整缝合配对，标记置信度 + **data_flow_hint**（Step 3 AI 研判缝合注入） |
 
-## Phase 1.5: 智能体语义直连桥接验证与缝合
+### Step 3: 智能体语义直连桥接验证与缝合
 
 在 `fragments.json` 导出后，AI Agent 将读取其内容，并针对 `candidate_bridges` 中的每一对候选桥：
 1. **源码调阅**：利用 `view_file` 或 MCP 调阅对应源码的上下文。
