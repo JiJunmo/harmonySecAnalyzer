@@ -49,14 +49,14 @@ harmony_audit_results/
 ## 审计流程
 
 ```
-Phase 1: 攻击面发现、关系建图与路径装配（harmony-project-parser + GitNexus）
+Phase 1: 静态扫描与路径关系梳理 (Static Analysis & Path Mapping)
   ├─► Step 1: 静态物理特征扫描 ➔ 生成 entries.json 和 sinks.json
-  ├─► Step 2: GitNexus 关系建图 ➔ 初始化本地调用链与依赖图谱
+  ├─► Step 2: Atlas 关系建图 ➔ 初始化本地调用链与依赖图谱 (Rust 极速构建)
   └─► Step 3: 双向拓扑碎片提取与 AI 语义搭桥 ➔ 首尾缝合装配出 attack_map.json
   
-Phase 2: 漏洞验证（各 audit skill 并行）
+Phase 2: 漏洞深度验证 (Parallel Audit Verification)
   → 对 attack_map 中每条潜在路径，AI 验证是否真实可达
-  → 可达 → 生成 AttackPath（含 entry + flow + impact + payload + output_example）
+  → 可达 → 生成 AttackPath (含 entry + flow + impact + payload + output_example)
   → 不可达 → 跳过
 ```
 
@@ -73,14 +73,18 @@ python3 skills_v2/harmony-project-parser/scripts/project_scanner.py <project_pat
 ```
 * **输出**：生成 `<audit_dir>/entries.json`（物理暴露入口）与 `<audit_dir>/sinks.json`（敏感操作终点）。
 
-### Step 2: GitNexus 调用链关系图谱初始化
+### Step 2: Atlas 调用链关系图谱初始化
 
 在开始提取碎片前，必须对目标项目构建高精度的本地调用与数据流依赖图数据库：
 
 ```bash
-npx gitnexus analyze <project_path> --index-only
+# 1. 初始化项目
+atlas init
+
+# 2. 构建高精度本地符号与调用图谱索引 (基于 Rust，数秒内极速完成)
+atlas index
 ```
-* **`--index-only` 强约束**：纯本地建图，禁止在被审计的外部目标项目中注入任何 AI 辅助文件，保持宿主仓库 100% 绝对纯净。
+* **强约束**：通过 `.gitignore` 确保 `.atlas/` 目录不被提交到宿主项目中，保持宿主仓库 100% 绝对纯净。
 
 ### Step 3: 级联式双向拓扑碎片提取与 AI 语义搭桥 (Cascade Hybrid v2.5)
 
@@ -93,8 +97,8 @@ npx gitnexus analyze <project_path> --index-only
    ```
    * **输出**：生成 `<audit_dir>/fragments.json`，其中包含正向碎片 `forward_fragments`、反向碎片 `reverse_fragments` 以及基于 Key/EventID 模糊碰撞的桥梁候选配对 `candidate_bridges`。
 
-2. **智能体语义直连桥接验证与缝合 (AI MCP Bridging & Splicing)**
-   AI Agent（你）实时读取 `<audit_dir>/fragments.json`。对其中的每一个 `candidate_bridges`，使用你的 MCP 图关系或 `view_file` 工具调阅关联文件的定义与上下文源码，核实：
+2. **智能体语义直连桥接验证与缝合 (AI Atlas Tracing & Splicing)**
+   AI Agent（你）实时读取 `<audit_dir>/fragments.json`。对其中的每一个 `candidate_bridges`，利用本地命令行 `atlas trace caller-path -n <FunctionName>` 追踪逆向调用路径，或使用 `atlas search` 对其所处词法环境进行核实：
    - **Key/Event 运行时交联度**：分析动态生成的键值或事件，确认它们在运行时是否确实共享同一个全局槽（排除因为模糊匹配引起的不交联误报）。
    - **传导可利用性**：确认参数是否未加过滤直接流入下游物理 Sink。
    - **首尾缝合**：将通过语义验证的碎片进行首尾相连，拼装成完整的调用 Trace 条目，并使用写工具直接落库为 `<audit_dir>/attack_map.json`，以无缝交付给 Phase 2 验证。
@@ -105,7 +109,7 @@ npx gitnexus analyze <project_path> --index-only
 {
   "_meta": {
     "version": "2.2.0",
-    "discovery": "agent_mcp_bfs",
+    "discovery": "agent_atlas_trace",
     "final_paths": 1
   },
   "attack_map": [
@@ -125,22 +129,21 @@ npx gitnexus analyze <project_path> --index-only
         ],
         "verified": true,
         "hops": 2,
-        "source": "gitnexus_bfs"
+        "source": "atlas_trace"
       }
     }
   ]
 }
 ```
 
-- `source: "gitnexus_bfs"`：CALLS 链 BFS 发现，置信度高。
-- `source: "gitnexus_accesses"`：ACCESSES 属性写入发现，置信度中。
+- `source: "atlas_trace"`：Atlas 级联逆向调用链（Trace）分析发现，置信度高。
 - `hops`：从入口方法到终点方法的跨文件步数（hops ≤ 3 为高可信度）。
 
 ### 输出
 向用户展示：
 - 静态扫描提取了多少个外部入口
 - 静态扫描提取了多少个攻击终点
-- AI 驱动 MCP 成功追踪并装配出多少条真实的图遍历可达路径（Verified Paths）
+- AI 驱动 Atlas 成功追踪并装配出多少条真实的调用图可达路径（Verified Paths）
 
 ## Phase 2: 验证
 

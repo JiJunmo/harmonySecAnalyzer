@@ -11,8 +11,8 @@
 ```
 Phase 1: 静态扫描与路径关系梳理 (Static Analysis & Path Mapping)
   ├── Step 1: 静态物理特征扫描 ➔ 提取物理入口 (entries.json) 与敏感操作终点 (sinks.json)
-  ├── Step 2: GitNexus 关系建图与初始化 ➔ 显式在宿主目录建立依赖与调用链索引图
-  └── Step 3: 双向拓扑碎片提取与语义搭桥 ➔ AI MCP 语义审查并缝合装配出 attack_map.json
+  ├── Step 2: Atlas 关系建图与初始化 ➔ 显式在宿主目录建立依赖与调用链索引图 (Rust 极速构建)
+  └── Step 3: 双向拓扑碎片提取与语义搭桥 ➔ AI 本地 Trace 语义审查并缝合装配出 attack_map.json
   │
 Phase 2: 漏洞深度验证 (Parallel Audit Verification)
   ├── 轨道一 (Track 1): IPC 垂直自闭环审计 (onConnect ➔ switch-case 业务分支深度挖掘)
@@ -24,10 +24,10 @@ Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚�
 ```
 
 ### 1. 静态扫描与路径关系梳理阶段 (Phase 1: Static Analysis & Path Mapping)
-该阶段深度结合物理特征匹配与 GitNexus 本地依赖图谱，提取并装配出潜在攻击路径网络。
+该阶段深度结合物理特征匹配与 Atlas 本地依赖图谱，提取并装配出潜在攻击路径网络。
 *   **Step 1: 静态物理特征扫描**：运行 `project_scanner.py`，解析项目中的硬编码配置与文件引用，生成 `<audit_dir>/entries.json` 与 `<audit_dir>/sinks.json`。
-*   **Step 2: GitNexus 关系建图与初始化**：由 Agent 自动在宿主目录中拉起 `npx gitnexus analyze --index-only`，在本地构建精准的依赖图与调用关系数据库。这一步解决了在未手动建图时调用链无法获取的致命问题。
-*   **Step 3: 级联拓扑碎片提取与语义搭桥**：运行 `fragment_finder.py` 得到前向/反向路径碎片 `fragments.json`。由 AI 原生直连调用 MCP 工具在图上对碎片进行语义交联与可达性判定，消除误报，首尾缝合后写入 `<audit_dir>/attack_map.json`。
+*   **Step 2: Atlas 关系建图与初始化**：由 Agent 自动在宿主目录中拉起 `atlas init && atlas index`，在本地构建精准的依赖与调用关系 SQLite 数据库。这一步解决了在未手动建图时调用链无法获取的致命问题。
+*   **Step 3: 级联拓扑碎片提取与语义搭桥**：运行 `fragment_finder.py` 得到前向/反向路径碎片 `fragments.json`。由 AI 直连运行 `atlas trace caller-path` 对碎片进行语义交联与可达性判定，消除误报，首尾缝合后写入 `<audit_dir>/attack_map.json`。
 
 ### 2. 漏洞深度验证阶段 (Phase 2: Verification)
 由 AI 编排器（`agent_v2.md`）调度不同的审计 Skill 对 `attack_map.json` 中的各路径进行并行或级联分析：
@@ -83,15 +83,18 @@ Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚�
   python skills_v2/harmony-project-parser/scripts/project_scanner.py <target_project_path> -o <audit_output_dir> --pretty
   ```
 
-* **Step 2: 建立 GitNexus 代码索引**
-  进入目标项目源码目录，对代码库进行语义和关系索引：
+* **Step 2: 建立 Atlas 代码索引**
+  进入目标项目源码目录，对代码库进行语义和调用关系索引：
   ```bash
   cd <target_project_path>
-  npx gitnexus analyze --skip-git
+  # 1. 初始化 Atlas
+  atlas init
+  # 2. 极速生成调用图与依赖图索引
+  atlas index
   ```
 
 * **Step 3: 提取路径碎片与语义搭桥**
-  运行碎片提取脚本并结合 AI MCP 自动进行图分析桥接，生成最终攻击映射图 `attack_map.json`：
+  运行碎片提取脚本并结合 AI 运行本地 `atlas trace` / `atlas search` 命令自动进行图分析桥接，生成最终攻击映射图 `attack_map.json`：
   ```bash
   python skills_v2/harmony-project-parser/scripts/fragment_finder.py <target_project_path> -o <audit_output_dir>
   ```

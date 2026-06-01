@@ -32,12 +32,12 @@ python skills_v2/harmony-project-parser/scripts/fragment_finder.py <project_path
 | `entries.json` | 所有外部可控入口（DeepLink/Want 参数/IPC 消息/URL 回调） |
 | `sinks.json` | 所有攻击终点（WebView 加载/文件写入/数据库/网络） |
 | `fragments.json` | 包含 `forward_fragments` (前向拼图)、`reverse_fragments` (反向拼图) 与 `candidate_bridges` (候选桥配对) |
-| `attack_map.json` | 入口→sink 完整缝合配对，标记置信度 + **data_flow_hint**（Step 3 AI 研判缝合注入） |
+| `attack_map.json` | 入口→sink 完整缝合配对，标记置信度 + **data_flow_hint**（Step 3 AI Atlas 研判缝合注入） |
 
 ### Step 3: 智能体语义直连桥接验证与缝合
 
 在 `fragments.json` 导出后，AI Agent 将读取其内容，并针对 `candidate_bridges` 中的每一对候选桥：
-1. **源码调阅**：利用 `view_file` 或 MCP 调阅对应源码的上下文。
+1. **源码调阅**：利用 `view_file` 或本地 `atlas trace caller-path`、`atlas search` 等命令行工具调阅对应源码的上下文与跨文件依赖。
 2. **因果语义判定**：分析动态生成的键值或事件，确认它们在运行时是否确实共享同一个全局槽（排除因为模糊匹配引起的不交联误报），以及传导参数可控性。
 3. **首尾缝合**：通过验证的拼图首尾相连，组装成完整的 `attack_map.json` 交付 Phase 2 深度审计。
 
