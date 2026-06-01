@@ -50,60 +50,107 @@ class EntryDiscoverer:
         return self.entries
 
     def _scan_ets_sources(self):
-        for sf in self.files.get("ets_sources", []):
+        import concurrent.futures
+
+        ets_sources = self.files.get("ets_sources", [])
+        if not ets_sources:
+            return
+
+        # 动态线程池大小
+        max_workers = min(32, (os.cpu_count() or 1) * 2)
+        deeplink_pattern = re.compile(r"(?:want|Want)\s*(?:\??\.|\[\s*['\"])\s*parameters\s*(?:\??\.|\[\s*['\"])(\w+)")
+
+        def scan_file(sf: dict) -> list[dict]:
             filepath = self.root / sf["path"]
             if not filepath.exists():
-                continue
+                return []
             try:
                 content = filepath.read_text(encoding="utf-8", errors="ignore")
             except OSError:
-                continue
+                return []
 
-            self._find_deeplinks(sf, content)
-            self._find_ipc_message(sf, content)
-            self._find_url_callbacks(sf, content)
+            local_entries = []
 
-    def _find_deeplinks(self, sf: dict, content: str):
-        file_deeplinks = {}
-        pattern = r"(?:want|Want)\s*(?:\??\.|\[\s*['\"])\s*parameters\s*(?:\??\.|\[\s*['\"])(\w+)"
-        for m in re.finditer(pattern, content):
-            param_name = m.group(1)
-            line = content[:m.start()].count("\n") + 1
-            start = max(0, m.start() - 150)
-            end = min(len(content), m.end() + 250)
-            snippet = content[start:end].strip()[:400]
+            # 1. 寻找 DeepLinks
+            file_deeplinks = {}
+            for m in re.finditer(deeplink_pattern, content):
+                param_name = m.group(1)
+                line = content[:m.start()].count("\n") + 1
+                start = max(0, m.start() - 150)
+                end = min(len(content), m.end() + 250)
+                snippet = content[start:end].strip()[:400]
 
-            if param_name not in file_deeplinks:
-                file_deeplinks[param_name] = []
-            file_deeplinks[param_name].append({
-                "line": line,
-                "snippet": snippet
-            })
+                if param_name not in file_deeplinks:
+                    file_deeplinks[param_name] = []
+                file_deeplinks[param_name].append({
+                    "line": line,
+                    "snippet": snippet
+                })
 
-        for param_name, matches in file_deeplinks.items():
-            self._add_deeplink_entry(sf, param_name, matches)
+            for param_name, matches in file_deeplinks.items():
+                verified_deeplink, deeplink_configs = self._verify_deeplink(sf["path"])
+                lines = sorted(list(set(m["line"] for m in matches)))
+                snippets_summary = "\n---\n".join(f"[Line {m['line']}]: {m['snippet']}" for m in matches[:3])
 
-    def _add_deeplink_entry(self, sf: dict, param_name: str, matches: list[dict]):
-        verified_deeplink, deeplink_configs = self._verify_deeplink(sf["path"])
-        self.counter += 1
-        lines = sorted(list(set(m["line"] for m in matches)))
-        snippets_summary = "\n---\n".join(f"[Line {m['line']}]: {m['snippet']}" for m in matches[:3])
+                entry_data = {
+                    "type": "deeplink",
+                    "file": sf["path"],
+                    "line": lines[0],
+                    "lines": lines,
+                    "handler": "want.parameters",
+                    "controlled_params": [param_name],
+                    "snippet": snippets_summary,
+                }
+                if verified_deeplink:
+                    entry_data["verified_deeplink"] = True
+                    entry_data["deeplink_configs"] = deeplink_configs
+                local_entries.append(entry_data)
 
-        entry_data = {
-            "id": f"entry-{self.counter:03d}",
-            "type": "deeplink",
-            "file": sf["path"],
-            "line": lines[0],
-            "lines": lines,
-            "handler": "want.parameters",
-            "controlled_params": [param_name],
-            "snippet": snippets_summary,
-        }
-        if verified_deeplink:
-            entry_data["verified_deeplink"] = True
-            entry_data["deeplink_configs"] = deeplink_configs
+            # 2. 寻找 IPC 消息入口
+            for m in re.finditer(r"onRemoteMessageRequest\s*\(", content):
+                line = content[:m.start()].count("\n") + 1
+                start = max(0, m.start() - 100)
+                end = min(len(content), m.end() + 300)
+                local_entries.append({
+                    "type": "ipc",
+                    "file": sf["path"],
+                    "line": line,
+                    "handler": "onRemoteMessageRequest",
+                    "controlled_params": ["code", "data", "reply"],
+                    "snippet": content[start:end].strip()[:400],
+                })
 
-        self.entries.append(entry_data)
+            # 3. 寻找 URL 回调
+            for pattern in ["onLoadIntercept", "onUrlLoadIntercept", "onInterceptRequest"]:
+                for m in re.finditer(rf"{pattern}\s*\(", content):
+                    line = content[:m.start()].count("\n") + 1
+                    start = max(0, m.start() - 100)
+                    end = min(len(content), m.end() + 300)
+                    local_entries.append({
+                        "type": "url_callback",
+                        "file": sf["path"],
+                        "line": line,
+                        "handler": pattern,
+                        "controlled_params": ["url"],
+                        "snippet": content[start:end].strip()[:400],
+                    })
+
+            return local_entries
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = executor.map(scan_file, ets_sources)
+
+        # 汇总并进行稳定排序，保证 ID 递增和字段输出 100% 确定且可复现
+        all_staged = []
+        for local_list in results:
+            all_staged.extend(local_list)
+
+        all_staged.sort(key=lambda x: (x["file"], x["line"], x.get("controlled_params", [""])[0]))
+
+        for entry in all_staged:
+            self.counter += 1
+            entry["id"] = f"entry-{self.counter:03d}"
+            self.entries.append(entry)
 
     def _verify_deeplink(self, sf_path: str) -> tuple[bool, list[dict]]:
         current_file_path = (self.root / sf_path).resolve().as_posix()
@@ -136,39 +183,6 @@ class EntryDiscoverer:
                             ]
                     break
         return False, []
-
-    def _find_ipc_message(self, sf: dict, content: str):
-        for m in re.finditer(r"onRemoteMessageRequest\s*\(", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            start = max(0, m.start() - 100)
-            end = min(len(content), m.end() + 300)
-            self.entries.append({
-                "id": f"entry-{self.counter:03d}",
-                "type": "ipc",
-                "file": sf["path"],
-                "line": line,
-                "handler": "onRemoteMessageRequest",
-                "controlled_params": ["code", "data", "reply"],
-                "snippet": content[start:end].strip()[:400],
-            })
-
-    def _find_url_callbacks(self, sf: dict, content: str):
-        for pattern in ["onLoadIntercept", "onUrlLoadIntercept", "onInterceptRequest"]:
-            for m in re.finditer(rf"{pattern}\s*\(", content):
-                self.counter += 1
-                line = content[:m.start()].count("\n") + 1
-                start = max(0, m.start() - 100)
-                end = min(len(content), m.end() + 300)
-                self.entries.append({
-                    "id": f"entry-{self.counter:03d}",
-                    "type": "url_callback",
-                    "file": sf["path"],
-                    "line": line,
-                    "handler": pattern,
-                    "controlled_params": ["url"],
-                    "snippet": content[start:end].strip()[:400],
-                })
 
     def _discover_ipc_services(self):
         for mod in self.modules:
@@ -229,50 +243,51 @@ class EntryDiscoverer:
                 })
 
 
+# 预编译所有 Sink 策略的正则表达式，省去每次调用的编译开销
 SINK_STRATEGIES = [
     {
         "type": "data_exfil",
-        "pattern": r"(?:reply|result\.reply)\s*\.\s*(?:writeString|writeParcelable|writeArrayBuffer)",
+        "pattern": re.compile(r"(?:reply|result\.reply)\s*\.\s*(?:writeString|writeParcelable|writeArrayBuffer)"),
         "note": "IPC 回包写入，可能泄露服务端数据",
     },
     {
         "type": "state_mutation",
-        "pattern": r"(?:dataStatus|globalState|globalData|dataStore)\s*\.\s*(?:updata|update|set|write|put)",
+        "pattern": re.compile(r"(?:dataStatus|globalState|globalData|dataStore)\s*\.\s*(?:updata|update|set|write|put)"),
         "note": "攻击者数据写入全局状态",
     },
     {
         "type": "file_write",
-        "pattern": r"(?:fileIo|fs)\s*\.\s*(?:openSync|writeSync|write|writeText)",
+        "pattern": re.compile(r"(?:fileIo|fs)\s*\.\s*(?:openSync|writeSync|write|writeText)"),
     },
     {
         "type": "database",
-        "pattern": r"(?:executeSql|querySql|rdbStore|relationalStore)",
+        "pattern": re.compile(r"(?:executeSql|querySql|rdbStore|relationalStore)"),
     },
     {
         "type": "network",
-        "pattern": r"(?:http\.request|createHttp|fetch)\s*\(",
+        "pattern": re.compile(r"(?:http\.request|createHttp|fetch)\s*\("),
     },
     {
         "type": "start_ability",
-        "pattern": r"(?:context\s*\.)?\s*startAbility(?:ForResult)?\s*\(",
+        "pattern": re.compile(r"(?:context\s*\.)?\s*startAbility(?:ForResult)?\s*\("),
     },
     {
         "type": "terminate_result",
-        "pattern": r"(?:context\s*\.)?\s*terminateSelfWithResult\s*\(",
+        "pattern": re.compile(r"(?:context\s*\.)?\s*terminateSelfWithResult\s*\("),
     },
     {
         "type": "telephony",
-        "pattern": r"['\"]@kit\.TelephonyKit['\"]|['\"]@ohos\.telephony\.\w+['\"]",
+        "pattern": re.compile(r"['\"]@kit\.TelephonyKit['\"]|['\"]@ohos\.telephony\.\w+['\"]"),
         "note": "使用了蜂窝通信模块，涉及通话、短信或SIM卡等敏感硬件操作",
     },
     {
         "type": "location",
-        "pattern": r"['\"]@kit\.LocationKit['\"]|['\"]@ohos\.geoLocationManager['\"]|['\"]@ohos\.location['\"]",
+        "pattern": re.compile(r"['\"]@kit\.LocationKit['\"]|['\"]@ohos\.geoLocationManager['\"]|['\"]@ohos\.location['\"]"),
         "note": "使用了地理位置服务，涉及GPS、基站等敏感定位操作",
     },
     {
         "type": "calendar",
-        "pattern": r"['\"]@kit\.CalendarKit['\"]|['\"]@ohos\.calendarManager['\"]|['\"]@ohos\.calendar['\"]",
+        "pattern": re.compile(r"['\"]@kit\.CalendarKit['\"]|['\"]@ohos\.calendarManager['\"]|['\"]@ohos\.calendar['\"]"),
         "note": "使用了日历管理模块，涉及对本地日程事件的增删改查等敏感操作",
     },
 ]
@@ -288,71 +303,89 @@ class SinkDiscoverer:
         self.counter = 0
 
     def discover(self) -> list[dict]:
-        for sf in self.files.get("ets_sources", []):
+        import concurrent.futures
+
+        ets_sources = self.files.get("ets_sources", [])
+        if not ets_sources:
+            return []
+
+        # 动态线程池大小
+        max_workers = min(32, (os.cpu_count() or 1) * 2)
+
+        def scan_file(sf: dict) -> list[dict]:
             filepath = self.root / sf["path"]
             if not filepath.exists():
-                continue
+                return []
             try:
                 content = filepath.read_text(encoding="utf-8", errors="ignore")
             except OSError:
-                continue
+                return []
 
-            self._scan_file_sinks(sf, content)
-        return self.sinks
+            local_sinks = []
 
-    def _scan_file_sinks(self, sf: dict, content: str):
-        self._scan_generic_sinks(sf, content)
-        self._find_webviews(sf, content)
+            # 1. 扫描通用 Sinks
+            for strategy in SINK_STRATEGIES:
+                for m in re.finditer(strategy["pattern"], content):
+                    line = content[:m.start()].count("\n") + 1
+                    sink_item = {
+                        "type": strategy["type"],
+                        "file": sf["path"],
+                        "line": line,
+                        "target": m.group(0).strip(),
+                    }
+                    if "note" in strategy:
+                        sink_item["note"] = strategy["note"]
+                    local_sinks.append(sink_item)
 
-    def _scan_generic_sinks(self, sf: dict, content: str):
-        """通用扫描引擎：利用数据驱动策略表，一次性扫描所有标准 Sink 点。"""
-        for strategy in SINK_STRATEGIES:
-            for m in re.finditer(strategy["pattern"], content):
-                self.counter += 1
-                line = content[:m.start()].count("\n") + 1
-                sink_item = {
-                    "id": f"sink-{self.counter:03d}",
-                    "type": strategy["type"],
+            # 2. 扫描 Webviews
+            for wm in re.finditer(r'Web\s*\(\s*\{', content):
+                idx = wm.start()
+                line = content[:idx].count("\n") + 1
+                web_block = content[idx:idx + 2000]
+
+                src_url = self._extract_web_src(web_block)
+                web_settings = self._extract_web_settings(web_block)
+
+                has_jsbridge = "registerJavaScriptProxy" in content
+                has_message_port = "createWebMessagePorts" in content
+
+                is_local_resource = src_url.startswith("$rawfile")
+                is_dynamic = src_url.startswith("var:") or src_url == "未识别"
+
+                local_sinks.append({
+                    "type": "webview",
                     "file": sf["path"],
                     "line": line,
-                    "target": m.group(0).strip(),
-                }
-                if "note" in strategy:
-                    sink_item["note"] = strategy["note"]
-                self.sinks.append(sink_item)
+                    "target": f"WebView(src={src_url})",
+                    "features": {
+                        "js_bridge": has_jsbridge,
+                        "message_port": has_message_port,
+                        "external_url": not is_local_resource,
+                        "local_resource": is_local_resource,
+                        "dynamic_src": is_dynamic,
+                        "web_settings": web_settings,
+                    },
+                    "snippet": content[idx:idx + 500].strip()[:400],
+                })
 
-    def _find_webviews(self, sf: dict, content: str):
-        for wm in re.finditer(r'Web\s*\(\s*\{', content):
+            return local_sinks
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = executor.map(scan_file, ets_sources)
+
+        # 汇总并进行稳定排序，以确保 ID 唯一与 100% 的确定性
+        all_staged = []
+        for local_list in results:
+            all_staged.extend(local_list)
+
+        all_staged.sort(key=lambda x: (x["file"], x["line"], x["type"]))
+
+        for sink in all_staged:
             self.counter += 1
-            idx = wm.start()
-            line = content[:idx].count("\n") + 1
-            web_block = content[idx:idx + 2000]
+            sink["id"] = f"sink-{self.counter:03d}"
+            self.sinks.append(sink)
 
-            src_url = self._extract_web_src(web_block)
-            web_settings = self._extract_web_settings(web_block)
-
-            has_jsbridge = "registerJavaScriptProxy" in content
-            has_message_port = "createWebMessagePorts" in content
-
-            is_local_resource = src_url.startswith("$rawfile")
-            is_dynamic = src_url.startswith("var:") or src_url == "未识别"
-
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "webview",
-                "file": sf["path"],
-                "line": line,
-                "target": f"WebView(src={src_url})",
-                "features": {
-                    "js_bridge": has_jsbridge,
-                    "message_port": has_message_port,
-                    "external_url": not is_local_resource,
-                    "local_resource": is_local_resource,
-                    "dynamic_src": is_dynamic,
-                    "web_settings": web_settings,
-                },
-                "snippet": content[idx:idx + 500].strip()[:400],
-            })
+        return self.sinks
 
     def _extract_web_src(self, web_block: str) -> str:
         src_m = re.search(r"src:\s*(?:(\$rawfile\s*\([^)]*\))|['\"]([^'\"]+)['\"]|([\w.]+(?:\?\.\w+)*))", web_block)
