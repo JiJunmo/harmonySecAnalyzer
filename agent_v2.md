@@ -40,13 +40,26 @@ harmony_audit_results/
 
 ### 初始化目录命令
 
-在进入 Phase 1 之前，必须执行以下初始化命令以创建当前审计的隔离工作空间：
+在进入 Phase 1 之前，必须创建当前审计的隔离工作空间以存储产物。由于静态扫描器 `project_scanner.py` 内部已采用 Python 的 `Path.mkdir(parents=True, exist_ok=True)` 进行了全平台无感自动创建，因此即使外部不手动创建目录，运行脚本时也会自动在指定路径生成。
 
-```bash
-# 自动生成当前时间戳的唯一结果目录
-AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$AUDIT_DIR"
-```
+对于手动预创建，不同终端下的推荐命令如下：
+
+* **类 Unix / Git Bash / WSL 环境**：
+  ```bash
+  AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
+  mkdir -p "$AUDIT_DIR"
+  ```
+
+* **Windows Command Prompt (CMD)**：
+  ```cmd
+  :: CMD 的 mkdir 默认具备级联创建父目录能力，请勿携带 -p 选项
+  mkdir harmony_audit_results\<timestamp>
+  ```
+
+* **Windows PowerShell**：
+  ```powershell
+  New-Item -ItemType Directory -Force -Path .\harmony_audit_results\<timestamp>
+  ```
 
 每次审计都必须基于唯一的时间戳目录运行，以便历史记录可追溯且结果不相互覆盖。
 
