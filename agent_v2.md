@@ -42,6 +42,20 @@ AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$AUDIT_DIR"
 ```
 
+## Phase 1.2: GitNexus 索引初始化（数据流与调用链基础图谱构建）
+
+在 Phase 1 扫描物理特征的同时，**必须首先完成对目标项目在本地的 GitNexus 语义关系网初始化索引**。如果在 Phase 1.5 数据流深度分析前缺少这一步，后续基于 GitNexus 图的虚拟边匹配、MCP 语义直连以及拓扑调用链检索将完全因缺少数据而失效。
+
+### 执行
+
+智能体必须先在命令行执行 GitNexus 索引分析，构建本地图数据库：
+
+```bash
+npx gitnexus analyze <project_path> --index-only
+```
+
+* **`--index-only` 强约束**：采用纯索引模式。这会在本地 `~/.gitnexus` 数据库中自动生成高精度的代码关系图，同时**强行跳过**在目标审计项目中注入 `AGENTS.md`、`CLAUDE.md` 等 AI 元数据文件，从而保持被审计的外部目标项目代码仓 100% 绝对纯净。
+
 ## Phase 1.5: 智能体级联式双向断裂与 AI 语义搭桥 (Cascade Hybrid v2.5)
 
 在 Phase 1 扫描产生基础的 `entries.json` 与 `sinks.json` 后，**系统将采用级联式拓扑设计解决复杂/动态传递（如 AppStorage、Emitter 事件总线、动态路由）问题**：
