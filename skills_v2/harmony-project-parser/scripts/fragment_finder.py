@@ -281,7 +281,7 @@ class FragmentFinder:
       json.dump(data, f, indent=2, ensure_ascii=False)
       
     print(f"[DONE] Bidirectional fragments compiled: {len(self.forward_fragments)} forward, {len(self.reverse_fragments)} reverse. Candidate bridges: {len(self.candidate_bridges)}")
-    print(f"[➜] Fragments database written successfully to: {output_file}")
+    print(f"[SUCCESS] Fragments database written successfully to: {output_file}")
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="Bidirectional Path Fragment Compiler")

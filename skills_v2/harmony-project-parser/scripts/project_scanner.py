@@ -19,7 +19,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,34 +28,45 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from file_collector import collect_files, collect_files_summary
-from module_analyzer import analyze_all_modules, SYSTEM_ONLY_PERMISSIONS
+from module_analyzer import analyze_all_modules
 from dependency_analyzer import analyze_dependencies
 
 VERSION = "2.0.0"
 
 
-# ============================================================
-#  Entry Discovery
-# ============================================================
-
-def discover_entries(project_root: str, modules: list[dict], files: dict) -> list[dict]:
+class EntryDiscoverer:
     """发现所有外部可控入口。"""
-    root = Path(project_root).resolve()
-    entries = []
-    counter = 0
+    def __init__(self, project_root: str, modules: list[dict], files: dict):
+        self.root = Path(project_root).resolve()
+        self.modules = modules
+        self.files = files
+        self.entries = []
+        self.counter = 0
 
-    for sf in files.get("ets_sources", []):
-        filepath = root / sf["path"]
-        if not filepath.exists():
-            continue
-        try:
-            content = filepath.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
+    def discover(self) -> list[dict]:
+        self._scan_ets_sources()
+        self._discover_ipc_services()
+        self._discover_exported_abilities()
+        return self.entries
 
-        # DeepLink / Want 参数入口
-        file_deeplinks = {}  # dict[str, list[dict]]
-        for m in re.finditer(r"(?:want|Want)\s*(?:\??\.|\[\s*['\"])\s*parameters\s*(?:\??\.|\[\s*['\"])(\w+)", content):
+    def _scan_ets_sources(self):
+        for sf in self.files.get("ets_sources", []):
+            filepath = self.root / sf["path"]
+            if not filepath.exists():
+                continue
+            try:
+                content = filepath.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+
+            self._find_deeplinks(sf, content)
+            self._find_ipc_message(sf, content)
+            self._find_url_callbacks(sf, content)
+
+    def _find_deeplinks(self, sf: dict, content: str):
+        file_deeplinks = {}
+        pattern = r"(?:want|Want)\s*(?:\??\.|\[\s*['\"])\s*parameters\s*(?:\??\.|\[\s*['\"])(\w+)"
+        for m in re.finditer(pattern, content):
             param_name = m.group(1)
             line = content[:m.start()].count("\n") + 1
             start = max(0, m.start() - 150)
@@ -71,76 +81,70 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
             })
 
         for param_name, matches in file_deeplinks.items():
-            # Check if this file is a verified deep link entry point in module.json5
-            verified_deeplink = False
-            deeplink_configs = []
+            self._add_deeplink_entry(sf, param_name, matches)
 
-            # Normalize current ets file path to absolute path relative to project root
-            current_file_path = (root / sf["path"]).resolve().as_posix()
+    def _add_deeplink_entry(self, sf: dict, param_name: str, matches: list[dict]):
+        verified_deeplink, deeplink_configs = self._verify_deeplink(sf["path"])
+        self.counter += 1
+        lines = sorted(list(set(m["line"] for m in matches)))
+        snippets_summary = "\n---\n".join(f"[Line {m['line']}]: {m['snippet']}" for m in matches[:3])
 
-            for mod in modules:
-                mod_json_path = mod.get("module_path", "")
-                if not mod_json_path:
+        entry_data = {
+            "id": f"entry-{self.counter:03d}",
+            "type": "deeplink",
+            "file": sf["path"],
+            "line": lines[0],
+            "lines": lines,
+            "handler": "want.parameters",
+            "controlled_params": [param_name],
+            "snippet": snippets_summary,
+        }
+        if verified_deeplink:
+            entry_data["verified_deeplink"] = True
+            entry_data["deeplink_configs"] = deeplink_configs
+
+        self.entries.append(entry_data)
+
+    def _verify_deeplink(self, sf_path: str) -> tuple[bool, list[dict]]:
+        current_file_path = (self.root / sf_path).resolve().as_posix()
+        for mod in self.modules:
+            mod_json_path = mod.get("module_path", "")
+            if not mod_json_path:
+                continue
+            mod_base = Path(mod_json_path).parent.parent.parent
+
+            for ab in mod.get("abilities", []):
+                src_entry = ab.get("src_entry", "")
+                if not src_entry:
                     continue
-                # module_path is e.g. "entry/src/main/module.json5" -> parent is "entry/src/main" -> parent is "entry"
-                mod_base = Path(mod_json_path).parent.parent.parent
 
-                for ab in mod.get("abilities", []):
-                    src_entry = ab.get("src_entry", "")
-                    if not src_entry:
-                        continue
-
-                    # Ability's source entry is relative to "<module_base>/src/main/"
-                    ab_file_path = (mod_base / "src" / "main" / src_entry.lstrip("./")).as_posix()
-
-                    if Path(ab_file_path).resolve() == Path(current_file_path).resolve():
-                        if ab.get("exported") is True:
-                            skills = ab.get("skills", [])
-                            uris = []
-                            for skill in skills:
-                                if "uris" in skill:
-                                    uris.extend(skill["uris"])
-                            if uris:
-                                verified_deeplink = True
-                                for u in uris:
-                                    deeplink_configs.append({
-                                        "scheme": u.get("scheme", ""),
-                                        "host": u.get("host", ""),
-                                        "port": u.get("port", ""),
-                                        "path": u.get("path", "") or u.get("pathStartWith", "") or u.get("pathRegex", "")
-                                    })
-                        break
-                if verified_deeplink:
+                ab_file_path = (mod_base / "src" / "main" / src_entry.lstrip("./")).as_posix()
+                if Path(ab_file_path).resolve() == Path(current_file_path).resolve():
+                    if ab.get("exported") is True:
+                        uris = []
+                        for skill in ab.get("skills", []):
+                            if "uris" in skill:
+                                uris.extend(skill["uris"])
+                        if uris:
+                            return True, [
+                                {
+                                    "scheme": u.get("scheme", ""),
+                                    "host": u.get("host", ""),
+                                    "port": u.get("port", ""),
+                                    "path": u.get("path", "") or u.get("pathStartWith", "") or u.get("pathRegex", "")
+                                } for u in uris
+                            ]
                     break
+        return False, []
 
-            counter += 1
-            lines = sorted(list(set(m["line"] for m in matches)))
-            snippets_summary = "\n---\n".join(f"[Line {m['line']}]: {m['snippet']}" for m in matches[:3])
-
-            entry_data = {
-                "id": f"entry-{counter:03d}",
-                "type": "deeplink",
-                "file": sf["path"],
-                "line": lines[0],
-                "lines": lines,
-                "handler": "want.parameters",
-                "controlled_params": [param_name],
-                "snippet": snippets_summary,
-            }
-            if verified_deeplink:
-                entry_data["verified_deeplink"] = True
-                entry_data["deeplink_configs"] = deeplink_configs
-
-            entries.append(entry_data)
-
-        # IPC 消息入口
+    def _find_ipc_message(self, sf: dict, content: str):
         for m in re.finditer(r"onRemoteMessageRequest\s*\(", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
             start = max(0, m.start() - 100)
             end = min(len(content), m.end() + 300)
-            entries.append({
-                "id": f"entry-{counter:03d}",
+            self.entries.append({
+                "id": f"entry-{self.counter:03d}",
                 "type": "ipc",
                 "file": sf["path"],
                 "line": line,
@@ -149,15 +153,15 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
                 "snippet": content[start:end].strip()[:400],
             })
 
-        # URL 加载拦截回调（外部 URL 可能注入）
+    def _find_url_callbacks(self, sf: dict, content: str):
         for pattern in ["onLoadIntercept", "onUrlLoadIntercept", "onInterceptRequest"]:
             for m in re.finditer(rf"{pattern}\s*\(", content):
-                counter += 1
+                self.counter += 1
                 line = content[:m.start()].count("\n") + 1
                 start = max(0, m.start() - 100)
                 end = min(len(content), m.end() + 300)
-                entries.append({
-                    "id": f"entry-{counter:03d}",
+                self.entries.append({
+                    "id": f"entry-{self.counter:03d}",
                     "type": "url_callback",
                     "file": sf["path"],
                     "line": line,
@@ -166,96 +170,103 @@ def discover_entries(project_root: str, modules: list[dict], files: dict) -> lis
                     "snippet": content[start:end].strip()[:400],
                 })
 
-    # IPC ExtensionAbility 作为入口（从 modules 中提取）
-    for mod in modules:
-        for ext in mod.get("extension_abilities", []):
-            if ext.get("type") != "service":
+    def _discover_ipc_services(self):
+        for mod in self.modules:
+            for ext in mod.get("extension_abilities", []):
+                if ext.get("type") != "service" or not ext.get("src_entry"):
+                    continue
+                if ext.get("filtered_by_system_permission"):
+                    continue
+                self.counter += 1
+                self.entries.append({
+                    "id": f"entry-{self.counter:03d}",
+                    "type": "ipc_service",
+                    "file": mod.get("module_path", f"{mod.get('name', '')}/module.json5"),
+                    "line": 0,
+                    "handler": f"ExtensionAbility({ext.get('name', '')})",
+                    "controlled_params": ["code", "data"],
+                    "exported": ext.get("exported", False),
+                    "src_entry": ext.get("src_entry", ""),
+                    "snippet": json.dumps(ext, ensure_ascii=False)[:400],
+                })
+
+    def _discover_exported_abilities(self):
+        for mod in self.modules:
+            mod_json_path = mod.get("module_path", "")
+            if not mod_json_path:
                 continue
-            if not ext.get("src_entry"):
-                continue
-            if ext.get("filtered_by_system_permission"):
-                continue
-            counter += 1
-            entries.append({
-                "id": f"entry-{counter:03d}",
-                "type": "ipc_service",
-                "file": mod.get("module_path", f"{mod.get('name', '')}/module.json5"),
-                "line": 0,
-                "handler": f"ExtensionAbility({ext.get('name', '')})",
-                "controlled_params": ["code", "data"],
-                "exported": ext.get("exported", False),
-                "src_entry": ext.get("src_entry", ""),
-                "snippet": json.dumps(ext, ensure_ascii=False)[:400],
-            })
+            mod_base = Path(mod_json_path).parent.parent.parent
 
-    # exported UIAbility 作为入口（从 modules 中提取）
-    for mod in modules:
-        mod_json_path = mod.get("module_path", "")
-        if not mod_json_path:
-            continue
-        mod_base = Path(mod_json_path).parent.parent.parent
+            for ab in mod.get("abilities", []):
+                if ab.get("exported") is not True or ab.get("filtered_by_system_permission") is True:
+                    continue
+                src_entry = ab.get("src_entry", "")
+                if not src_entry:
+                    continue
 
-        for ab in mod.get("abilities", []):
-            if ab.get("exported") is not True:
-                continue
-            if ab.get("filtered_by_system_permission") is True:
-                continue
-            src_entry = ab.get("src_entry", "")
-            if not src_entry:
-                continue
+                ab_file_path = (mod_base / "src" / "main" / src_entry.lstrip("./")).as_posix()
+                try:
+                    rel_ab_path = Path(ab_file_path).resolve().relative_to(self.root).as_posix()
+                except ValueError:
+                    rel_ab_path = ab_file_path
 
-            ab_file_path = (mod_base / "src" / "main" / src_entry.lstrip("./")).as_posix()
-            try:
-                rel_ab_path = Path(ab_file_path).resolve().relative_to(root).as_posix()
-            except ValueError:
-                rel_ab_path = ab_file_path
-
-            counter += 1
-            entries.append({
-                "id": f"entry-{counter:03d}",
-                "type": "exported_ability",
-                "file": rel_ab_path,
-                "line": 0,
-                "handler": f"UIAbility({ab.get('name', '')})",
-                "controlled_params": ["want"],
-                "exported": True,
-                "src_entry": src_entry,
-                "snippet": json.dumps({
-                    "name": ab.get("name"),
-                    "exported": ab.get("exported"),
-                    "permissions": ab.get("permissions"),
-                    "skills": ab.get("skills")
-                }, ensure_ascii=False)[:400],
-            })
-
-    return entries
+                self.counter += 1
+                self.entries.append({
+                    "id": f"entry-{self.counter:03d}",
+                    "type": "exported_ability",
+                    "file": rel_ab_path,
+                    "line": 0,
+                    "handler": f"UIAbility({ab.get('name', '')})",
+                    "controlled_params": ["want"],
+                    "exported": True,
+                    "src_entry": src_entry,
+                    "snippet": json.dumps({
+                        "name": ab.get("name"),
+                        "exported": ab.get("exported"),
+                        "permissions": ab.get("permissions"),
+                        "skills": ab.get("skills")
+                    }, ensure_ascii=False)[:400],
+                })
 
 
-# ============================================================
-#  Sink Discovery
-# ============================================================
-
-def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[dict]:
+class SinkDiscoverer:
     """发现所有攻击终点。"""
-    root = Path(project_root).resolve()
-    sinks = []
-    counter = 0
+    def __init__(self, project_root: str, modules: list[dict], files: dict):
+        self.root = Path(project_root).resolve()
+        self.modules = modules
+        self.files = files
+        self.sinks = []
+        self.counter = 0
 
-    for sf in files.get("ets_sources", []):
-        filepath = root / sf["path"]
-        if not filepath.exists():
-            continue
-        try:
-            content = filepath.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
+    def discover(self) -> list[dict]:
+        for sf in self.files.get("ets_sources", []):
+            filepath = self.root / sf["path"]
+            if not filepath.exists():
+                continue
+            try:
+                content = filepath.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
 
-        # Sink: IPC 回包泄露（reply.writeString / reply.writeParcelable）
+            self._scan_file_sinks(sf, content)
+        return self.sinks
+
+    def _scan_file_sinks(self, sf: dict, content: str):
+        self._find_ipc_exfil(sf, content)
+        self._find_state_mutations(sf, content)
+        self._find_webviews(sf, content)
+        self._find_file_writes(sf, content)
+        self._find_databases(sf, content)
+        self._find_networks(sf, content)
+        self._find_ability_starts(sf, content)
+        self._find_result_terminations(sf, content)
+
+    def _find_ipc_exfil(self, sf: dict, content: str):
         for m in re.finditer(r"(?:reply|result\.reply)\s*\.\s*(?:writeString|writeParcelable|writeArrayBuffer)", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "data_exfil",
                 "file": sf["path"],
                 "line": line,
@@ -263,12 +274,12 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
                 "note": "IPC 回包写入，可能泄露服务端数据",
             })
 
-        # Sink: 全局状态写入（外部数据流入全局变量/单例）
+    def _find_state_mutations(self, sf: dict, content: str):
         for m in re.finditer(r"(?:dataStatus|globalState|globalData|dataStore)\s*\.\s*(?:updata|update|set|write|put)", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "state_mutation",
                 "file": sf["path"],
                 "line": line,
@@ -276,40 +287,24 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
                 "note": "攻击者数据写入全局状态",
             })
 
-        # Sink: WebView 加载点（正则匹配，兼容换行和空格）
+    def _find_webviews(self, sf: dict, content: str):
         for wm in re.finditer(r'Web\s*\(\s*\{', content):
-            counter += 1
+            self.counter += 1
             idx = wm.start()
             line = content[:idx].count("\n") + 1
-            # 提取 Web 组件后续 2000 字符用于属性分析
             web_block = content[idx:idx + 2000]
 
-            # 提取 src（支持字符串字面量、$rawfile、变量引用）
-            src_m = re.search(r"src:\s*(?:(\$rawfile\s*\([^)]*\))|['\"]([^'\"]+)['\"]|([\w.]+(?:\?\.\w+)*))", web_block)
-            if src_m:
-                src_url = src_m.group(1) or src_m.group(2) or f"var:{src_m.group(3)}"
-            else:
-                src_url = "未识别"
+            src_url = self._extract_web_src(web_block)
+            web_settings = self._extract_web_settings(web_block)
 
-            # 提取关键 Web 属性配置
-            web_settings = {}
-            for attr in ["javaScriptAccess", "fileAccess", "domStorageAccess",
-                         "mixedMode", "onlineImageAccess", "imageAccess",
-                         "geolocationAccess", "databaseAccess"]:
-                attr_m = re.search(rf"\.{attr}\s*\(\s*(true|false|WebMixedMode\.\w+)", web_block)
-                if attr_m:
-                    val = attr_m.group(1)
-                    web_settings[attr] = val == "true" if val in ("true", "false") else val
-
-            # 在整个文件中搜索 JS Bridge 和 WebMessagePort（不限定距离）
             has_jsbridge = "registerJavaScriptProxy" in content
             has_message_port = "createWebMessagePorts" in content
 
             is_local_resource = src_url.startswith("$rawfile")
             is_dynamic = src_url.startswith("var:") or src_url == "未识别"
 
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "webview",
                 "file": sf["path"],
                 "line": line,
@@ -325,72 +320,86 @@ def discover_sinks(project_root: str, modules: list[dict], files: dict) -> list[
                 "snippet": content[idx:idx + 500].strip()[:400],
             })
 
-        # Sink: 文件写入
+    def _extract_web_src(self, web_block: str) -> str:
+        src_m = re.search(r"src:\s*(?:(\$rawfile\s*\([^)]*\))|['\"]([^'\"]+)['\"]|([\w.]+(?:\?\.\w+)*))", web_block)
+        if src_m:
+            return src_m.group(1) or src_m.group(2) or f"var:{src_m.group(3)}"
+        return "未识别"
+
+    def _extract_web_settings(self, web_block: str) -> dict:
+        web_settings = {}
+        attrs = [
+            "javaScriptAccess", "fileAccess", "domStorageAccess",
+            "mixedMode", "onlineImageAccess", "imageAccess",
+            "geolocationAccess", "databaseAccess"
+        ]
+        for attr in attrs:
+            attr_m = re.search(rf"\.{attr}\s*\(\s*(true|false|WebMixedMode\.\w+)", web_block)
+            if attr_m:
+                val = attr_m.group(1)
+                web_settings[attr] = val == "true" if val in ("true", "false") else val
+        return web_settings
+
+    def _find_file_writes(self, sf: dict, content: str):
         for m in re.finditer(r"(?:fileIo|fs)\s*\.\s*(?:openSync|writeSync|write|writeText)", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "file_write",
                 "file": sf["path"],
                 "line": line,
                 "target": m.group(0),
             })
 
-        # Sink: 数据库操作
+    def _find_databases(self, sf: dict, content: str):
         for m in re.finditer(r"(?:executeSql|querySql|rdbStore|relationalStore)", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "database",
                 "file": sf["path"],
                 "line": line,
                 "target": m.group(0),
             })
 
-        # Sink: 网络请求
+    def _find_networks(self, sf: dict, content: str):
         for m in re.finditer(r"(?:http\.request|createHttp|fetch)\s*\(", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "network",
                 "file": sf["path"],
                 "line": line,
                 "target": m.group(0),
             })
 
-        # Sink: Ability 启动 (重定向风险)
+    def _find_ability_starts(self, sf: dict, content: str):
         for m in re.finditer(r"(?:context\s*\.)?\s*startAbility(?:ForResult)?\s*\(", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "start_ability",
                 "file": sf["path"],
                 "line": line,
                 "target": m.group(0).strip(),
             })
 
-        # Sink: Result 回传 (敏感信息泄露)
+    def _find_result_terminations(self, sf: dict, content: str):
         for m in re.finditer(r"(?:context\s*\.)?\s*terminateSelfWithResult\s*\(", content):
-            counter += 1
+            self.counter += 1
             line = content[:m.start()].count("\n") + 1
-            sinks.append({
-                "id": f"sink-{counter:03d}",
+            self.sinks.append({
+                "id": f"sink-{self.counter:03d}",
                 "type": "terminate_result",
                 "file": sf["path"],
                 "line": line,
                 "target": m.group(0).strip(),
             })
 
-    return sinks
-
-
-# ============================================================
-#  Main
-# ============================================================
 
 def main():
     parser = argparse.ArgumentParser(description="HarmonyOS 攻击面发现器 v2")
@@ -411,7 +420,8 @@ def main():
     modules = analyze_all_modules(project_root)
 
     # 入口
-    entries = discover_entries(str(project_root), modules, files)
+    discoverer = EntryDiscoverer(str(project_root), modules, files)
+    entries = discoverer.discover()
     entries_json = {
         "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(entries)},
         "entries": entries,
@@ -419,14 +429,15 @@ def main():
     (out_dir / "entries.json").write_text(json.dumps(entries_json, ensure_ascii=False, indent=indent), encoding="utf-8")
 
     # Sink
-    sinks = discover_sinks(str(project_root), modules, files)
+    sink_discoverer = SinkDiscoverer(str(project_root), modules, files)
+    sinks = sink_discoverer.discover()
     sinks_json = {
         "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(sinks)},
         "sinks": sinks,
     }
     (out_dir / "sinks.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
 
-    print(f"[DONE] v2 攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点 ➜ {out_dir}")
+    print(f"[DONE] v2 攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点 -> {out_dir}")
 
 
 if __name__ == "__main__":
