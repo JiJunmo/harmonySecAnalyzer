@@ -18,6 +18,40 @@
 
 ---
 
+## 输出目录约定
+
+审计开始前在当前工作目录创建一个 `harmony_audit_results/<timestamp>/` 目录，所有产物存放于此。
+
+```
+harmony_audit_results/
+└── <YYYYMMDD_HHMMSS>/
+    ├── entries.json                                # Phase 1 Step 1: 物理暴露入口
+    ├── sinks.json                                  # Phase 1 Step 1: 敏感操作终点
+    ├── fragments.json                              # Phase 1 Step 3: 前向/反向路径碎片及候选桥
+    ├── attack_map.json                             # Phase 1 Step 3: 精准路径装配图
+    │
+    ├── harmony-ipc-security-audit-attack-paths-batch-0.json   # Phase 2: IPC 验证分片
+    ├── harmony-webview-audit-attack-paths-batch-0.json       # Phase 2: WebView 验证分片
+    │
+    ├── aggregated_data.json                        # Phase 3: 聚合去重数据
+    ├── audit-report.md                             # Phase 3: 最终审计报告
+    └── audit-report-appendix.md                    # Phase 3: 完整分析附录
+```
+
+### 初始化目录命令
+
+在进入 Phase 1 之前，必须执行以下初始化命令以创建当前审计的隔离工作空间：
+
+```bash
+# 自动生成当前时间戳的唯一结果目录
+AUDIT_DIR="./harmony_audit_results/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$AUDIT_DIR"
+```
+
+每次审计都必须基于唯一的时间戳目录运行，以便历史记录可追溯且结果不相互覆盖。
+
+---
+
 ## 审计流程
 
 ```
