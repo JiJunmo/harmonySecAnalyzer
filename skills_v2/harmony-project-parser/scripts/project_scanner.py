@@ -229,6 +229,55 @@ class EntryDiscoverer:
                 })
 
 
+SINK_STRATEGIES = [
+    {
+        "type": "data_exfil",
+        "pattern": r"(?:reply|result\.reply)\s*\.\s*(?:writeString|writeParcelable|writeArrayBuffer)",
+        "note": "IPC 回包写入，可能泄露服务端数据",
+    },
+    {
+        "type": "state_mutation",
+        "pattern": r"(?:dataStatus|globalState|globalData|dataStore)\s*\.\s*(?:updata|update|set|write|put)",
+        "note": "攻击者数据写入全局状态",
+    },
+    {
+        "type": "file_write",
+        "pattern": r"(?:fileIo|fs)\s*\.\s*(?:openSync|writeSync|write|writeText)",
+    },
+    {
+        "type": "database",
+        "pattern": r"(?:executeSql|querySql|rdbStore|relationalStore)",
+    },
+    {
+        "type": "network",
+        "pattern": r"(?:http\.request|createHttp|fetch)\s*\(",
+    },
+    {
+        "type": "start_ability",
+        "pattern": r"(?:context\s*\.)?\s*startAbility(?:ForResult)?\s*\(",
+    },
+    {
+        "type": "terminate_result",
+        "pattern": r"(?:context\s*\.)?\s*terminateSelfWithResult\s*\(",
+    },
+    {
+        "type": "telephony",
+        "pattern": r"['\"]@kit\.TelephonyKit['\"]|['\"]@ohos\.telephony\.\w+['\"]",
+        "note": "使用了蜂窝通信模块，涉及通话、短信或SIM卡等敏感硬件操作",
+    },
+    {
+        "type": "location",
+        "pattern": r"['\"]@kit\.LocationKit['\"]|['\"]@ohos\.geoLocationManager['\"]|['\"]@ohos\.location['\"]",
+        "note": "使用了地理位置服务，涉及GPS、基站等敏感定位操作",
+    },
+    {
+        "type": "calendar",
+        "pattern": r"['\"]@kit\.CalendarKit['\"]|['\"]@ohos\.calendarManager['\"]|['\"]@ohos\.calendar['\"]",
+        "note": "使用了日历管理模块，涉及对本地日程事件的增删改查等敏感操作",
+    },
+]
+
+
 class SinkDiscoverer:
     """发现所有攻击终点。"""
     def __init__(self, project_root: str, modules: list[dict], files: dict):
@@ -252,40 +301,25 @@ class SinkDiscoverer:
         return self.sinks
 
     def _scan_file_sinks(self, sf: dict, content: str):
-        self._find_ipc_exfil(sf, content)
-        self._find_state_mutations(sf, content)
+        self._scan_generic_sinks(sf, content)
         self._find_webviews(sf, content)
-        self._find_file_writes(sf, content)
-        self._find_databases(sf, content)
-        self._find_networks(sf, content)
-        self._find_ability_starts(sf, content)
-        self._find_result_terminations(sf, content)
 
-    def _find_ipc_exfil(self, sf: dict, content: str):
-        for m in re.finditer(r"(?:reply|result\.reply)\s*\.\s*(?:writeString|writeParcelable|writeArrayBuffer)", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "data_exfil",
-                "file": sf["path"],
-                "line": line,
-                "target": m.group(0),
-                "note": "IPC 回包写入，可能泄露服务端数据",
-            })
-
-    def _find_state_mutations(self, sf: dict, content: str):
-        for m in re.finditer(r"(?:dataStatus|globalState|globalData|dataStore)\s*\.\s*(?:updata|update|set|write|put)", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "state_mutation",
-                "file": sf["path"],
-                "line": line,
-                "target": m.group(0),
-                "note": "攻击者数据写入全局状态",
-            })
+    def _scan_generic_sinks(self, sf: dict, content: str):
+        """通用扫描引擎：利用数据驱动策略表，一次性扫描所有标准 Sink 点。"""
+        for strategy in SINK_STRATEGIES:
+            for m in re.finditer(strategy["pattern"], content):
+                self.counter += 1
+                line = content[:m.start()].count("\n") + 1
+                sink_item = {
+                    "id": f"sink-{self.counter:03d}",
+                    "type": strategy["type"],
+                    "file": sf["path"],
+                    "line": line,
+                    "target": m.group(0).strip(),
+                }
+                if "note" in strategy:
+                    sink_item["note"] = strategy["note"]
+                self.sinks.append(sink_item)
 
     def _find_webviews(self, sf: dict, content: str):
         for wm in re.finditer(r'Web\s*\(\s*\{', content):
@@ -339,66 +373,6 @@ class SinkDiscoverer:
                 val = attr_m.group(1)
                 web_settings[attr] = val == "true" if val in ("true", "false") else val
         return web_settings
-
-    def _find_file_writes(self, sf: dict, content: str):
-        for m in re.finditer(r"(?:fileIo|fs)\s*\.\s*(?:openSync|writeSync|write|writeText)", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "file_write",
-                "file": sf["path"],
-                "line": line,
-                "target": m.group(0),
-            })
-
-    def _find_databases(self, sf: dict, content: str):
-        for m in re.finditer(r"(?:executeSql|querySql|rdbStore|relationalStore)", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "database",
-                "file": sf["path"],
-                "line": line,
-                "target": m.group(0),
-            })
-
-    def _find_networks(self, sf: dict, content: str):
-        for m in re.finditer(r"(?:http\.request|createHttp|fetch)\s*\(", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "network",
-                "file": sf["path"],
-                "line": line,
-                "target": m.group(0),
-            })
-
-    def _find_ability_starts(self, sf: dict, content: str):
-        for m in re.finditer(r"(?:context\s*\.)?\s*startAbility(?:ForResult)?\s*\(", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "start_ability",
-                "file": sf["path"],
-                "line": line,
-                "target": m.group(0).strip(),
-            })
-
-    def _find_result_terminations(self, sf: dict, content: str):
-        for m in re.finditer(r"(?:context\s*\.)?\s*terminateSelfWithResult\s*\(", content):
-            self.counter += 1
-            line = content[:m.start()].count("\n") + 1
-            self.sinks.append({
-                "id": f"sink-{self.counter:03d}",
-                "type": "terminate_result",
-                "file": sf["path"],
-                "line": line,
-                "target": m.group(0).strip(),
-            })
 
 
 def main():

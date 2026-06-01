@@ -58,4 +58,7 @@ python skills_v2/harmony-project-parser/scripts/fragment_finder.py <project_path
 | `file_write` | `fileIo.openSync` / `writeSync` 调用 |
 | `database` | `executeSql` / `relationalStore` 操作 |
 | `network` | `http.request` / `fetch` 调用 |
+| `telephony` | `@kit.TelephonyKit` 或 `@ohos.telephony.*` 蜂窝通信操作 |
+| `location` | `@kit.LocationKit` 或 `@ohos.geoLocationManager` 定位操作 |
+| `calendar` | `@kit.CalendarKit` 或 `@ohos.calendarManager` 日历增删改查 |
 
