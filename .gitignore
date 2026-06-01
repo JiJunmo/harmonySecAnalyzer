@@ -11,3 +11,15 @@ skills_v2/RULES_OPTIMIZATION_PLAN.md
 # Atlas Code Intelligence database
 .atlas/
 
+# Python cache & temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local workspace scratch and configurations
+scratch/
+.claude/
+
+

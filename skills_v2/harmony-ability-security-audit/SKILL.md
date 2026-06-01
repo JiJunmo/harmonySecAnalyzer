@@ -9,7 +9,7 @@ description: v2 (混合智能双轨方案) — 审计对外暴露的 UIAbility �
 
 它的核心职责是：
 1. **入口防卫审计**：对 `onCreate(want)` / `onNewWant(want)` 进行统一的安全过滤（包名校验、重入防绕过、自定义权限校验）。
-2. **跨页面/状态数据流追踪**：使用 **GitNexus 语义索引**追踪受污参数流向。
+2. **跨页面/状态数据流追踪**：使用 **Atlas 关系图谱与本地调用链分析**追踪受污参数流向。
 3. **分流与级联触发**：
    - **分支 A (Ability 闭环)**：若流向 `context.startAbility` (能力重定向) 或 `terminateSelfWithResult` (信息回传泄露)，对照规则深入研判并输出 `harmony-ability-security-audit-attack-paths-*.json`。
    - **分支 B (级联唤醒 WebView)**：若流向 WebView 组件，**不直接进行 WebView 审计**，而是输出 **Warm-Start WebView Task Context** 文件（命名为 `harmony-webview-warm-start-{path_id}.json`），由 Phase 2 调度器自动热启动触发 WebView 专项审计。
@@ -47,20 +47,22 @@ Phase 1 已发现的外部入口（`type=exported_ability`）和组件终点。
 #### 2. 轨道一：自顶向下追踪 (Top-Down)
 追踪 `want.parameters` 或 `want.uri` 的流向，看它们被赋值给了哪些成员变量、或是如何作为路由参数传递到了前端的 Page 视图。
 ```
-# 使用 GitNexus 追踪 want 参数在 onCreate/onNewWant 的流转
-gitnexus_query({query: "want.parameters 往下游变量的赋值与流动"})
+# 使用 Atlas 追踪 want 参数在 onCreate/onNewWant 的流转与生命周期逆向调用图
+atlas trace caller-path -n <handler_name>
+# 配合 atlas search 检索具体的参数消费与取值流向
+atlas search "parameters"
 ```
 
 #### 3. 跨页面状态传递与缝合 (ArkUI State Suture)
-由于 ArkTS 的声明式 UI 机制，页面跳转和变量传递通常通过 `AppStorage`/`LocalStorage` 状态共享或 `router` 发生。当传统 AST 断流时，你必须使用以下 GitNexus 查询进行数据流桥接：
-- **AppStorage 共享追踪**：若代码调用 `AppStorage.setOrCreate('key', taintedVal)`，立刻运行以下查询：
-  `gitnexus_query({query: "查找所有引用了状态键名 'key' 的装饰器声明，如 @StorageLink('key') 或 @StorageProp('key')" })`
+由于 ArkTS 的声明式 UI 机制，页面跳转和变量传递通常通过 `AppStorage`/`LocalStorage` 状态共享或 `router` 发生。当传统 AST 调用拓扑断链时，你必须使用以下 Atlas 精准查找进行数据流桥接：
+- **AppStorage 共享追踪**：若代码调用 `AppStorage.setOrCreate('key', taintedVal)`，立刻在终端运行以下精准符号搜索：
+  `atlas search "@StorageLink('key')"` 或 `atlas search "@StorageProp('key')"`
 - **Router 跳转传递追踪**：若代码调用 `router.pushUrl({ url: 'pages/WebPage', params: { urlParam: taintedVal } })`，立刻定位到 `WebPage.ets` 文件并寻找 `router.getParams()` 中对 `urlParam` 的消费。
 
 #### 4. 关键点防御审计：有无身份校验与重入遗漏？
 检查该 Ability 是否存在防御机制：
 * **包名白名单校验**：是否调用了 `getCallingBundleName()`（配合 `startAbilityForResult` 启动）？是否对返回的包名进行了校验？
-* **生命周期重入一致性审计**：当 `entries.json` 中包含多个提取入口行号时，必须使用 GitNexus 分析 `onCreate` 与 `onNewWant` 下游的校验逻辑。若 `onNewWant` 缺失了 `onCreate` 的包名白名单校验，判定构成高危的**“重入防御缺失绕过”**利用链！
+* **生命周期重入一致性审计**：当 `entries.json` 中包含多个提取入口行号时，必须使用 Atlas 分析或 `view_file` 阅读 `onCreate` 与 `onNewWant` 下游的校验逻辑。若 `onNewWant` 缺失了 `onCreate` 的包名白名单校验，判定构成高危的**“重入防御缺失绕过”**利用链！
 
 ---
 
