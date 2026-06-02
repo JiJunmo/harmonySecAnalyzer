@@ -6,22 +6,63 @@
 
 ## 🛠️ 核心架构与模块设计
 
-本项目采用**智能体驱动原生双轨安全审计架构 (Agent MCP-Driven Dual-Track Architecture)**，将审计流程划分为以下阶段：
+本项目采用**智能体驱动原生双轨安全审计架构 (Agent MCP-Driven Dual-Track Architecture)**，将安全审计管线高度工程化、结构化，整体全景工作流图谱如下：
 
+```mermaid
+graph TD
+    %% Styling
+    classDef inputStyle fill:#f9f9fb,stroke:#8a9ba8,stroke-width:2px,color:#2c3e50;
+    classDef phase1Style fill:#eef2f7,stroke:#3498db,stroke-width:2px,color:#2c3e50;
+    classDef phase2Style fill:#fdf6e2,stroke:#f39c12,stroke-width:2px,color:#2c3e50;
+    classDef phase3Style fill:#e8f8f5,stroke:#2ecc71,stroke-width:2px,color:#2c3e50;
+    classDef outputStyle fill:#fef9e7,stroke:#e74c3c,stroke-width:2px,color:#2c3e50;
+
+    %% Nodes
+    Source[鸿蒙项目源码 HAP/HSP/HAR]:::inputStyle
+
+    %% Phase 1: Discover & Map
+    subgraph Phase 1: 发现与语义缝合 (Discover & Map)
+        A1[Step 1: 物理入口与终点扫描<br>project_scanner.py] -->|生成| B1(entries.json / sinks.json)
+        A2[Step 2: 物理路径碎片提取<br>fragment_finder.py] -->|生成| B2(fragments.json)
+        
+        %% Atlas Indexing
+        Atlas[Atlas 关系建图与索引<br>atlas init && atlas index] -.->|提供代码图谱| Stitch
+        
+        B1 & B2 --> Stitch{Step 3: AI 语义分析与缝合<br>智能体语义判定与首尾搭桥}
+        Stitch -->|验证工具| Trace[atlas trace caller-path<br>atlas search]
+        Trace -->|返回因果证明| Stitch
+        Stitch -->|输出物理与逻辑全路径映射| C(attack_map.json)
+    end
+    class Phase 1: 发现与语义缝合 (Discover & Map) phase1Style;
+
+    %% Phase 2: Deep Component Audit
+    subgraph Phase 2: 维度深度审计 (Deep Component Audit)
+        C -->|并行/串行派发任务| D1[WebView 容器审计<br>harmony-webview-audit]
+        C -->|并行/串行派发任务| D2[IPC 跨进程安全审计<br>harmony-ipc-security-audit]
+        C -->|并行/串行派发任务| D3[UIAbility 组件审计<br>harmony-ability-security-audit]
+        
+        D1 -->|输出| E1(webview-attack-paths.json)
+        D2 -->|输出| E2(ipc-attack-paths.json)
+        D3 -->|输出| E3(ability-attack-paths.json)
+    end
+    class Phase 2: 维度深度审计 (Deep Component Audit) phase2Style;
+
+    %% Phase 3: Aggregation & Native Output
+    subgraph Phase 3: 报告聚合与输出 (Report Aggregation)
+        E1 & E2 & E3 --> F[安全漏洞归并与风险评分<br>report_aggregator.py]
+        F -->|自动防截断原生编译| G1[审计报告: audit-report.md]
+        F -->|结构化数据同步| G2[聚合数据: audit-report.json]
+    end
+    class Phase 3: 报告聚合与输出 (Report Aggregation) phase3Style;
+
+    %% Connections
+    Source --> A1
+    Source --> A2
+    Source -.-> Atlas
+    G1 & G2 --> Output[🛡️ 完整安全审计交付件]:::outputStyle
 ```
-Phase 1: 静态扫描与路径关系梳理 (Static Analysis & Path Mapping)
-  ├── Step 1: 静态物理特征扫描 ➔ 提取物理入口 (entries.json) 与敏感操作终点 (sinks.json)
-  ├── Step 2: Atlas 关系建图与初始化 ➔ 显式在宿主目录建立依赖与调用链索引图 (Rust 极速构建)
-  └── Step 3: 双向拓扑碎片提取与语义搭桥 ➔ AI 本地 Trace 语义审查并缝合装配出 attack_map.json
-  │
-Phase 2: 漏洞深度验证 (Parallel Audit Verification)
-  ├── 轨道一 (Track 1): IPC 垂直自闭环审计 (onConnect ➔ switch-case 业务分支深度挖掘)
-  └── 轨道二 (Track 2): UIAbility 边界防卫与 WebView 级联审计
-        ├── Stage 1: UIAbility 护卫与参数跨文件/跨页面状态流追踪
-        └── Stage 2 (按需触发): WebView 专项深度审计 (基于 Stage 1 输出 of Warm-Start 级联上下文)
-  │
-Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚合多源漏洞分片并生成结构化报告
-```
+
+---
 
 ### 1. 静态扫描与路径关系梳理阶段 (Phase 1: Static Analysis & Path Mapping)
 该阶段深度结合物理特征匹配与 Atlas 本地依赖图谱，提取并装配出潜在攻击路径网络。
@@ -34,16 +75,15 @@ Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚�
 *   **轨道一：IPC 服务自闭环审计 (`skills_v2/harmony-ipc-security-audit`)**
     *   对 IPC 服务进行垂直深度研判，分析连接校验（`onConnect`）和消息分发（`onRemoteMessageRequest`）的各个业务分支安全缺陷。
 *   **轨道二：UIAbility 与 WebView 级联审计**
-    *   **阶段 1 (`skills_v2/harmony-ability-security-audit`)**：审计 Ability 入口前置包名校验及重入一致性问题，并借助 GitNexus 追踪 `want.parameters` 经由 ArkTS 状态管理（`AppStorage`、`LocalStorage`）和路由（`router.pushUrl`）跨文件的传递路径。若受污参数流入 WebView，则生成 **Warm-Start Context JSON**。
+    *   **阶段 1 (`skills_v2/harmony-ability-security-audit`)**：审计 Ability 入口前置包名校验及重入一致性问题，并借助 Atlas 静态搜索及逆向调用链追踪受污参数经由 ArkTS 状态管理（`AppStorage`、`LocalStorage`）和路由（`router.pushUrl`）跨文件的传递路径。若受污参数流入 WebView，则生成 **Warm-Start Context JSON**。
     *   **阶段 2 (`skills_v2/harmony-webview-audit`)**：若无 Warm-Start JSON 则自动剪枝跳过。若存在，AI 将聚焦分析 Web 组件关联的 JS Bridge（Native 越权方法）及拦截器（弱域名过滤漏洞），并缝合端到端利用链。
 
 ### 3. 报告聚合与生成阶段 (Phase 3: Reporting)
 *   **实现模块**：`skills_v2/harmony-report-generator/`
 *   **功能**：对各阶段生成的多份攻击路径 JSON 碎片进行内容完整性、格式规范性校验。按照预定义渲染公式合成 Markdown 报告，自动进行风险评分，并输出漏洞修复建议。
 *   **产出物**：
-    *   `<audit_dir>/audit-report.md`（分级渲染的结构化审计报告）
-    *   `<audit_dir>/audit-report.json`（完整结构化数据）
-    *   `<audit_dir>/audit-report-appendix.md`（完整分析附录）
+    *   `<audit_dir>/audit-report.md`（原生自动防截断分级渲染的 Markdown 报告）
+    *   `<audit_dir>/audit-report.json`（完整结构化聚合数据）
 
 ---
 
@@ -51,11 +91,9 @@ Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚�
 
 ```
 ├── README.md                              # 项目说明文档
-├── AGENTS.md / CLAUDE.md                 # GitNexus 代码智能协作契约手册
+├── AGENTS.md / CLAUDE.md                 # Atlas 代码智能协作契约手册
 ├── agent_v2.md                           # 智能体原生双轨编排管线核心说明
-├── v2_weaknesses.md                      # 架构缺陷客观剖析与中长期演进蓝图
-├── PLAN.md / PLAN_NEW.md                 # 历史设计规划备份
-├── skills_v2/                            # 审计技能库 (Skills)
+├── skills_v2/                            # 审计技能库 (Skills v2)
 │   ├── harmony-project-parser/           # 项目扫描与特征发现技能 (Phase 1)
 │   │   └── scripts/
 │   │       └── project_scanner.py        # 静态资源与入口/Sink 发现核心脚本
@@ -65,7 +103,6 @@ Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚�
 │   └── harmony-report-generator/         # Phase 3：多源报告校验、缝合与聚合生成技能
 │       └── scripts/
 │           └── report_aggregator.py      # 报告数据聚合、Deduplication 与多路径归并脚本
-└── skills/                               # v1 遗留技能文件夹 (备份/参考)
 ```
 
 ---
@@ -78,9 +115,21 @@ Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚�
 这是整个审计工作流的第一阶段，包括静态扫描、依赖图谱初始化以及双向碎片缝合：
 
 * **Step 1: 扫描物理入口与物理终点**
-  运行项目解析扫描器，初始化审计目录并执行物理扫描：
+  根据项目规模，支持全局扫描与超大型模块化拆分扫描：
+  
+  **方式 A：中小型项目（一次性扫描）**
   ```bash
   python skills_v2/harmony-project-parser/scripts/project_scanner.py <target_project_path> -o <audit_output_dir> --pretty
+  ```
+
+  **方式 B：超大型项目（分模块独立任务派发 + 全局合并，规避超时）**
+  ```bash
+  # 1. 独立派发各个模块扫描（纯单线程运行，轻量安全）
+  python skills_v2/harmony-project-parser/scripts/project_scanner.py <target_project_path> --module-dir <target_project_path>/entry -o <audit_output_dir> --pretty
+  python skills_v2/harmony-project-parser/scripts/project_scanner.py <target_project_path> --module-dir <target_project_path>/feature_module -o <audit_output_dir> --pretty
+  
+  # 2. 全局分片合并
+  python skills_v2/harmony-project-path/scripts/project_scanner.py <target_project_path> --merge -o <audit_output_dir> --pretty
   ```
 
 * **Step 2: 建立 Atlas 代码索引**
@@ -105,9 +154,8 @@ Phase 3: 报告聚合与生成 (Unified Report Aggregation & Rendering) ➔ 聚�
 2. 检查 `<audit_output_dir>/` 下是否生成了 `harmony-webview-warm-start-*.json` 级联上下文。
 3. 如有，批量启动 **轨道二阶段 2 (WebView)** 审计任务。
 
-### 3. 聚合数据并生成报告 (Phase 3)
-收集所有验证节点生成的 `*-attack-paths*.json`，执行聚合：
+### 3. 聚合数据并原生输出报告 (Phase 3)
+运行聚合脚本，指定 `-o` 和 `-m` 参数，即可在 2 毫秒内自动在端侧编译出全量报告，完美避开 AI 输出截断痛点：
 ```bash
-python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_output_dir> -o <audit_output_dir>/aggregated_data.json --pretty
+python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_output_dir> -o <audit_output_dir>/aggregated_data.json -m <audit_output_dir>/audit-report.md --pretty
 ```
-最后驱动 AI 加载 `skills_v2/harmony-report-generator/SKILL.md`，执行格式精细渲染并最终输出 `audit-report.md`。
