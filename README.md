@@ -18,48 +18,48 @@ graph TD
     classDef outputStyle fill:#fef9e7,stroke:#e74c3c,stroke-width:2px,color:#2c3e50;
 
     %% Nodes
-    Source[鸿蒙项目源码 HAP/HSP/HAR]:::inputStyle
+    Source["鸿蒙项目源码 HAP/HSP/HAR"]:::inputStyle
 
     %% Phase 1: Discover & Map
-    subgraph Phase 1: 发现与语义缝合 (Discover & Map)
-        A1[Step 1: 物理入口与终点扫描<br>project_scanner.py] -->|生成| B1(entries.json / sinks.json)
-        A2[Step 2: 物理路径碎片提取<br>fragment_finder.py] -->|生成| B2(fragments.json)
+    subgraph P1 ["Phase 1: 发现与语义缝合 (Discover & Map)"]
+        A1["Step 1: 物理入口与终点扫描<br>project_scanner.py"] -->|生成| B1("entries.json / sinks.json")
+        A2["Step 2: 物理路径碎片提取<br>fragment_finder.py"] -->|生成| B2("fragments.json")
         
         %% Atlas Indexing
-        Atlas[Atlas 关系建图与索引<br>atlas init && atlas index] -.->|提供代码图谱| Stitch
+        Atlas["Atlas 关系建图与索引<br>atlas init && atlas index"] -.->|提供代码图谱| Stitch
         
-        B1 & B2 --> Stitch{Step 3: AI 语义分析与缝合<br>智能体语义判定与首尾搭桥}
-        Stitch -->|验证工具| Trace[atlas trace caller-path<br>atlas search]
+        B1 & B2 --> Stitch{"Step 3: AI 语义分析与缝合<br>智能体语义判定与首尾搭桥"}
+        Stitch -->|验证工具| Trace["atlas trace caller-path<br>atlas search"]
         Trace -->|返回因果证明| Stitch
-        Stitch -->|输出物理与逻辑全路径映射| C(attack_map.json)
+        Stitch -->|输出物理与逻辑全路径映射| C("attack_map.json")
     end
-    class Phase 1: 发现与语义缝合 (Discover & Map) phase1Style;
+    class P1 phase1Style;
 
     %% Phase 2: Deep Component Audit
-    subgraph Phase 2: 维度深度审计 (Deep Component Audit)
-        C -->|并行/串行派发任务| D1[WebView 容器审计<br>harmony-webview-audit]
-        C -->|并行/串行派发任务| D2[IPC 跨进程安全审计<br>harmony-ipc-security-audit]
-        C -->|并行/串行派发任务| D3[UIAbility 组件审计<br>harmony-ability-security-audit]
+    subgraph P2 ["Phase 2: 维度深度审计 (Deep Component Audit)"]
+        C -->|并行/串行派发任务| D1["WebView 容器审计<br>harmony-webview-audit"]
+        C -->|并行/串行派发任务| D2["IPC 跨进程安全审计<br>harmony-ipc-security-audit"]
+        C -->|并行/串行派发任务| D3["UIAbility 组件审计<br>harmony-ability-security-audit"]
         
-        D1 -->|输出| E1(webview-attack-paths.json)
-        D2 -->|输出| E2(ipc-attack-paths.json)
-        D3 -->|输出| E3(ability-attack-paths.json)
+        D1 -->|输出| E1("webview-attack-paths.json")
+        D2 -->|输出| E2("ipc-attack-paths.json")
+        D3 -->|输出| E3("ability-attack-paths.json")
     end
-    class Phase 2: 维度深度审计 (Deep Component Audit) phase2Style;
+    class P2 phase2Style;
 
     %% Phase 3: Aggregation & Native Output
-    subgraph Phase 3: 报告聚合与输出 (Report Aggregation)
-        E1 & E2 & E3 --> F[安全漏洞归并与风险评分<br>report_aggregator.py]
-        F -->|自动防截断原生编译| G1[审计报告: audit-report.md]
-        F -->|结构化数据同步| G2[聚合数据: audit-report.json]
+    subgraph P3 ["Phase 3: 报告聚合与输出 (Report Aggregation)"]
+        E1 & E2 & E3 --> F["安全漏洞归并与风险评分<br>report_aggregator.py"]
+        F -->|自动防截断原生编译| G1["审计报告: audit-report.md"]
+        F -->|结构化数据同步| G2["聚合数据: audit-report.json"]
     end
-    class Phase 3: 报告聚合与输出 (Report Aggregation) phase3Style;
+    class P3 phase3Style;
 
     %% Connections
     Source --> A1
     Source --> A2
     Source -.-> Atlas
-    G1 & G2 --> Output[🛡️ 完整安全审计交付件]:::outputStyle
+    G1 & G2 --> Output["🛡️ 完整安全审计交付件"]:::outputStyle
 ```
 
 ---
