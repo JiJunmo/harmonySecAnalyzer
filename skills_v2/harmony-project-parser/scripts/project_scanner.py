@@ -30,6 +30,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 from file_collector import collect_files, collect_files_summary
 from module_analyzer import analyze_all_modules, parse_module_config
 from dependency_analyzer import analyze_dependencies
+from json5_parser import safe_parse_json5_file
 
 VERSION = "2.0.0"
 
@@ -389,6 +390,120 @@ class SinkDiscoverer:
         return web_settings
 
 
+def discover_modules_from_profile(project_root: Path) -> list[tuple[str, Path]]:
+    """
+    从项目根目录的 build-profile.json5 中解析模块列表。
+    返回: [(module_name, module_path), ...]
+    """
+    profile_path = project_root / "build-profile.json5"
+    if not profile_path.exists():
+        return []
+
+    data, err = safe_parse_json5_file(profile_path)
+    if err or not isinstance(data, dict):
+        return []
+
+    modules_config = data.get("modules", [])
+    if not isinstance(modules_config, list):
+        return []
+
+    discovered = []
+    for mod in modules_config:
+        if not isinstance(mod, dict):
+            continue
+        name = mod.get("name")
+        src_path_str = mod.get("srcPath")
+        if not name or not src_path_str:
+            continue
+
+        # 将 srcPath 解析为绝对路径
+        module_path = (project_root / src_path_str).resolve()
+        if not module_path.exists() or not module_path.is_dir():
+            continue
+
+        # 检查是否为合法鸿蒙模块目录：必须包含 module.json5 或 oh-package.json5
+        has_config = (
+            (module_path / "src" / "main" / "module.json5").exists()
+            or (module_path / "module.json5").exists()
+            or (module_path / "oh-package.json5").exists()
+        )
+        if has_config:
+            discovered.append((str(name), module_path))
+
+    return discovered
+
+
+def merge_outputs(out_dir: Path, indent: int | None):
+    """
+    合并所有模块级 entries_*.json 与 sinks_*.json，并进行全局去重与重新编号。
+    """
+    all_entries = []
+    all_sinks = []
+
+    # 1. 查找所有 entries_*.json
+    for entries_file in sorted(out_dir.glob("entries_*.json")):
+        if entries_file.name == "entries.json":
+            continue
+        try:
+            data = json.loads(entries_file.read_text(encoding="utf-8"))
+            all_entries.extend(data.get("entries", []))
+        except Exception as e:
+            print(f"[WARN] 读取 {entries_file.name} 失败: {e}")
+
+    # 2. 查找所有 sinks_*.json
+    for sinks_file in sorted(out_dir.glob("sinks_*.json")):
+        if sinks_file.name == "sinks.json":
+            continue
+        try:
+            data = json.loads(sinks_file.read_text(encoding="utf-8"))
+            all_sinks.extend(data.get("sinks", []))
+        except Exception as e:
+            print(f"[WARN] 读取 {sinks_file.name} 失败: {e}")
+
+    # 去重，并进行确定性稳定排序与重新分配 ID
+    seen_entry_keys = set()
+    unique_entries = []
+    for entry in all_entries:
+        param_key = entry.get("controlled_params", [""])[0] if entry.get("controlled_params") else ""
+        key = (entry.get("type"), entry.get("file"), entry.get("line"), param_key)
+        if key in seen_entry_keys:
+            continue
+        seen_entry_keys.add(key)
+        unique_entries.append(entry)
+
+    unique_entries.sort(key=lambda x: (x.get("file", ""), x.get("line", 0), x.get("controlled_params", [""])[0] if x.get("controlled_params") else ""))
+    for i, entry in enumerate(unique_entries, 1):
+        entry["id"] = f"entry-{i:03d}"
+
+    seen_sink_keys = set()
+    unique_sinks = []
+    for sink in all_sinks:
+        key = (sink.get("type"), sink.get("file"), sink.get("line"))
+        if key in seen_sink_keys:
+            continue
+        seen_sink_keys.add(key)
+        unique_sinks.append(sink)
+
+    unique_sinks.sort(key=lambda x: (x.get("file", ""), x.get("line", 0), x.get("type", "")))
+    for i, sink in enumerate(unique_sinks, 1):
+        sink["id"] = f"sink-{i:03d}"
+
+    # 写入最终的合并文件
+    entries_json = {
+        "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(unique_entries)},
+        "entries": unique_entries,
+    }
+    sinks_json = {
+        "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(unique_sinks)},
+        "sinks": unique_sinks,
+    }
+
+    (out_dir / "entries.json").write_text(json.dumps(entries_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+    (out_dir / "sinks.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+
+    print(f"[DONE] 合并完成: 共 {len(unique_entries)} 个唯一入口, {len(unique_sinks)} 个唯一终点 -> {out_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="HarmonyOS 攻击面发现器 v2")
     parser.add_argument("project_path", help="鸿蒙项目根目录路径")
@@ -406,71 +521,7 @@ def main():
 
     if args.merge:
         # 合并模式
-        all_entries = []
-        all_sinks = []
-
-        # 1. 查找所有 entries_*.json
-        for entries_file in sorted(out_dir.glob("entries_*.json")):
-            if entries_file.name == "entries.json":
-                continue
-            try:
-                data = json.loads(entries_file.read_text(encoding="utf-8"))
-                all_entries.extend(data.get("entries", []))
-            except Exception as e:
-                print(f"[WARN] 读取 {entries_file.name} 失败: {e}")
-
-        # 2. 查找所有 sinks_*.json
-        for sinks_file in sorted(out_dir.glob("sinks_*.json")):
-            if sinks_file.name == "sinks.json":
-                continue
-            try:
-                data = json.loads(sinks_file.read_text(encoding="utf-8"))
-                all_sinks.extend(data.get("sinks", []))
-            except Exception as e:
-                print(f"[WARN] 读取 {sinks_file.name} 失败: {e}")
-
-        # 去重，并进行确定性稳定排序与重新分配 ID
-        seen_entry_keys = set()
-        unique_entries = []
-        for entry in all_entries:
-            param_key = entry.get("controlled_params", [""])[0] if entry.get("controlled_params") else ""
-            key = (entry.get("type"), entry.get("file"), entry.get("line"), param_key)
-            if key in seen_entry_keys:
-                continue
-            seen_entry_keys.add(key)
-            unique_entries.append(entry)
-
-        unique_entries.sort(key=lambda x: (x.get("file", ""), x.get("line", 0), x.get("controlled_params", [""])[0] if x.get("controlled_params") else ""))
-        for i, entry in enumerate(unique_entries, 1):
-            entry["id"] = f"entry-{i:03d}"
-
-        seen_sink_keys = set()
-        unique_sinks = []
-        for sink in all_sinks:
-            key = (sink.get("type"), sink.get("file"), sink.get("line"))
-            if key in seen_sink_keys:
-                continue
-            seen_sink_keys.add(key)
-            unique_sinks.append(sink)
-
-        unique_sinks.sort(key=lambda x: (x.get("file", ""), x.get("line", 0), x.get("type", "")))
-        for i, sink in enumerate(unique_sinks, 1):
-            sink["id"] = f"sink-{i:03d}"
-
-        # 写入最终的合并文件
-        entries_json = {
-            "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(unique_entries)},
-            "entries": unique_entries,
-        }
-        sinks_json = {
-            "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(unique_sinks)},
-            "sinks": unique_sinks,
-        }
-
-        (out_dir / "entries.json").write_text(json.dumps(entries_json, ensure_ascii=False, indent=indent), encoding="utf-8")
-        (out_dir / "sinks.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
-
-        print(f"[DONE] 合并完成: 共 {len(unique_entries)} 个唯一入口, {len(unique_sinks)} 个唯一终点 -> {out_dir}")
+        merge_outputs(out_dir, indent)
         return
 
     elif args.module_dir:
@@ -530,30 +581,82 @@ def main():
         return
 
     else:
-        # 全局扫描模式（保持 100% 向后兼容）
-        file_collection = collect_files(project_root)
-        files = collect_files_summary(file_collection)
-        modules = analyze_all_modules(project_root)
+        # 默认扫描模式：首先探测是否为多模块项目
+        discovered_modules = discover_modules_from_profile(project_root)
 
-        # 入口
-        discoverer = EntryDiscoverer(str(project_root), modules, files)
-        entries = discoverer.discover()
-        entries_json = {
-            "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(entries)},
-            "entries": entries,
-        }
-        (out_dir / "entries.json").write_text(json.dumps(entries_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+        if discovered_modules:
+            print(f"[INFO] 检测到 build-profile.json5 中的 modules 配置，开启多模块顺序扫描与自动合并...")
+            for module_name, module_dir in discovered_modules:
+                # 1. 查找当前模块的 module.json5
+                module_json5 = module_dir / "src" / "main" / "module.json5"
+                if not module_json5.exists():
+                    module_json5 = module_dir / "module.json5"
 
-        # Sink
-        sink_discoverer = SinkDiscoverer(str(project_root), modules, files)
-        sinks = sink_discoverer.discover()
-        sinks_json = {
-            "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(sinks)},
-            "sinks": sinks,
-        }
-        (out_dir / "sinks.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+                modules = []
+                if module_json5.exists():
+                    modules = [parse_module_config(module_json5)]
+                else:
+                    modules = analyze_all_modules(module_dir)
 
-        print(f"[DONE] 全局攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点 -> {out_dir}")
+                # 2. 收集该模块目录下的源文件
+                file_collection = collect_files(module_dir)
+                files = collect_files_summary(file_collection)
+
+                # 3. 修正相对路径
+                for src in files.get("ets_sources", []):
+                    abs_p = module_dir / src["path"]
+                    src["path"] = str(abs_p.relative_to(project_root))
+                for src in files.get("ts_sources", []):
+                    abs_p = module_dir / src["path"]
+                    src["path"] = str(abs_p.relative_to(project_root))
+
+                # 4. 执行 Entry & Sink 发现
+                discoverer = EntryDiscoverer(str(project_root), modules, files)
+                entries = discoverer.discover()
+                entries_json = {
+                    "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(entries)},
+                    "entries": entries,
+                }
+                (out_dir / f"entries_{module_name}.json").write_text(json.dumps(entries_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+
+                sink_discoverer = SinkDiscoverer(str(project_root), modules, files)
+                sinks = sink_discoverer.discover()
+                sinks_json = {
+                    "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(sinks)},
+                    "sinks": sinks,
+                }
+                (out_dir / f"sinks_{module_name}.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+
+                print(f"[INFO] 模块 {module_name} 扫描完成: {len(entries)} 入口, {len(sinks)} 终点")
+
+            # 5. 自动合并生成最终结果
+            print(f"[INFO] 正在自动合并所有模块扫描结果...")
+            merge_outputs(out_dir, indent)
+        else:
+            # 全局扫描模式（保持 100% 向后兼容）
+            file_collection = collect_files(project_root)
+            files = collect_files_summary(file_collection)
+            modules = analyze_all_modules(project_root)
+
+            # 入口
+            discoverer = EntryDiscoverer(str(project_root), modules, files)
+            entries = discoverer.discover()
+            entries_json = {
+                "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(entries)},
+                "entries": entries,
+            }
+            (out_dir / "entries.json").write_text(json.dumps(entries_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+
+            # Sink
+            sink_discoverer = SinkDiscoverer(str(project_root), modules, files)
+            sinks = sink_discoverer.discover()
+            sinks_json = {
+                "_meta": {"version": VERSION, "time": datetime.now(timezone.utc).isoformat(), "count": len(sinks)},
+                "sinks": sinks,
+            }
+            (out_dir / "sinks.json").write_text(json.dumps(sinks_json, ensure_ascii=False, indent=indent), encoding="utf-8")
+
+            print(f"[DONE] 全局攻击面发现完成: {len(entries)} 入口, {len(sinks)} 终点 -> {out_dir}")
 
 
 if __name__ == "__main__":
