@@ -84,30 +84,35 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_di
 
 ## 执行流程
 
-### Step 1: 运行聚合脚本
+### Step 1: 运行聚合脚本（自动输出全量报告）
+
+运行聚合脚本，指定输出 JSON 数据路径，以及使用 `-m` 参数指定全量 Markdown 报告路径。
+脚本会**自动且完整地渲染全量 Markdown 报告**，无需在 AI 会话中拼接，避开了报告过长导致的 Token 截断问题。
 
 ```bash
-python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_dir> -o <audit_dir>/aggregated_data.json --pretty
+python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_dir> -o <audit_dir>/aggregated_data.json -m <audit_dir>/audit-report.md --pretty
 ```
 
 若 `python3` 不可用（如 Windows），改为 `python`。
 
-### Step 2: 读取数据
+### Step 2: 校验并读取生成的数据
 
-**必须使用 Read 工具**读取 `<audit_dir>/aggregated_data.json`，将其完整内容存入变量 `data`。后续所有渲染操作均从 `data` 对象取值。
+**必须使用 Read/View 工具**读取和查看自动生成的以下两个文件，确认没有生成截断或逻辑缺失：
+1. `<audit_dir>/aggregated_data.json`：确认数据字段完整，无解析错误。
+2. `<audit_dir>/audit-report.md`：确认报告结构严谨完整。
 
-读取后确认 data 对象包含以下顶层字段：
-- `data.project` — 对象
-- `data.attack_paths` — 数组（可能为空）
-- `data.statistics` — 对象
-- `data.risk_score` — 数字
-- `data.warnings` — 数组
+读取后确认 JSON 数据对象包含以下顶层字段：
+- `project` — 对象
+- `attack_paths` — 数组（可能为空）
+- `statistics` — 对象
+- `risk_score` — 数字
+- `warnings` — 数组
 
-若 data 为空或解析失败，向用户报错并终止。
+若数据为空或解析失败，向用户报错并终止。
 
-### Step 3: 渲染报告
+### Step 3: 报告渲染模板与规范 (供人工校验/局部微调参考)
 
-**按以下三个段落的顺序，逐段拼接 Markdown 字符串。每段完成后不要急着写文件，所有段落拼接完成后再一次性写入。**
+自动生成的报告已经由脚本底层模板处理，严格遵循以下结构规范。如果需要人工精修或局部补充，请参考此处的格式说明：
 
 #### 段落 1: 报告总览（固定模板）
 
@@ -473,24 +478,24 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_di
 □ 8. 未遗漏 data.attack_paths[] 中的任何一条攻击路径
 ```
 
-如果上述任何一条不满足，**回退到对应段落重新渲染**，直到全部通过后再执行 Step 5。
+如果上述任何一条不满足，或需要进行个性化润色，可以读取 `<audit_dir>/audit-report.md` 并使用代码编辑工具进行精修，确保满足要求后再交付。
 
-### Step 5: 写入文件
+### Step 5: 验证并同步数据
 
-**必须使用 Write 工具写入以下两个文件，不可仅在对话中展示报告内容：**
+**必须确保以下两个文件在 `<audit_dir>` 目录下且内容一致：**
 
 | 文件 | 路径 | 内容 |
 |------|------|------|
-| Markdown 报告 | `<audit_dir>/audit-report.md` | Step 3 拼接的完整 Markdown 字符串 |
-| JSON 数据 | `<audit_dir>/audit-report.json` | 将 `aggregated_data.json` 的完整内容写入（可复制或重新读取后写入） |
+| Markdown 报告 | `<audit_dir>/audit-report.md` | 由脚本自动渲染且经人工校验/微调后的完整 Markdown 报告 |
+| JSON 数据 | `<audit_dir>/audit-report.json` | 由脚本或人工同步写入的完整聚合 JSON 数据（可由 `aggregated_data.json` 复制或重命名生成） |
 
-写入完成后，向用户输出以下确认信息：
+写入与同步完成后，向用户输出以下确认信息：
 
 ```
 📄 审计报告已生成：
   - Markdown 报告: <audit_dir>/audit-report.md
   - JSON 数据: <audit_dir>/audit-report.json
-  - 共包含 {data.project.verified_paths} 条攻击路径
+  - 共包含 {verified_paths} 条攻击路径
 ```
 
 ---

@@ -11,9 +11,34 @@ description: v2.5 — 发现项目外部入口、攻击终点与双向断裂路�
 
 ### Step 1: 扫描物理入口与物理终点
 
+根据项目规模大小，支持以下两种扫描方式：
+
+#### 方式 A：一键自动扫描（支持中小型项目及配置了 build-profile.json5 的多模块超大型项目）
+
+直接对项目根目录进行单次全局扫描：
+
 ```bash
 python skills_v2/harmony-project-parser/scripts/project_scanner.py <project_path> -o <audit_dir> --pretty
 ```
+
+* **自动识别与路由**：若检测到项目根目录下存在 `build-profile.json5` 且配置了 `modules` 列表，该扫描器将**全自动按顺序执行各子模块扫描**并输出临时分片 json，最后**全自动触发全局合并流程**生成最终全局的 `entries.json` 与 `sinks.json`。
+* **单模块/传统项目**：若不存在 `build-profile.json5`，则会自动回退为单次全局扫描。
+
+#### 方式 B：超大型项目（手动分模块独立任务派发 + 全局合并，规避超时）
+
+在需要手动或更细粒度控制扫描流程时，可以显式以各 hap/hsp/har 模块文件夹（即包含 `module.json5` 的子目录）为单位独立进行单线程扫描，最后由合并引擎输出：
+
+1. **对每个模块文件夹单独派发任务**：
+   ```bash
+   python skills_v2/harmony-project-parser/scripts/project_scanner.py <project_path> --module-dir <project_path>/<module_name> -o <audit_dir> --pretty
+   ```
+   该模式下仅扫描指定模块文件夹并做相对路径自动映射。单次任务内为**纯单线程顺序扫描**以降低内存与 CPU 开销。扫描结束后，审计目录下会输出相应的 `entries_<module_name>.json` 和 `sinks_<module_name>.json` 临时分片。
+
+2. **全局结果去重与确定性合并**：
+   模块任务扫描全部完成后，运行以下指令将所有临时分片合并、全局去重和稳定重新分配 ID，得到标准的统一结果文件：
+   ```bash
+   python skills_v2/harmony-project-parser/scripts/project_scanner.py <project_path> --merge -o <audit_dir> --pretty
+   ```
 
 若 `python3` 不可用（如 Windows），改为 `python`。
 

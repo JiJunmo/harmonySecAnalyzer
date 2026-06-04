@@ -71,27 +71,19 @@ def _should_exclude(parts: list[str]) -> bool:
     return bool(EXCLUDE_DIRS & set(parts))
 
 
-def _count_lines(filepath: Path) -> int:
-    """快速统计文件行数。"""
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            return sum(1 for _ in f)
-    except (OSError, PermissionError):
-        return 0
-
-
-def _detect_capabilities(filepath: Path) -> dict:
-    """轻量检测文件使用了哪些鸿蒙能力（基于 import 字符串搜索）。"""
-    caps: dict[str, bool] = {}
+def _analyze_file(filepath: Path) -> tuple[int, dict]:
+    """单次读取文件，同时完成行数统计和能力检测，减少一半以上的文件 I/O。"""
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
+        lines = content.count("\n") + 1
+        caps = {}
         for cap_name, pattern in IMPORT_PATTERNS.items():
             if pattern in content:
                 caps[cap_name] = True
+        return lines, caps
     except (OSError, PermissionError):
-        pass
-    return caps
+        return 0, {}
 
 
 def _resolve_path(root: Path, filepath: Path) -> str:
@@ -135,19 +127,17 @@ def collect_files(root_path: str | Path) -> FileCollection:
             rel_path = _resolve_path(root, filepath)
 
             if ext == ".ets":
-                lines = _count_lines(filepath)
+                lines, caps = _analyze_file(filepath)
                 result.ets_sources.append(SourceFile(path=rel_path, lines=lines))
                 result.total_ets_files += 1
                 result.total_lines += lines
-                caps = _detect_capabilities(filepath)
                 merged_caps.update(caps)
 
             elif ext == ".ts":
-                lines = _count_lines(filepath)
+                lines, caps = _analyze_file(filepath)
                 result.ts_sources.append(SourceFile(path=rel_path, lines=lines))
                 result.total_ts_files += 1
                 result.total_lines += lines
-                caps = _detect_capabilities(filepath)
                 merged_caps.update(caps)
 
             elif ext == ".json5":
