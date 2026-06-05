@@ -76,15 +76,16 @@ python3 skills_v2/harmony-project-parser/scripts/project_scanner.py <project_pat
 
 ### Step 2: Atlas 调用链关系图谱初始化
 
-在开始提取碎片前，必须对目标项目构建高精度的本地调用与数据流依赖图数据库：
+在开始提取碎片前，必须对目标项目构建高精度与完整数据流/控制流（CFG）的本地调用与依赖图数据库。使用 Atlas v1.4.0 的 `--analysis full` 参数强制开启深层数据流与控制流图谱建模：
 
 ```bash
 # 1. 初始化项目
 atlas init
 
-# 2. 构建高精度本地符号与调用图谱索引 (基于 Rust，数秒内极速完成)
-atlas index
+# 2. 构建完整控制流图与数据流依赖索引 (强制分析全部 capability)
+atlas index --analysis full
 ```
+* **版本特性说明 (v1.4.0)**：新版引入了 Capability-Aware Indexing。若未提供 `--analysis full`，部分包含 CFG/Dataflow 提取需求的安全规则可能由于索引深度不足导致桥接失败；指定该参数后，即使文件内容 hash 匹配，也会强制重新提取缺失 capability 的文件。
 * **强约束**：通过 `.gitignore` 确保 `.atlas/` 目录不被提交到宿主项目中，保持宿主仓库 100% 绝对纯净。
 
 ### Step 3: 级联式双向拓扑碎片提取与 AI 语义搭桥 (Cascade Hybrid v2.5)
@@ -100,6 +101,8 @@ atlas index
 
 2. **智能体语义直连桥接验证与缝合 (AI Atlas Tracing & Splicing)**
    AI Agent（你）实时读取 `<audit_dir>/fragments.json`。对其中的每一个 `candidate_bridges`，利用本地命令行 `atlas trace caller-path -n <FunctionName>` 追踪逆向调用路径，或使用 `atlas search` 对其所处词法环境进行核实：
+   - **ArkTS 组件装饰器与状态关联**：Atlas v1.4.0 修复了 `@Component struct` 结构体检测逻辑。在处理 AppStorage、LocalStorage 桥接时，可直接通过 `atlas search "@StorageLink('key')"` 精确匹配并定位组件内部状态变更，不再受分词扫描误判的影响。
+   - **作用域退出（Scope Exit）与清理追踪**：在追踪生命周期及资源流向时，结合 ScopeExitAnalyzer 识别 Kotlin `.use`、React Effect cleanup 等作用域退出路径，确认参数在离开块（block）或清理逻辑时的安全上下文。
    - **Key/Event 运行时交联度**：分析动态生成的键值或事件，确认它们在运行时是否确实共享同一个全局槽（排除因为模糊匹配引起的不交联误报）。
    - **传导可利用性**：确认参数是否未加过滤直接流入下游物理 Sink。
    - **首尾缝合**：将通过语义验证的碎片进行首尾相连，拼装成完整的调用 Trace 条目，并使用写工具直接落库为 `<audit_dir>/attack_map.json`，以无缝交付给 Phase 2 验证。

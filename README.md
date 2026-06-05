@@ -26,7 +26,7 @@ graph TD
         A2["Step 2: 物理路径碎片提取<br>fragment_finder.py"] -->|生成| B2("fragments.json")
         
         %% Atlas Indexing
-        Atlas["Atlas 关系建图与索引<br>atlas init && atlas index"] -.->|提供代码图谱| Stitch
+        Atlas["Atlas 关系建图与索引<br>atlas init && atlas index --analysis full"] -.->|提供代码图谱| Stitch
         
         B1 & B2 --> Stitch{"Step 3: AI 语义分析与缝合<br>智能体语义判定与首尾搭桥"}
         Stitch -->|验证工具| Trace["atlas trace caller-path<br>atlas search"]
@@ -67,7 +67,7 @@ graph TD
 ### 1. 静态扫描与路径关系梳理阶段 (Phase 1: Static Analysis & Path Mapping)
 该阶段深度结合物理特征匹配与 Atlas 本地依赖图谱，提取并装配出潜在攻击路径网络。
 *   **Step 1: 静态物理特征扫描**：运行 `project_scanner.py`，解析项目中的硬编码配置与文件引用，生成 `<audit_dir>/entries.json` 与 `<audit_dir>/sinks.json`。
-*   **Step 2: Atlas 关系建图与初始化**：由 Agent 自动在宿主目录中拉起 `atlas init && atlas index`，在本地构建精准的依赖与调用关系 SQLite 数据库。这一步解决了在未手动建图时调用链无法获取的致命问题。
+*   **Step 2: Atlas 关系建图与初始化**：由 Agent 自动在宿主目录中拉起 `atlas init && atlas index --analysis full`，在本地构建具有完整数据流与控制流图谱（CFG）的精确依赖与调用关系 SQLite 数据库。这一步解决了在未手动建图时调用链无法获取的致命问题。基于 v1.4.0 的 Capability-Aware Indexing，若请求更深度的分析模式，将自动对即使内容匹配的 clean 文件执行重提取更新，确保审计链的可信度下限。
 *   **Step 3: 级联拓扑碎片提取与语义搭桥**：运行 `fragment_finder.py` 得到前向/反向路径碎片 `fragments.json`。由 AI 直连运行 `atlas trace caller-path` 对碎片进行语义交联与可达性判定，消除误报，首尾缝合后写入 `<audit_dir>/attack_map.json`。
 
 ### 2. 漏洞深度验证阶段 (Phase 2: Verification)
@@ -138,8 +138,8 @@ graph TD
   cd <target_project_path>
   # 1. 初始化 Atlas
   atlas init
-  # 2. 极速生成调用图与依赖图索引
-  atlas index
+  # 2. 极速生成完整数据流与控制流图谱（CFG）索引 (Atlas v1.4.0)
+  atlas index --analysis full
   ```
 
 * **Step 3: 提取路径碎片与语义搭桥**
@@ -159,3 +159,89 @@ graph TD
 ```bash
 python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_output_dir> -o <audit_output_dir>/aggregated_data.json -m <audit_output_dir>/audit-report.md --pretty
 ```
+
+---
+
+## 📦 Atlas 依赖与环境配置指引 (macOS & Windows)
+
+本项目深度依赖 **Atlas v1.4.0** 预编译 CLI 工具提供的本地代码关系数据库及数据流追踪能力。在运行审计前，请根据您所处的操作系统安装并正确配置 Atlas 环境。
+
+### 1. 基础系统依赖与运行环境
+- **SQLite 3**: Atlas 使用 SQLite 作为本地数据事实库（存放于项目根目录下的 `.atlas/atlas.db`）。
+  - **macOS**: 默认内置了 `sqlite3`。
+  - **Windows**: 确保本地系统支持 SQLite 3，且支持 FTS5 全文搜索插件（现代 SQLite 3 版本如 3.9.0 及以上默认编译包含 FTS5）。
+- **C/C++ 运行时环境 (仅 Windows 需要)**:
+  - 建议安装 [Microsoft Visual C++ Redistributable (MSVC)](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) 以保证相关原生依赖能正常加载。
+
+---
+
+### 2. macOS 平台配置
+
+#### A. 二进制文件安装与授权
+1. 下载适用于 macOS 平台的 `atlas` 二进制包。
+2. 将 `atlas` 拷贝到您的系统环境变量 `PATH` 所含目录中（例如 `/usr/local/bin` 或 `/opt/homebrew/bin`）。
+3. 授予可执行权限：
+   ```bash
+   chmod +x /usr/local/bin/atlas
+   ```
+4. 如果因“无法验证开发者”而被 macOS 系统拦截，可在终端中执行以下命令解除隔离属性：
+   ```bash
+   xattr -d com.apple.quarantine /usr/local/bin/atlas
+   ```
+
+#### B. 命令行验证
+在终端中执行以下命令校验安装：
+```bash
+atlas --version
+```
+输出应显示 `v1.4.0` 或更高版本。
+
+#### C. 环境变量配置
+您可以在 `~/.zshrc` 或 `~/.bash_profile` 中配置以下环境变量：
+```bash
+# （可选）配置 Atlas 日志级别，调试数据流建图时可设为 debug
+export ATLAS_LOG_LEVEL=info
+
+# （可选）配置并行索引 worker 数，根据 CPU 核心数进行调整
+export ATLAS_PARSE_CONCURRENCY=4
+
+# （可选）配置自定义 Atlas 数据库存储路径（默认在各项目的 .atlas/ 目录下）
+# export ATLAS_DB_PATH="/path/to/custom/atlas.db"
+```
+保存后运行 `source ~/.zshrc`（或对应配置文件）使之生效。
+
+---
+
+### 3. Windows 平台配置
+
+#### A. 二进制文件安装
+1. 下载适用于 Windows 平台的 `atlas.exe` 压缩包。
+2. 解压并将 `atlas.exe` 移动到自定义目录中（例如 `C:\Program Files\Atlas\`）。
+
+#### B. 系统环境变量 PATH 配置
+1. 按下 `Win + R` 键，输入 `sysdm.cpl` 并回车，打开系统属性。
+2. 切换到 **“高级” (Advanced)** 选项卡，点击下方的 **“环境变量” (Environment Variables)**。
+3. 在 **“系统变量” (System Variables)** 或 **“用户变量” (User Variables)** 中找到 `Path`，双击编辑。
+4. 点击 **“新建” (New)**，将解压的 `atlas.exe` 所在目录路径（例如 `C:\Program Files\Atlas\`）添加进去。
+5. 一路点击“确定”保存设置。
+
+#### C. 命令行验证
+重新打开 **PowerShell** 或 **命令提示符 (CMD)**，运行：
+```powershell
+atlas --version
+```
+输出应正常打印版本信息，如 `v1.4.0`。
+
+#### D. 环境变量配置 (CMD & PowerShell)
+- **临时设置 (CMD)**:
+  ```cmd
+  set ATLAS_LOG_LEVEL=info
+  set ATLAS_PARSE_CONCURRENCY=4
+  ```
+- **临时设置 (PowerShell)**:
+  ```powershell
+  $env:ATLAS_LOG_LEVEL="info"
+  $env:ATLAS_PARSE_CONCURRENCY=4
+  ```
+- **永久设置**:
+  在上述“系统属性 -> 环境变量”窗口中，点击“新建”添加对应的系统或用户变量即可。
