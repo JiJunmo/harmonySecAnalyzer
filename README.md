@@ -164,9 +164,10 @@ python skills_v2/harmony-report-generator/scripts/report_aggregator.py <audit_ou
 
 ## 📦 Atlas 依赖与环境配置指引 (macOS & Windows)
 
-本项目深度依赖 **Atlas v1.4.0** 预编译 CLI 工具提供的本地代码关系数据库及数据流追踪能力。在运行审计前，请根据您所处的操作系统安装并正确配置 Atlas 环境。
+本项目深度依赖 [Atlas](https://github.com/LordCasser/atlas) (v1.4.0) 预编译 CLI 工具提供的本地代码关系数据库及数据流追踪能力。在运行审计前，请根据您所处的操作系统安装并正确配置 Atlas 环境。
 
 ### 1. 基础系统依赖与运行环境
+- **Atlas CLI**: 请前往 [Atlas GitHub Releases](https://github.com/LordCasser/atlas/releases) 下载适用于您操作系统的最新版预编译二进制文件。
 - **SQLite 3**: Atlas 使用 SQLite 作为本地数据事实库（存放于项目根目录下的 `.atlas/atlas.db`）。
   - **macOS**: 默认内置了 `sqlite3`。
   - **Windows**: 确保本地系统支持 SQLite 3，且支持 FTS5 全文搜索插件（现代 SQLite 3 版本如 3.9.0 及以上默认编译包含 FTS5）。
