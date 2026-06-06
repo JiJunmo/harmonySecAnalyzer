@@ -76,13 +76,13 @@ python3 skills_v2/harmony-project-parser/scripts/project_scanner.py <project_pat
 
 ### Step 2: Atlas 调用链关系图谱初始化
 
-在开始提取碎片前，必须对目标项目构建高精度与完整数据流/控制流（CFG）的本地调用与依赖图数据库。使用 Atlas v1.4.0 的 `--analysis full` 参数对代码库进行语义和依赖索引建图（此命令会自动执行数据库的创建与初始化，无需额外运行其他命令）：
+在开始提取碎片前，必须对目标项目构建高精度与本地调用关系的符号图数据库。使用 Atlas v1.4.0 的 `--analysis structural` 参数对代码库进行语义和依赖索引建图（此模式会极速提取符号、引用与调用图关系，速度快且完全满足逆向调用链分析的需求）：
 
 ```bash
-# 构建完整控制流图与数据流依赖索引 (强制分析全部 capability，底层会自动初始化数据库)
-atlas index --analysis full
+# 构建符号、引用与调用图依赖索引 (底建图数据库)
+atlas index --analysis structural
 ```
-* **版本特性说明 (v1.4.0)**：新版引入了 Capability-Aware Indexing。若未提供 `--analysis full`，部分包含 CFG/Dataflow 提取需求的安全规则可能由于索引深度不足导致桥接失败；指定该参数后，即使文件内容 hash 匹配，也会强制重新提取缺失 capability 的文件。
+* **版本特性说明 (v1.4.0)**：新版引入了 Capability-Aware Indexing。若在项目变更或安全规则分析时需要更新特定的索引深度（例如从 `manifest` 升级到 `structural`），指定对应的参数后，即使文件内容 hash 匹配，也会强制重新提取缺失相应分析能力的符号。
 * **强约束**：通过 `.gitignore` 确保 `.atlas/` 目录不被提交到宿主项目中，保持宿主仓库 100% 绝对纯净。
 
 ### Step 3: 级联式双向拓扑碎片提取与 AI 语义搭桥 (Cascade Hybrid v2.5)

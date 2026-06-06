@@ -26,7 +26,7 @@ graph TD
         A2["Step 2: 物理路径碎片提取<br>fragment_finder.py"] -->|生成| B2("fragments.json")
         
         %% Atlas Indexing
-        Atlas["Atlas 关系建图与索引<br>atlas index --analysis full"] -.->|提供代码图谱| Stitch
+        Atlas["Atlas 关系建图与索引<br>atlas index --analysis structural"] -.->|提供代码图谱| Stitch
         
         B1 & B2 --> Stitch{"Step 3: AI 语义分析与缝合<br>智能体语义判定与首尾搭桥"}
         Stitch -->|验证工具| Trace["atlas trace caller-path<br>atlas search"]
@@ -67,7 +67,7 @@ graph TD
 ### 1. 静态扫描与路径关系梳理阶段 (Phase 1: Static Analysis & Path Mapping)
 该阶段深度结合物理特征匹配与 Atlas 本地依赖图谱，提取并装配出潜在攻击路径网络。
 *   **Step 1: 静态物理特征扫描**：运行 `project_scanner.py`，解析项目中的硬编码配置与文件引用，生成 `<audit_dir>/entries.json` 与 `<audit_dir>/sinks.json`。
-*   **Step 2: Atlas 关系建图与初始化**：由 Agent 自动在宿主目录中拉起 `atlas index --analysis full`，在本地构建具有完整数据流与控制流图谱（CFG）的精确依赖与调用关系 SQLite 数据库。这一步解决了在未手动建图时调用链无法获取的致命问题。基于 v1.4.0 的 Capability-Aware Indexing，若请求更深度的分析模式，将自动对即使内容匹配 of clean 文件执行重提取更新，确保审计链的可信度下限。
+*   **Step 2: Atlas 关系建图与初始化**：由 Agent 自动在宿主目录中拉起 `atlas index --analysis structural`，在本地构建包含符号、引用与调用图的精确依赖与关系 SQLite 数据库。这一步解决了在未手动建图时调用链无法获取的致命问题。基于 v1.4.0 的 Capability-Aware Indexing，若请求更深度的分析模式，将自动对即使内容匹配 of clean 文件执行重提取更新，确保审计链的可信度下限。
 *   **Step 3: 级联拓扑碎片提取与语义搭桥**：运行 `fragment_finder.py` 得到前向/反向路径碎片 `fragments.json`。由 AI 直连运行 `atlas trace caller-path` 对碎片进行语义交联与可达性判定，消除误报，首尾缝合后写入 `<audit_dir>/attack_map.json`。
 
 ### 2. 漏洞深度验证阶段 (Phase 2: Verification)
@@ -136,8 +136,8 @@ graph TD
   进入目标项目源码目录，对代码库进行语义和调用关系索引：
   ```bash
   cd <target_project_path>
-  # 极速生成完整数据流与控制流图谱（CFG）索引 (Atlas 会自动执行初始化并建图)
-  atlas index --analysis full
+  # 极速生成符号、引用与调用图索引 (Atlas 会自动执行初始化并建图)
+  atlas index --analysis structural
   ```
 
 * **Step 3: 提取路径碎片与语义搭桥**
