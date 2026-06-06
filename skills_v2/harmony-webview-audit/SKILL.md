@@ -153,6 +153,9 @@ description: v2 (混合智能双轨方案) — WebView 专项高能审计。继�
 
 ## 重要原则
 
-1. **坚持继承原则**：必须全量继承 Stage 1 生成的入口流，将其前置到漏洞 flow 中以构成端到端的完美攻击链，禁止抛弃前置流程。
-2. **严禁在未确认 allowedOriginRules 和拦截器弱点前宣称可利用**：若 `allowedOriginRules` 极其严密且无可绕过的拦截器漏洞，即便 JS Bridge 方法再敏感，也是不可触达的，必须判定为安全。
-3. **只做增量追加**：生成最终 JSON 时，要确信 path 级别的 ID 与 warm-start 中传入的 ID 一致，方便 Phase 3 报告聚合器反向缝合。
+1. **对抗性悲观心智与置疑假设清单机制 (Adversarial Pessimism & Assumptions Challenge Check)**：
+   - 严禁假定任何自定义的拦截规则（如 `includes`、`startsWith` 等弱校验）是安全的。必须假设攻击者可以任意构造 Payload 绕过非严格全等的字符串校验。
+   - 在判定一个 WebView 或 JS Bridge 接口安全前，必须在思考链中列出隐含假设并扮演红队进行驳斥（例如：“假设了 `includes('trusted.com')` 不会被绕过” ➜ 红队驳斥：可构造 `https://evil.com/trusted.com` 绕过 ➜ 推翻安全结论，判定为漏洞）。
+2. **坚持继承原则**：必须全量继承 Stage 1 生成的入口流，将其前置到漏洞 flow 中以构成端到端的完美攻击链，禁止抛弃前置流程。
+3. **严禁在未确认 allowedOriginRules 和拦截器弱点前宣称可利用**：若 `allowedOriginRules` 极其严密且无可绕过的拦截器漏洞，即便 JS Bridge 方法再敏感，也是不可触达的，必须判定为安全。
+4. **只做增量追加**：生成最终 JSON 时，要确信 path 级别的 ID 与 warm-start 中传入的 ID 一致，方便 Phase 3 报告聚合器反向缝合。
