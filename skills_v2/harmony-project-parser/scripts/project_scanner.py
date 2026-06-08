@@ -421,6 +421,10 @@ def discover_modules_from_profile(project_root: Path) -> list[tuple[str, Path]]:
         if not module_path.exists() or not module_path.is_dir():
             continue
 
+        # 检查是否位于排除目录下（如 oh_modules, node_modules, build 等）
+        if any(excl in module_path.parts for excl in {"oh_modules", "node_modules", "build", ".hvigor", ".preview"}):
+            continue
+
         # 检查是否为合法鸿蒙模块目录：必须包含 module.json5 或 oh-package.json5
         has_config = (
             (module_path / "src" / "main" / "module.json5").exists()
