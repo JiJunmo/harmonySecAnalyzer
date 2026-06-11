@@ -64,6 +64,14 @@ Web({ src: 'https://example.com', controller: this.controller })
   .databaseAccess(true)             // ⚠️ 开启 WebSQL/IndexedDB
 ```
 
+### 2.5 setUrlTrustList (可信域名白名单硬拦截)
+
+```typescript
+// API 12+ 支持通过系统原生白名单限制 WebView 加载域：
+this.controller.setUrlTrustList(["*.trusted.com", "https://example.com"]);
+// 若试图加载白名单之外的域名，系统将直接拦截并触发 onLoadIntercept。
+```
+
 ---
 
 ## 三、JS Bridge（JavaScript Proxy）
@@ -266,6 +274,8 @@ webview.WebviewController.setWebDebuggingAccess(true);
   databaseAccess:                      Web 数据库
   setDatabaseAccess(
   overviewModeEnabled:                 缩略图模式
+  setUrlTrustList(                     可信域名白名单
+  setUrlTrustList:                     可信域名白名单属性
 
 JS Bridge:
   registerJavaScriptProxy(             JS 对象注入

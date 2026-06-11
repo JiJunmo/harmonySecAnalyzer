@@ -153,6 +153,28 @@
         "internal": "WEB_REFERENCE.md#3.17",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#databaseaccess"
       }
+    },
+    {
+      "id": "WEB-018",
+      "severity": "low",
+      "title": "WebView 未启用系统级可信域名白名单",
+      "description": "未通过 setUrlTrustList 限制加载域。当 WebView 加载动态或外部 URL 时，若无严密的自定义拦截器，极易被恶意导航至钓鱼或攻击页面。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "web_webview.WebviewController",
+          "@kit.ArkWeb"
+        ],
+        "negative_patterns": [
+          "setUrlTrustList"
+        ]
+      },
+      "audit_guide": "核实安全隔离：1) 检查 WebView 是否加载了外部/动态的输入 URL；2) 确认是否调用了 setUrlTrustList；3) 若未调用且加载了不受信 URL，则判定为低风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#2.5",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-webview-webviewcontroller#seturltrustlist12"
+      }
     }
   ]
 }
