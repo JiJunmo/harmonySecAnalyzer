@@ -70,6 +70,10 @@ Web({ src: 'https://example.com', controller: this.controller })
 // API 12+ 支持通过系统原生白名单限制 WebView 加载域：
 this.controller.setUrlTrustList(["*.trusted.com", "https://example.com"]);
 // 若试图加载白名单之外的域名，系统将直接拦截并触发 onLoadIntercept。
+
+// ⚠️ 避坑指南：白名单中禁止配置通配符 "*" 或使用不安全的明文协议，例如：
+// this.controller.setUrlTrustList(["*"]); // ❌ 绝对禁用，使白名单完全失效
+// this.controller.setUrlTrustList(["http://*.example.com"]); // ❌ 避免使用 http 明文协议
 ```
 
 ---
@@ -85,7 +89,7 @@ this.controller.registerJavaScriptProxy(
   'nativeBridge',                     // JS 端的对象名
   ['method1', 'method2'],            // 暴露的方法列表
   [],                                 // asyncMethodList
-  ['https://trusted.example.com']    // ✅ allowedOriginRules: 域白名单
+  ['https://trusted.example.com']    // ✅ allowedOriginRules: 域白名单，禁止配置为 ["*"] 泛匹配
 );
 ```
 
@@ -110,7 +114,14 @@ this.controller.registerJavaScriptProxy(
 1. **最小暴露**：仅暴露 UI 交互方法（如 showToast、setTitle），不暴露数据层 API
 2. **域白名单**：通过 `allowedOriginRules` 限制 JS Bridge 仅对特定 HTTPS 域可用
 3. **参数校验**：所有 Native 方法入口处做参数类型/范围/长度校验
-4. **调用方验证**：通过 `controller.getUrl()` 确认当前页面来源
+4. **安全调用方验证（防止时序/跳转劫持）**：
+   // ❌ 避免使用不安全的 getUrl() 或 getOriginalUrl() 进行域名来源校验，
+   // 因为这些 API 返回的是 WebView 窗口当前渲染的 URL，容易在页面重定向或并发调用时产生竞争条件。
+   // ✅ 强烈推荐使用：
+   const callingUrl = this.controller.getLastJavascriptProxyCallingFrameUrl();
+   if (!callingUrl || !isTrustedOrigin(callingUrl)) {
+     return; // 拒绝执行敏感操作
+   }
 
 ---
 
@@ -318,14 +329,97 @@ import 模式:
 
 ---
 
-## 十、审计策略
+## 十、敏感权限与地理位置管理
+
+### 10.1 权限请求拦截器 (onPermissionRequest)
+
+```typescript
+Web({ src: 'https://example.com', controller: this.controller })
+  .onPermissionRequest((event) => {
+    // ⚠️ 避坑指南：严禁未经用户显式确认自动授权！
+    // ❌ 不安全做法（静默自动授权）：
+    // event.request.grant(event.request.getAccessibleResources());
+    
+    // ✅ 安全推荐做法（显式授权弹窗）：
+    AlertDialog.show({
+      title: '权限请求',
+      message: `网页正在请求访问: ${event.request.getAccessibleResources().toString()}，是否允许？`,
+      primaryButton: {
+        value: '拒绝',
+        action: () => { event.request.deny(); }
+      },
+      secondaryButton: {
+        value: '允许',
+        action: () => { event.request.grant(event.request.getAccessibleResources()); }
+      }
+    });
+  })
+```
+
+### 10.2 地理位置授权 (onGeolocationShow)
+
+```typescript
+Web({ src: 'https://example.com', controller: this.controller })
+  .onGeolocationShow((event) => {
+    // ⚠️ 避坑指南：必须弹出确认框，禁止静默自动调用
+    // ✅ 安全推荐做法：
+    showLocationConsentDialog((agreed) => {
+      if (agreed) {
+        event.geolocation.invoke(event.origin, true, false); // 允许，不记住选择
+      } else {
+        event.geolocation.invoke(event.origin, false, false); // 拒绝
+      }
+    });
+  })
+```
+
+---
+
+## 十一、Web 侧脚本执行安全 (runJavaScript)
+
+### 11.1 动态注入风险
+
+```typescript
+// ⚠️ 避坑指南：避免向网页中直接拼接执行未经校验的外部输入：
+// ❌ 存在注入风险（XSS/UXSS）：
+this.controller.runJavaScript(`changeUser('${username}')`); // 如果 username 包含 ' + alert(1) + '，会导致任意脚本执行
+
+// ✅ 安全做法：
+// 1. 在参数中对特殊字符进行转义和过滤
+const safeUsername = sanitizeInput(username);
+this.controller.runJavaScript(`changeUser('${safeUsername}')`);
+// 2. 或使用 postMessage 发送结构化消息，由 H5 内部逻辑安全解析
+```
+
+---
+
+## 十二、跨端消息通信安全 (postMessage)
+
+### 12.1 postMessage 指定 Origin
+
+```typescript
+// ⚠️ 避坑指南：发送敏感消息时必须限制接收域的 Origin，禁止使用通配符 "*" 或忽略目标 Origin。
+// ✅ 安全推荐做法：
+const ports = this.controller.createWebMessagePorts();
+// ❌ 不安全：未限制 targetOrigin
+this.controller.postMessage("sensitiveData", ports, "*"); 
+
+// ✅ 安全做法：限制特定的接收域名
+this.controller.postMessage("sensitiveData", ports, "https://trusted.example.com");
+```
+
+---
+
+## 十三、审计策略
 
 | 阶段 | 操作 |
 |------|------|
 | 配置发现 | 搜索 .ets 文件，定位所有 WebviewController 实例化和配置代码 |
-| 配置审计 | 检查 javaScriptAccess/fileAccess/mixedMode/domStorageAccess 等安全开关 |
-| JS Bridge 审计 | 分析 registerJavaScriptProxy 暴露的方法，评估暴露面 |
-| 拦截器审计 | 分析 onLoadIntercept/onInterceptRequest 实现，评估绕过可能 |
+| 配置审计 | 检查 javaScriptAccess/fileAccess/mixedMode/domStorageAccess/setUrlTrustList 等安全开关 |
+| JS Bridge 审计 | 分析 registerJavaScriptProxy 暴露的方法，评估暴露面，以及是否使用 getLastJavascriptProxyCallingFrameUrl 验证来源 |
+| 拦截器与协议审计 | 分析 onLoadIntercept/onInterceptRequest 实现，评估绕过可能及自定义协议资源过滤安全性 |
+| 权限与定位审计 | 检查 onPermissionRequest/onGeolocationShow 是否存在静默自动授权 |
+| 跨端通信与注入审计 | 评估 runJavaScript 和 postMessage 调用是否限制 targetOrigin 或拼接动态不可信脚本 |
 | Cookie 审计 | 检查 Cookie 配置是否包含 Secure/HttpOnly/SameSite 属性 |
 | SSL 审计 | 检查 certificateVerification 是否做实际证书校验 |
 | 生命周期审计 | 检查 onPageVisible/onErrorReceive 等回调的安全性 |
