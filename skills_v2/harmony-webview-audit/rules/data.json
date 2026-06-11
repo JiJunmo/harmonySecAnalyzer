@@ -25,6 +25,43 @@
         "internal": "WEB_REFERENCE.md#3.11",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-web-webview#setcookie"
       }
+    },
+    {
+      "id": "WEB-023",
+      "severity": "medium",
+      "title": "敏感凭证通过 URL 查询参数传输",
+      "description": "将用户的登录令牌（token）、密码（pwd/password）、授权密钥（key/apikey/secret）等直接拼接在 URL 查询参数中加载或传输，极易通过 Referrer 头部、服务器日志或浏览器历史记录泄露。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "loadUrl",
+          "src:"
+        ]
+      },
+      "audit_guide": "核对凭证传输安全：1) 检查 WebView 加载的 URL 字符串中是否拼接入参；2) 确认入参的变量名或查询参数中是否包含 token, password, pwd, key, apikey, secret, auth 等敏感前缀或命名；3) 判定成立：通过 URL 查询参数（Query Parameter）明文传输或硬编码敏感认证凭据，中风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#12.1",
+        "external": "https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-arkweb-component-security"
+      }
+    },
+    {
+      "id": "WEB-024",
+      "severity": "medium",
+      "title": "postMessage 未指定安全目标域",
+      "description": "使用 postMessage 向网页传递敏感数据时，接收端的 Target Origin 未指定或被宽泛设置为通配符 '*'，可能导致数据被未授权的恶意第三方页面截获。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "postMessage"
+        ]
+      },
+      "audit_guide": "核对跨端消息安全：1) 确认是否调用了 postMessage 或 postMessageToPort 向 H5 传递消息；2) 检查其第三个参数 targetOrigin，确认其值是否为通配符 '*'，或者直接省略（默认可能不限制域）；3) 判定成立：postMessage 传递敏感数据时，目标 Origin 配置为了通配符 '*' 或未指定限制，中风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#12.1",
+        "external": "https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-arkweb-component-security"
+      }
     }
   ]
 }

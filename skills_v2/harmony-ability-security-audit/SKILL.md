@@ -194,5 +194,8 @@ atlas search "parameters"
 
 ## 重要原则
 
-1. **绝对坚持利用链第一原则**：禁止仅凭“缺少 getCallingBundleName 校验”报告漏洞。如果入参未流向 startAbility/terminateSelfWithResult/WebView 等危险 API，视为不可利用，直接跳过。
-2. **不允许在本 Skill 中直接推导 JS Bridge 逻辑**：发现 WebView 参数流后，必须通过 **Warm-Start Context** 进行级联中转，将后续的 JS Bridge 评估交由更专业的 `harmony-webview-audit` 执行，实现 cognitive load 解耦。
+1. **对抗性悲观心智与置疑假设清单机制 (Adversarial Pessimism & Assumptions Challenge Check)**：
+   - 严禁假定外部传入的 `Want` 结构体或参数流在进入本组件前已被其他模块过滤。必须假设攻击者可以完全控制其传入的所有参数类型、大小与嵌套结构。
+   - 在得出“UIAbility 安全”的结论前，必须在思考链中强制列出隐含假设并扮演红队进行驳斥（例如：“假设了跳转目标因为 hardcoded component 就无法被劫持” ➜ 红队驳斥：检查外部 nestedWant 是否依然可以借助 startAbility(nestedWant) 传入其他参数 ➜ 挑战假设，重新评估漏洞风险）。
+2. **绝对坚持利用链第一原则**：禁止仅凭“缺少 getCallingBundleName 校验”报告漏洞。如果入参未流向 startAbility/terminateSelfWithResult/WebView 等危险 API，视为不可利用，直接跳过。
+3. **不允许在本 Skill 中直接推导 JS Bridge 逻辑**：发现 WebView 参数流后，必须通过 **Warm-Start Context** 进行级联中转，将后续的 JS Bridge 评估交由更专业的 `harmony-webview-audit` 执行，实现 cognitive load 解耦。

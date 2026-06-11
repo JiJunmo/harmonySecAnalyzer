@@ -64,6 +64,25 @@
         "internal": "WEB_REFERENCE.md#3.16",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#onpagevisible"
       }
+    },
+    {
+      "id": "WEB-020",
+      "severity": "medium",
+      "title": "敏感权限或地理定位静默自动授予",
+      "description": "WebView 组件的权限申请拦截器中直接静默授予权限（如自动调用 event.request.grant() 或 invoke()），而未通过用户确认弹窗，可能导致恶意网页窃取敏感隐私（摄像头/麦克风/定位）。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "onPermissionRequest",
+          "onGeolocationShow"
+        ]
+      },
+      "audit_guide": "核对权限授权逻辑：1) 确认是否注册了 onPermissionRequest 或 onGeolocationShow 回调；2) 检查回调函数中，是否存在未弹出用户提示框就直接无条件或默认调用了 event.request.grant() 或是 event.geolocation.invoke()；3) 判定成立：对摄像头、麦克风或地理位置权限申请未做用户交互显式确认，直接静默授权，中风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#10.1",
+        "external": "https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-arkweb-component-security"
+      }
     }
   ]
 }

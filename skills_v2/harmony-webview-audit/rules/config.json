@@ -153,6 +153,47 @@
         "internal": "WEB_REFERENCE.md#3.17",
         "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-basic-components-web#databaseaccess"
       }
+    },
+    {
+      "id": "WEB-018",
+      "severity": "low",
+      "title": "WebView 未启用系统级可信域名白名单",
+      "description": "未通过 setUrlTrustList 限制加载域。当 WebView 加载动态或外部 URL 时，若无严密的自定义拦截器，极易被恶意导航至钓鱼或攻击页面。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "web_webview.WebviewController",
+          "@kit.ArkWeb"
+        ],
+        "negative_patterns": [
+          "setUrlTrustList"
+        ]
+      },
+      "audit_guide": "核实安全隔离：1) 检查 WebView 是否加载了外部/动态的输入 URL；2) 确认是否调用了 setUrlTrustList；3) 若未调用且加载了不受信 URL，则判定为低风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#2.5",
+        "external": "https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-webview-webviewcontroller#seturltrustlist12"
+      }
+    },
+    {
+      "id": "WEB-019",
+      "severity": "high",
+      "title": "白名单配置过于宽泛",
+      "description": "在 setUrlTrustList() 或 allowedOriginRules 白名单中配置了通配符 '*' 或不安全的 'http://' 协议，导致域名访问控制或 Bridge 权限控制失效。",
+      "detection": {
+        "type": "code_pattern",
+        "file_pattern": "**/*.ets",
+        "positive_patterns": [
+          "setUrlTrustList",
+          "allowedOriginRules"
+        ]
+      },
+      "audit_guide": "核对白名单安全配置：1) 检查代码中 setUrlTrustList 或 allowedOriginRules 传入的数组参数；2) 检查是否包含通配符 '*'（如 ['*']，允许任意来源）；3) 检查是否配置了不安全的明文协议（如 'http://*'，存在中间人劫持风险）；4) 判定成立：白名单使用了通配符 '*' 或未加密的 http 传输协议，高风险。",
+      "reference": {
+        "internal": "WEB_REFERENCE.md#2.5",
+        "external": "https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-arkweb-component-security"
+      }
     }
   ]
 }
