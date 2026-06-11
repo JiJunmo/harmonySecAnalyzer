@@ -67,7 +67,7 @@ graph TD
 ### 1. 静态扫描与路径关系梳理阶段 (Phase 1: Static Analysis & Path Mapping)
 该阶段深度结合物理特征匹配与 Atlas 本地依赖图谱，提取并装配出潜在攻击路径网络。
 *   **Step 1: 静态物理特征扫描**：运行 `project_scanner.py`，解析项目中的硬编码配置与文件引用，生成 `<audit_dir>/entries.json` 与 `<audit_dir>/sinks.json`。
-*   **Step 2: Atlas 关系建图与初始化**：由 Agent 自动在宿主目录中拉起 `atlas index --analysis structural`，在本地构建包含符号、引用与调用图的精确依赖与关系 SQLite 数据库。这一步解决了在未手动建图时调用链无法获取的致命问题。基于 v1.4.0 的 Capability-Aware Indexing，若请求更深度的分析模式，将自动对即使内容匹配 of clean 文件执行重提取更新，确保审计链的可信度下限。
+*   **Step 2: Atlas 关系建图与初始化**：采用 **主从智能体架构 (Main-Subagent Pattern)**，由主 Agent 自动拉起专职的 `Atlas Index Builder` 子 Agent 执行 `atlas index --analysis structural` 命令，在本地构建包含符号、引用与调用图的精确依赖与关系 SQLite 数据库。这种层级调度机制不仅解决了调用链图谱的高精度构建问题，还彻底避免了主 Agent 因等待长耗时任务而产生“用 AI 强行推演代码”的幻觉。基于 v1.4.0 的 Capability-Aware Indexing，若请求更深度的分析模式，系统将强制重新提取缺失分析能力的符号，确保审计链的可信度下限。
 *   **Step 3: 级联拓扑碎片提取与语义搭桥**：运行 `fragment_finder.py` 得到前向/反向路径碎片 `fragments.json`。由 AI 直连运行 `atlas trace caller-path` 对碎片进行语义交联与可达性判定，消除误报，首尾缝合后写入 `<audit_dir>/attack_map.json`。
 
 ### 2. 漏洞深度验证阶段 (Phase 2: Verification)
