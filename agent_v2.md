@@ -96,9 +96,9 @@ python3 skills_v2/harmony-project-parser/scripts/project_scanner.py <project_pat
 在开始提取碎片前，必须对目标项目构建高精度与本地调用关系的符号图数据库。由于索引构建可能耗时较长，**主 Agent 绝对禁止自己直接运行构建命令**。
 
 **执行流程（强制）：**
-1. **派发子任务**：主 Agent 必须使用 `invoke_subagent` 工具，拉起一个专职的 `Atlas Index Builder` 子 Agent。给它的 Prompt 为：“使用 Atlas v1.4.0 运行 `atlas index --analysis structural` 命令对代码库进行语义和依赖索引建图。若需要，更新 `.gitignore` 确保 `.atlas/` 目录不被提交。完成后，回复一段包含状态的结构化成功消息。”
+1. **派发子任务**：主 Agent 必须使用 `invoke_subagent` 工具，拉起一个专职的 `Atlas Index Builder` 子 Agent。给它的 Prompt 为：“请使用 Skill 工具加载 `skills_v2/atlas-indexer/SKILL.md`，并严格按照文件中的指导完成 Atlas 索引构建任务。完成后将结果回复给我。”
 2. **挂起与等待**：发出上述指令后，主 Agent 必须立即停止行动进入休眠。
-3. **唤醒交接**：直到收到子 Agent 回传的结构化结果（例如：`{"status": "success", "message": "Atlas index built successfully"}`）后，主 Agent 才能被系统自动唤醒，并携带索引就绪的上下文进入 Step 3。
+3. **唤醒交接**：直到收到子 Agent 回传的结构化结果（如 `{"status": "success"}`）后，主 Agent 才能被系统自动唤醒，并携带索引就绪的上下文进入 Step 3。
 
 * **版本特性说明 (v1.4.0)**：新版引入了 Capability-Aware Indexing。若在项目变更或安全规则分析时需要更新特定的索引深度，指定对应的参数后，即使文件内容 hash 匹配，也会强制重新提取缺失相应分析能力的符号。
 
