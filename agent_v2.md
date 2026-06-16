@@ -91,16 +91,16 @@ python3 skills_v2/harmony-project-parser/scripts/project_scanner.py <project_pat
 ```
 * **输出**：生成 `<audit_dir>/entries.json`（物理暴露入口）与 `<audit_dir>/sinks.json`（敏感操作终点）。
 
-### Step 2: Atlas 调用链关系图谱初始化
+### Step 2: Atlas 调用链关系图谱初始化 (Subagent 层级调度)
 
-在开始提取碎片前，必须对目标项目构建高精度与本地调用关系的符号图数据库。使用 Atlas v1.4.0 的 `--analysis structural` 参数对代码库进行语义和依赖索引建图（此模式会极速提取符号、引用与调用图关系，速度快且完全满足逆向调用链分析的需求）：
+在开始提取碎片前，必须对目标项目构建高精度与本地调用关系的符号图数据库。由于索引构建可能耗时较长，**主 Agent 绝对禁止自己直接运行构建命令**。
 
-```bash
-# 构建符号、引用与调用图依赖索引 (底建图数据库)
-atlas index --analysis structural
-```
-* **版本特性说明 (v1.4.0)**：新版引入了 Capability-Aware Indexing。若在项目变更或安全规则分析时需要更新特定的索引深度（例如从 `manifest` 升级到 `structural`），指定对应的参数后，即使文件内容 hash 匹配，也会强制重新提取缺失相应分析能力的符号。
-* **强约束**：通过 `.gitignore` 确保 `.atlas/` 目录不被提交到宿主项目中，保持宿主仓库 100% 绝对纯净。
+**执行流程（强制）：**
+1. **派发子任务**：主 Agent 必须使用 `invoke_subagent` 工具，拉起一个专职的 `Atlas Index Builder` 子 Agent。给它的 Prompt 为：“请使用 Skill 工具加载 `skills_v2/atlas-indexer/SKILL.md`，并严格按照文件中的指导完成 Atlas 索引构建任务。完成后将结果回复给我。”
+2. **挂起与等待**：发出上述指令后，主 Agent 必须立即停止行动进入休眠。
+3. **唤醒交接**：直到收到子 Agent 回传的结构化结果（如 `{"status": "success"}`）后，主 Agent 才能被系统自动唤醒，并携带索引就绪的上下文进入 Step 3。
+
+* **版本特性说明 (v1.4.0)**：新版引入了 Capability-Aware Indexing。若在项目变更或安全规则分析时需要更新特定的索引深度，指定对应的参数后，即使文件内容 hash 匹配，也会强制重新提取缺失相应分析能力的符号。
 
 ### Step 3: 级联式双向拓扑碎片提取与 AI 语义搭桥 (Cascade Hybrid v2.5)
 
