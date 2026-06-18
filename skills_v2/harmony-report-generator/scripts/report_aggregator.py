@@ -269,6 +269,36 @@ def generate_security_assessment(data: dict) -> str:
     return f"本次审计发现，攻击者可通过多个外部入口构造攻击链路。其中**{risk_desc}**暴露了主要攻击面，可能导致敏感业务逻辑被绕过或敏感数据泄露。整体安全态势评级为{state}，{recommendation}"
 
 
+def generate_mermaid_graph(flow: list) -> str:
+    """自动将漏洞 flow 链路转换为 Mermaid 拓扑图。"""
+    if not flow:
+        return ""
+    
+    lines = ["```mermaid", "graph TD", "    %% Nodes & Connections"]
+    node_ids = []
+    for step in flow:
+        step_num = step.get("step", 0)
+        stage = step.get("stage", "步骤")
+        file_loc = step.get("file", "")
+        # 获取文件名（仅保留 basename 以简化节点展示）
+        file_name = file_loc.split("/")[-1] if file_loc else ""
+        
+        node_id = f"Step{step_num}"
+        node_ids.append(node_id)
+        
+        # 构建节点标签，用双引号括起以防止特殊字符破坏 Mermaid 语法
+        label = f"【步骤 {step_num}: {stage}】<br/>{file_name}"
+        lines.append(f'    {node_id}["{label}"]')
+        
+    lines.append("")
+    # 建立箭头连接
+    for i in range(len(node_ids) - 1):
+        lines.append(f"    {node_ids[i]} --> {node_ids[i+1]}")
+        
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def generate_markdown_report(data: dict) -> str:
     """根据 aggregated_data.json 的完整结构，自动渲染标准的 Markdown 报告，避免大报告由于 token 限制而截断。"""
     try:
@@ -450,6 +480,16 @@ def generate_markdown_report(data: dict) -> str:
             entry_paths = path.get("entry_paths", [])
             md.append("#### 攻击入口与数据流向")
             md.append("")
+
+            # 自动生成并拼接 Mermaid 威胁拓扑图
+            if entry_paths and entry_paths[0].get("flow"):
+                primary_flow = entry_paths[0]["flow"]
+                mermaid_graph = generate_mermaid_graph(primary_flow)
+                if mermaid_graph:
+                    md.append("##### 漏洞威胁拓扑图")
+                    md.append("")
+                    md.append(mermaid_graph)
+                    md.append("")
             md.append(f"该漏洞可以通过以下 **{len(entry_paths)}** 个不同的外部入口和传导链路触发：")
             md.append("")
 
