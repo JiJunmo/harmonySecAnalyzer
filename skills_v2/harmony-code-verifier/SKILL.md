@@ -20,11 +20,14 @@ description: v2.5 — 统一代码安全性校验与安全规则库。支持对 
 
 ---
 
-## 🔍 核心审计指南与判定 Checklists
+## 🔍 核心审计指南：Source-to-Sink 利用链 (Exploit Chain) 校验
 
-当子智能体（`vulnerability-auditor-agent`）调用本技能进行漏洞验证时，必须根据被审计对象的特征选择匹配的核对清单（Checklist）：
+当子智能体（`vulnerability-auditor-agent`）调用本技能进行漏洞验证时，**严禁孤立审查某个组件**。必须遵循以下“入口 -> 链路 -> 终点”的级联逻辑进行关联判定：
 
-### 1. UIAbility 入口与传参校验 (UIAbility Check)
+### 阶段一：Source 规则 (入口防卫校验)
+涵盖 UIAbility 入口与 IPC 通信服务入口。
+
+#### 1. UIAbility 入口校验 (UIAbility Check)
 - **校验重点**：检查 `exported=true` 的公开 Ability 在生命周期入口中提取并消费 `want` 参数时的防御等级。
 - **核对要点**：
   1. **Calling Bundle 校验**：是否调用了 `getCallingBundleName()` 并设置了严格的白名单比对？
@@ -32,7 +35,7 @@ description: v2.5 — 统一代码安全性校验与安全规则库。支持对 
   3. **敏感信息回传校验**：`terminateSelfWithResult(resultWant)` 返回的数据中是否泄露了敏感的 token、沙箱文件路径或本地数据库信息，且缺乏 Caller 身份安全拦截？
   4. **重入漏洞校验**：`onCreate(want)` 和 `onNewWant(want)` 的校验逻辑是否具备**防御一致性**？若 `onNewWant` 缺少校验，攻击者可通过重入机制实现绕过。
 
-### 2. IPC/RPC 通信安全校验 (IPC Check)
+#### 2. IPC/RPC 入口校验 (IPC Check)
 - **校验重点**：检查公开的 `ServiceExtensionAbility` 服务端 Stub（继承自 `RemoteObject`）对请求的控制能力。
 - **核对要点**：
   1. **权限守卫**：`module.json5` 中对应的 `extensionAbility` 节点是否配置了守卫权限 `permissions` 或包名白名单 `visible`？
@@ -41,7 +44,11 @@ description: v2.5 — 统一代码安全性校验与安全规则库。支持对 
   4. **缓冲大小校验**：在使用 `readArrayBuffer()` 读取二进制包后，是否对数据包长度 `byteLength` 做上限拦截以防范 OOM 攻击？
   5. **操作码 (Code) 路由校验**：在 `switch(code)` 分发逻辑中，`default` 分支是否默认执行安全拦截？是否允许未定义操作码通过？
 
-### 3. WebView 容器与 JSBridge 安全校验 (WebView Check)
+### 阶段二：Sink 规则 (终点利用与危险执行校验)
+- **前置条件**：仅当数据流或控制流通过代码推理被明确证明触达了以下 Sink（如 WebView 容器）时，才激活此规则。如果不连通，则跳过。
+- **上下文关联**：即使触发了以下风险项，也必须结合 Source 阶段传入的参数。如果攻击者通过 `want` 无法污染这里的执行流，则只能定为低危。
+
+#### WebView 容器与 JSBridge 安全校验 (WebView Check)
 - **校验重点**：检查 Web 容器的安全参数属性、JSBridge 暴露的方法敏感性，以及域名拦截器拦截深度。
 - **核对要点**：
   1. **白名单域匹配校验**：检查 `registerJavaScriptProxy` 的第 5 个参数 `allowedOriginRules`。如果配置为 `["*"]` 或为空 `[]`，意味着任意外部域的网页都可以调用暴露的方法，属于高危。

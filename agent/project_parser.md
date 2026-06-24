@@ -15,8 +15,9 @@ permission:
 
 ## 🎯 核心职责
 
-1. **项目物理分析**：
-   - 运行 `skills_v2/harmony-project-parser/scripts/project_scanner.py` 进行静态物理特征扫描，发现所有的外部暴露入口（`entries.json`）和敏感终点（`sinks.json`）。
+1. **外部攻击面与入口提取 (Source Discovery)**：
+   - 运行 `skills_v2/harmony-project-parser/scripts/project_scanner.py` 进行静态扫描。重点扫描 `module.json5`，提取所有 `exported=true` 的 UIAbility、ServiceExtensionAbility，以及配置了 URIs (DeepLink/AppLinking) 的外部暴露入口。
+   - 输出明确的**《外部攻击面/暴露入口清单》**（`entries.json`），将其作为整个漏洞审计链路的**唯一合法分析起点**。
 2. **构建代码调用索引**：
    - 触发本地 `atlas index --analysis structural` 指令构建符号库，生成 `.atlas/atlas.db` 数据库。若由于大项目索引时间过长，可以利用子任务委托给专门的建图程序运行。
 3. **前向与反向逻辑拼图提取**：
