@@ -1,0 +1,19 @@
+# 审计产出
+reports/*
+!reports/.gitkeep
+
+# atlas 索引（若在被审计仓生成）
+.atlas/
+
+# 依赖
+node_modules/
+.opencode/node_modules/
+
+# Rust 构建产物
+target/
+
+# 日志
+*.log
+
+# 系统文件
+.DS_Store
