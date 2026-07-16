@@ -1,1 +1,1 @@
-# semgrep 规则（YAML）。P2：arkts-injection / hardcoded-secrets / insecure-storage / web-component / icc / crypto / network / napi-boundary
+# 静态规则预留目录。当前审计主流程不接入 Semgrep。

@@ -9,7 +9,7 @@ harmonySecAnalyzer 部署脚本
   3. 校验项目结构 + 状态机脚本 smoke 测试
   4. (可选 --global) 同步资源到 opencode 全局目录,任意位置可用 /audit
 
-跨平台: macOS / Windows / Linux。纯标准库,Python 3.8+。
+跨平台: macOS / Windows / Linux。部署脚本使用标准库,运行时依赖见 requirements.txt。
 
 用法:
   python deploy.py                 # 本地配置(默认):在项目目录启动 opencode 审计外部仓
@@ -29,9 +29,13 @@ from pathlib import Path
 
 # ---------------- 常量(匹配实际文件结构) ----------------
 
+ORCH_REL = ".opencode/skills/audit-orchestration/scripts/audit_orchestrator.py"
+PROFILER_REL = ".opencode/skills/project-modeling/scripts/project_profiler.py"
+
 REQUIRED = [
-    "opencode.json", "AGENTS.md", "deploy.py",
-    "tools/audit_orchestrator.py",
+    "opencode.json", "AGENTS.md", "deploy.py", "requirements.txt",
+    ORCH_REL,
+    PROFILER_REL,
     ".opencode/agents/harmony-auditor.md",
     ".opencode/agents/attack-surface-mapper.md",
     ".opencode/agents/path-finder.md",
@@ -41,6 +45,8 @@ REQUIRED = [
     ".opencode/skills/audit-workflow/SKILL.md",
     ".opencode/skills/attack-patterns/SKILL.md",
     ".opencode/skills/audit-orchestration/SKILL.md",
+    ".opencode/skills/audit-orchestration/config/attack_matrix_routes.json",
+    ".opencode/skills/project-modeling/SKILL.md",
     "knowledge/patterns/index.md",
     "knowledge/patterns/deeplink-injection.md",
     "knowledge/patterns/exported-ability-file.md",
@@ -51,7 +57,7 @@ REQUIRED = [
 OWNED_AGENTS = ["harmony-auditor.md", "attack-surface-mapper.md", "path-finder.md",
                 "path-validator.md", "report-composer.md"]
 OWNED_COMMANDS = ["audit.md"]
-OWNED_SKILLS = ["audit-workflow", "attack-patterns", "audit-orchestration"]
+OWNED_SKILLS = ["audit-workflow", "attack-patterns", "audit-orchestration", "project-modeling"]
 
 
 # ---------------- 输出 ----------------
@@ -90,6 +96,17 @@ def find_python3():
         except Exception:
             continue
     return None
+
+
+def python_module_version(python, module):
+    try:
+        result = subprocess.run(
+            [python, "-c", f"import {module}; print(getattr({module}, '__version__', 'installed'))"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
 
 def find_opencode():
     p = shutil.which("opencode")
@@ -164,12 +181,48 @@ def validate_structure(root):
 # ---------------- 状态机 smoke ----------------
 
 def smoke_orchestrator(orch, python):
-    """用临时 run_dir 跑 init/enqueue/next/validate-coverage/status,验证脚本各命令工作。"""
+    """Allocate isolated runs and exercise the state-machine commands."""
     with tempfile.TemporaryDirectory() as td:
-        run = os.path.join(td, "smoke")
+        reports_root = os.path.join(td, "reports")
+        allocate = [python, orch, "new-run", reports_root, "--target-repo", td, "--scope", "smoke"]
+        allocated = []
+        for _ in range(2):
+            try:
+                result = subprocess.run(allocate, capture_output=True, text=True, timeout=20)
+                payload = json.loads(result.stdout)
+            except Exception as exc:
+                return False, f"new-run 异常: {exc}"
+            if result.returncode != 0 or not payload.get("ok"):
+                return False, f"new-run 失败: {result.stderr.strip() or result.stdout.strip()}"
+            allocated.append(payload["run_dir"])
+        if allocated[0] == allocated[1]:
+            return False, "new-run 未隔离重复审计目录"
+
+        run = allocated[0]
+        atlas_dir = Path(run) / "atlas"
+        (atlas_dir / "entry_list.json").write_text(json.dumps({
+            "entry_list": [
+                {
+                    "entry_id": "E001", "analysis_unit_id": "AU001", "ability": "EntryAbility",
+                    "entry_function": "EntryAbility.onCreate", "entry_function_file": "EntryAbility.ets",
+                    "type": "exported_ability", "project_candidate_ids": ["PE001"],
+                },
+                {
+                    "entry_id": "E002", "analysis_unit_id": "AU001", "ability": "EntryAbility",
+                    "entry_function": "EntryAbility.onCreate", "entry_function_file": "EntryAbility.ets",
+                    "type": "implicit_want", "project_candidate_ids": ["PE002"],
+                },
+            ],
+            "excluded_candidates": [], "unresolved_candidates": [], "coverage_gaps": [],
+        }), encoding="utf-8")
+        (atlas_dir / "danger_seed_list.json").write_text(json.dumps({
+            "danger_seed_list": [{
+                "seed_id": "D001", "category": "jsbridge", "operation": "bridge call",
+                "symbol": "WebBridge.openFile", "symbol_file": "WebBridge.ets", "location": "WebBridge.ets:42",
+            }],
+        }), encoding="utf-8")
         cmds = [
-            [python, orch, "init", run, "--target-repo", td, "--scope", "smoke"],
-            [python, orch, "enqueue", run, "--tasks", '[{"kind":"path_finding","entry_id":"E001"}]'],
+            [python, orch, "compile-matrix", run],
             [python, orch, "next", run],
             [python, orch, "validate-coverage", run],
             [python, orch, "status", run],
@@ -186,7 +239,115 @@ def smoke_orchestrator(orch, python):
                     return False, f"{c[2]} 返回 ok=false: {r.stdout.strip()}"
             except Exception:
                 return False, f"{c[2]} 非 JSON: {r.stdout.strip()}"
-        return True, "init/enqueue/next/validate-coverage/status 全通过"
+
+        running_tasks = [
+            json.loads(line) for line in (Path(run) / "queue.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line).get("status") == "running"
+        ]
+        if len(running_tasks) != 1:
+            return False, "retry smoke 未找到唯一 running task"
+        retry_cmd = [python, orch, "complete", run, "--task", running_tasks[0]["task_id"]]
+        retry_result = subprocess.run(retry_cmd, capture_output=True, text=True, timeout=20)
+        try:
+            retry_payload = json.loads(retry_result.stdout)
+        except Exception:
+            return False, f"retry smoke complete 非 JSON: {retry_result.stdout.strip()}"
+        if retry_result.returncode != 0 or not retry_payload.get("retry_scheduled"):
+            return False, f"缺失结果未自动重排: {retry_result.stderr.strip() or retry_result.stdout.strip()}"
+        next_retry = subprocess.run(
+            [python, orch, "next", run], capture_output=True, text=True, timeout=20,
+        )
+        try:
+            retry_task = json.loads(next_retry.stdout).get("task") or {}
+        except Exception:
+            return False, f"retry smoke next 非 JSON: {next_retry.stdout.strip()}"
+        if next_retry.returncode != 0 or retry_task.get("attempts") != 2:
+            return False, f"自动重排 attempt 未递增: {next_retry.stderr.strip() or next_retry.stdout.strip()}"
+        if not Path(retry_task.get("result_path", "relative")).is_absolute():
+            return False, "next 未返回绝对 result_path"
+
+        final_run = Path(allocated[1])
+        (final_run / "project" / "project_model.json").write_text(json.dumps({
+            "schema_version": 1, "status": "complete", "entry_candidates": [],
+        }), encoding="utf-8")
+        (final_run / "atlas" / "discovery_plan.json").write_text(json.dumps({
+            "schema_version": 1, "units": [],
+        }), encoding="utf-8")
+        (final_run / "atlas" / "entry_list.json").write_text(json.dumps({
+            "entry_list": [], "excluded_candidates": [], "unresolved_candidates": [],
+            "coverage_gaps": [],
+        }), encoding="utf-8")
+        (final_run / "atlas" / "danger_seed_list.json").write_text(json.dumps({
+            "danger_seed_list": [],
+        }), encoding="utf-8")
+        (final_run / "findings.json").write_text("{}\n", encoding="utf-8")
+        (final_run / "report.md").write_text("# Smoke report\n", encoding="utf-8")
+        for c in (
+            [python, orch, "compile-matrix", str(final_run)],
+            [python, orch, "validate-ready", str(final_run)],
+            [python, orch, "finalize", str(final_run)],
+        ):
+            try:
+                r = subprocess.run(c, capture_output=True, text=True, timeout=20)
+                payload = json.loads(r.stdout)
+            except Exception as exc:
+                return False, f"{c[2]} 异常: {exc}"
+            if r.returncode != 0 or not payload.get("ok"):
+                return False, f"{c[2]} 失败: {r.stderr.strip() or r.stdout.strip()}"
+            if c[2] == "validate-ready" and not payload.get("ready"):
+                return False, f"validate-ready 未闭合: {r.stdout.strip()}"
+            if c[2] == "finalize" and payload.get("status") != "completed":
+                return False, f"finalize 未完成 session: {r.stdout.strip()}"
+        return True, "new-run 隔离 + attack matrix/自动重试/coverage/status + finalize 全通过"
+
+
+def smoke_project_profiler(profiler, python):
+    """Parse representative Harmony JSON5 and verify the normalized model."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "target"
+        run = Path(td) / "run"
+        (root / "AppScope").mkdir(parents=True)
+        (root / "entry" / "src" / "main").mkdir(parents=True)
+        (root / "AppScope" / "app.json5").write_text(
+            "{ app: { bundleName: 'com.example.smoke', versionCode: 1, }, }",
+            encoding="utf-8",
+        )
+        (root / "entry" / "src" / "main" / "module.json5").write_text(
+            """{
+              module: {
+                name: 'entry',
+                abilities: [{
+                  name: 'EntryAbility', exported: true,
+                  skills: [{ actions: ['ohos.want.action.viewData'], uris: [{ scheme: 'demo' }], }],
+                }],
+              },
+            }""",
+            encoding="utf-8",
+        )
+        output = run / "project" / "project_model.json"
+        plan_output = run / "atlas" / "discovery_plan.json"
+        try:
+            result = subprocess.run(
+                [python, str(profiler), str(root), "--output", str(output), "--plan-output", str(plan_output)],
+                capture_output=True, text=True, timeout=20,
+            )
+        except Exception as exc:
+            return False, f"project profiler 异常: {exc}"
+        if result.returncode != 0:
+            return False, f"project profiler 退出码非0: {result.stderr.strip() or result.stdout.strip()}"
+        try:
+            summary = json.loads(result.stdout)
+            model = json.loads(output.read_text(encoding="utf-8"))
+            plan = json.loads(plan_output.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return False, f"project profiler 输出无效: {exc}"
+        entry_types = {row.get("type") for row in model.get("entry_candidates", [])}
+        expected = {"exported_component", "deeplink", "implicit_want"}
+        if not summary.get("ok") or model.get("status") != "complete" or not expected.issubset(entry_types):
+            return False, f"project model 内容不完整: status={model.get('status')} entries={sorted(entry_types)}"
+        if plan.get("source_content_scanned") is not False or len(plan.get("units", [])) != 1:
+            return False, f"Atlas discovery plan 无效: {plan}"
+        return True, "JSON5/组件/入口候选/Atlas discovery plan 生成通过"
 
 
 # ---------------- 全局安装 ----------------
@@ -196,9 +357,10 @@ def install_global(root, atlas, target):
     h = harmony_sec_home(g)
     info(f"全局目录: {g}")
     g.mkdir(parents=True, exist_ok=True)
-    orch_abs = (h / "tools" / "audit_orchestrator.py").as_posix()
+    orch_abs = (g / "skills" / "audit-orchestration" / "scripts" / "audit_orchestrator.py").as_posix()
+    profiler_abs = (g / "skills" / "project-modeling" / "scripts" / "project_profiler.py").as_posix()
 
-    # 1. agents(路径改写: tools/audit_orchestrator.py → 绝对,使全局 /audit 不依赖 CWD)
+    # 1. agents(路径改写: skill 内脚本 → 绝对,使全局 /audit 不依赖 CWD)
     for name in OWNED_AGENTS:
         src = root / ".opencode" / "agents" / name
         if not src.exists():
@@ -206,8 +368,10 @@ def install_global(root, atlas, target):
         dst = g / "agents" / name
         dst.parent.mkdir(parents=True, exist_ok=True)
         content = src.read_text(encoding="utf-8")
-        content = content.replace("python3 tools/audit_orchestrator.py", f"python3 {orch_abs}")
-        content = content.replace("tools/audit_orchestrator.py", orch_abs)
+        content = content.replace(f"python3 {ORCH_REL}", f"python3 {orch_abs}")
+        content = content.replace(ORCH_REL, orch_abs)
+        content = content.replace(f"python3 {PROFILER_REL}", f"python3 {profiler_abs}")
+        content = content.replace(PROFILER_REL, profiler_abs)
         dst.write_text(content, encoding="utf-8")
         ok(f"agents/{name}")
     # 2. commands
@@ -219,7 +383,7 @@ def install_global(root, atlas, target):
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         ok(f"commands/{name}")
-    # 3. skills(audit-orchestration 路径改写)
+    # 3. skills(路径改写)
     for name in OWNED_SKILLS:
         src = root / ".opencode" / "skills" / name
         if not src.exists():
@@ -228,17 +392,16 @@ def install_global(root, atlas, target):
         if dst.exists():
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
-        if name == "audit-orchestration":
-            sk = dst / "SKILL.md"
+        sk = dst / "SKILL.md"
+        if sk.exists():
             content = sk.read_text(encoding="utf-8")
-            content = content.replace("python3 tools/audit_orchestrator.py", f"python3 {orch_abs}")
-            content = content.replace("tools/audit_orchestrator.py", orch_abs)
+            content = content.replace(f"python3 {ORCH_REL}", f"python3 {orch_abs}")
+            content = content.replace(ORCH_REL, orch_abs)
+            content = content.replace(f"python3 {PROFILER_REL}", f"python3 {profiler_abs}")
+            content = content.replace(PROFILER_REL, profiler_abs)
             sk.write_text(content, encoding="utf-8")
         ok(f"skills/{name}")
     # 4. 运行时资产 → harmony-sec/
-    (h / "tools").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(root / "tools" / "audit_orchestrator.py", h / "tools" / "audit_orchestrator.py")
-    ok(f"tools/audit_orchestrator.py → {h}/tools/")
     if (root / "knowledge").exists():
         kdst = h / "knowledge"
         if kdst.exists():
@@ -334,6 +497,13 @@ def main():
     else:
         fail("python3 未找到(需 ≥3.8)")
         sys.exit(2)
+    json5_version = python_module_version(py, "json5")
+    if json5_version:
+        ok(f"Python json5: {json5_version}")
+    else:
+        fail("缺少 Python json5 依赖")
+        info(f"安装: {py} -m pip install -r {root / 'requirements.txt'}")
+        sys.exit(2)
     print()
 
     # [2/5] opencode
@@ -376,8 +546,13 @@ def main():
     if not validate_structure(root):
         fail("结构校验未通过")
     else:
-        ok("结构校验通过(17 文件)")
-        good, msg = smoke_orchestrator(root / "tools" / "audit_orchestrator.py", py)
+        ok(f"结构校验通过({len(REQUIRED)} 文件)")
+        good, msg = smoke_project_profiler(root / PROFILER_REL, py)
+        if good:
+            ok(f"项目建模 smoke: {msg}")
+        else:
+            fail(f"项目建模 smoke 失败: {msg}")
+        good, msg = smoke_orchestrator(root / ORCH_REL, py)
         if good:
             ok(f"状态机 smoke: {msg}")
         else:

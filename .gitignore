@@ -9,6 +9,10 @@ reports/*
 node_modules/
 .opencode/node_modules/
 
+# Python 缓存
+__pycache__/
+*.py[cod]
+
 # Rust 构建产物
 target/
 

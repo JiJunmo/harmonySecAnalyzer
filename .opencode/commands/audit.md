@@ -13,4 +13,4 @@ scope 取值：
 
 若 $2 未提供，询问用户目标仓绝对路径。若 $1 未提供，默认 full。
 
-按 audit-workflow skill 执行：先 `atlas_project open`，再 侦察 → 切片 → 派发 → （验证 → 去重） → 报告，最终写入 `reports/` 目录。
+按 audit-workflow skill 执行：先确定性项目建模，再 `atlas_project open`，然后攻击面测绘 → 流式路径发现与验证 → 报告准入 → 分层报告，最终写入 `reports/` 目录。

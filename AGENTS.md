@@ -11,7 +11,7 @@
 ## 目录
 
 - `.opencode/`：opencode 资源（agents/commands/skills/tools/plugins）—— opencode 强制约定目录，不可改名
-- `rules/`：semgrep 规则库（与运行时解耦，可单测）
+- `rules/`：静态规则预留目录（当前运行时不接入 Semgrep）
 - `knowledge/`：漏洞知识库、权限映射、CWE 表
 - `examples/` `tests/`：规则回归（正例/反例）
 - `reports/`：审计产出（gitignore）

@@ -2,7 +2,7 @@
 
 ## 匹配
 
-应用使用 `Web` 组件加载 URL,并通过 `registerJavaScriptProxy` / `javaScriptProxy` 暴露原生对象/方法给 JS。不可信 URL 或 JS 输入经 bridge 触发原生危险操作。
+Manifest 外部入口经项目内调用或依赖关系可达使用 `Web` 的页面/组件,并通过 `registerJavaScriptProxy` / `javaScriptProxy` 暴露项目对象/方法给 JS。不可信 URL 或 JS 输入经 bridge 触发危险操作。
 
 ## source
 
