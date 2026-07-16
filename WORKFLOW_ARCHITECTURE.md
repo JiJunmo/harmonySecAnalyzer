@@ -100,11 +100,11 @@ flowchart TB
 |---|---|---|---|
 | 一、任务定义与运行初始化 | **部分实现** | `/audit` Command；`harmony-auditor` Agent；`audit-workflow`、`audit-orchestration` Skill；状态机 `new-run/init/status` | scope policy 编译、能力可用性检查、独立 run manifest、版本冻结、不支持 scope 的启动期拒绝、正式 session 终态 |
 | 二、确定性项目建模 | **部分实现（ArkTS 核心已实现）** | `project-modeling` Skill；`project_profiler.py`；Python `json5`；状态机 project model 准入 | 更完整的工程类型适配、正式 JSON Schema、native/依赖等扩展建模；这些扩展不阻塞当前 ArkTS JSON5 项目模型 |
-| 三、攻击面发现 | **部分实现** | `attack-surface-mapper` Agent；Atlas MCP 的 `project/search/symbol/explore/calls/file_dependencies`；entry/seed/query evidence/discovery plan 产物 | discovery unit 任务化、多个 mapper 并发、worker 私有结果与状态机合并、单 unit 完成后流式下发、NAPI/native discovery adapter |
+| 三、攻击面发现 | **部分实现（ArkTS 核心已实现）** | per-unit `attack_surface_discovery` task；`attack-surface-mapper` Agent；2 个保留 discovery 槽；worker 私有结果；状态机候选覆盖校验与确定性合并；单 unit 完成后增量矩阵/路径下发；Atlas MCP | NAPI/native discovery adapter、真正异步单任务补位、更丰富边界 adapter |
 | 四、分析计划编译 | **部分实现（核心已实现）** | 状态机 `compile-matrix`；execution entry 与 danger seed 归一化；稳定 entry/seed/work key；数据驱动模式路由；稀疏 `attack_matrix.json`；逐 work item 覆盖台账 | Capability Registry、scope 驱动路由、正式 JSON Schema、更多领域 route/pattern |
-| 五、攻击路径发现 | **部分实现（核心已实现）** | `path-finder` Agent；一 work item 一任务；`attack-patterns` Skill；Atlas MCP 的 `path/trace/calls/search/symbol/explore`；五项 admission 机器校验；`analysis_gap` 终态 | 正式结果 JSON Schema、更多领域化 path strategy、Atlas 能力缺口补充分析器 |
-| 六、根因收敛与漏洞验证 | **部分实现** | 状态机 streaming promotion；`seed_key + pattern` 初版去重；`path-validator` Agent；六门槛与分层结论；Atlas `impact` 等验证查询 | 完整 root cause identity、危险参数/边界/guard 维度去重、六门槛机器级完整校验、证据引用完整性校验、领域 validator 扩展 |
-| 七、覆盖闭合与报告交付 | **部分实现** | 状态机 `validate-coverage/validate-ready/finalize`；project/discovery/attack matrix/candidate 任务闭合；报告产物复核与 session completed 终态；`report-composer` Agent；`findings.json`、`report.md` | 冻结 report snapshot、coverage.json、产物 hash、完整报告 schema/引用校验、triage/replay/再报告、HTML/PDF/SARIF 导出 |
+| 五、攻击路径发现 | **部分实现（核心已实现）** | `path-finder` Agent；一 work item 一任务；`attack-patterns` Skill；Atlas MCP 的 `path/trace/calls/search/symbol/explore`；正式 path-result Schema；五项 admission 机器校验；work/entry/seed 引用校验；`analysis_gap` 终态 | 更多领域化 path strategy、Atlas 能力缺口补充分析器 |
+| 六、根因收敛与漏洞验证 | **部分实现** | 状态机 streaming promotion；`seed_key + pattern` 初版去重；`path-validator` Agent；正式 validation-result Schema；六门槛和分类特定字段机器校验；candidate/entry/task 引用；Atlas `impact` 等验证查询 | 完整 root cause identity、危险参数/边界/guard 维度去重、领域 validator 扩展 |
+| 七、覆盖闭合与报告交付 | **部分实现（核心闭环已实现）** | 状态机 `validate-coverage/validate-ready/finalize`；共享/ findings/snapshot Schema；任务闭合；聚合引用校验；finding→candidate→validation task 引用；`report_snapshot.json` SHA-256 冻结和篡改检测；`report-composer` Agent | 独立 coverage.json、triage/replay/再报告、HTML/PDF/SARIF 导出 |
 
 ### 2.5 当前组件清单
 
@@ -113,9 +113,9 @@ flowchart TB
 | 组件 | 状态 | 当前职责 |
 |---|---|---|
 | `harmony-auditor` | **已实现** | 主编排者，调用确定性脚本、Atlas 和 subagent 推进审计流程 |
-| `attack-surface-mapper` | **已实现，流程待拆分** | 消费 project model/discovery plan，通过 Atlas 发现入口和危险种子；当前一次处理整个 plan |
+| `attack-surface-mapper` | **已实现** | 每次消费一个 discovery unit,通过 Atlas 发现入口和危险种子,只写私有结果并由状态机合并 |
 | `path-finder` | **已实现** | 按攻击矩阵指定的单个 entry/sink/pattern work item 分析路径，执行五项候选准入 |
-| `path-validator` | **已实现，契约待加强** | 按根因候选执行反证优先六门槛验证并输出分层结论 |
+| `path-validator` | **已实现** | 按根因候选执行反证优先六门槛验证；结果由正式 Schema、分类业务约束和引用完整性共同准入 |
 | `report-composer` | **已实现，交付闭环待加强** | 汇总结构化结果，生成 `findings.json` 和 `report.md` |
 | 独立 crypto/network/ICC/Web/dependency/NAPI Agent | **未实现** | 当前由通用 mapper/finder/validator 加载有限模式处理；目标态是否拆成独立 Agent 由能力路由决定，不作为主流程硬依赖 |
 
@@ -125,7 +125,7 @@ flowchart TB
 |---|---|---|
 | `audit-workflow` Skill | **已实现** | 当前端到端 SOP、阶段边界和报告准入要求 |
 | `audit-orchestration` Skill | **已实现** | 状态机命令、任务池、候选晋级、覆盖校验协议 |
-| `audit_orchestrator.py` | **部分实现** | run 隔离、JSON/JSONL 状态、5 槽队列、事件日志、结果路径下发、最多 3 次自动重试与人工 retry、entry/sink 归一化、discovery unit 矩阵剪枝、中间节点排除、稀疏攻击矩阵、work item 覆盖、候选准入、初版根因去重、报告准入与 session finalize |
+| `audit_orchestrator.py` | **部分实现** | run 隔离、5 槽混合队列、per-unit discovery、私有结果合并、增量矩阵编译、三类 worker JSON Schema、结果路径下发、最多 3 次自动重试与人工 retry、entry/sink 归一化、候选准入、初版根因去重、跨产物引用、报告准入与 session finalize |
 | `project-modeling` Skill | **已实现** | 确定性项目模型和 discovery plan 契约 |
 | `project_profiler.py` | **已实现** | 使用 `json5` 解析工程配置，生成 component、dependency、entry candidate 和 discovery unit |
 | `attack-patterns` Skill | **部分实现** | 提供已有攻击链形状、正常业务、guard 和降级规则；领域覆盖仍有限 |
@@ -151,9 +151,9 @@ flowchart TB
 | 横切能力 | 状态 | 当前已有 | 主要缺口 |
 |---|---|---|---|
 | 编排控制面 | **部分实现** | 文件锁、原子重写、5 槽并发、queue、事件日志、结果缺失/无效自动 retry、人工 retry、streaming promotion、run 隔离、finalize 终态 | lease、超时、resume/cancel、complete 全面幂等、真正异步滑动池 |
-| 契约面 | **部分实现** | project model/discovery plan `schema_version`、Prompt 中的结果示例、部分枚举和 admission 检查 | 独立 JSON Schema、成熟 schema validator、所有产物严格校验、版本迁移、损坏 JSONL 显式失败 |
+| 契约面 | **部分实现（核心已实现）** | worker、project model、discovery plan、entry list、danger seeds、attack matrix、findings、report snapshot 独立 Draft 2020-12 Schema；成熟 `jsonschema` validator；精确字段错误；分类业务不变量 | 独立 coverage/session Schema、版本迁移、损坏 JSONL 显式失败 |
 | 稳定身份与去重 | **部分实现** | execution entry 别名合并、normalized seed identity、稳定 work key、candidate index、`seed_key + pattern` 初版根因指纹 | 完整 root cause key、算法版本化、危险参数/边界/guard 维度的过度合并与漏合并防护 |
-| 证据面 | **部分实现** | Atlas query evidence、路径节点、taint flow、guard、六门槛说明 | 跨产物引用机器校验、证据 hash、完整 provenance graph、报告引用可解析性校验 |
+| 证据面 | **部分实现（核心引用已实现）** | Atlas query evidence、路径节点、taint flow、guard、六门槛说明；entry/seed/work/candidate/query/result/finding 核心引用机器校验 | 证据 hash、完整 provenance graph、代码位置真实性校验 |
 | 覆盖度量 | **部分实现** | project candidate 去向、discovery unit 终态、raw seed 归一化、attack matrix work item 和 candidate validation 闭合 | domain/scope 覆盖、正式 coverage artifact、报告后闭合 |
 | 恢复与重放 | **未实现** | run 目录和事件日志提供了手工排查基础 | 自动恢复、局部重试、冻结快照、离线 replay、run revision |
 | 质量评测 | **部分实现** | profiler/orchestrator 单元测试、一个真实项目人工验证 | 漏洞/正常业务 golden corpus、误报漏报指标、固定产物回归、跨模型稳定性评测 |
@@ -597,7 +597,7 @@ stateDiagram-v2
 
 ### 11.1 Schema 体系
 
-以下产物必须拥有独立 schema 和 schema version：
+以下产物必须拥有独立 schema 和 schema version；其中 project model、discovery plan/result、execution entry 聚合、danger seed 聚合、path work matrix/result、validation result、findings、report snapshot 已实现：
 
 - run manifest
 - scope policy

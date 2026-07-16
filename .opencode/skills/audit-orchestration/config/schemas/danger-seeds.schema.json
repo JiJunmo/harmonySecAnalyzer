@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony-sec.local/schemas/danger-seeds-v1.json",
+  "type": "object",
+  "required": ["schema_version", "danger_seeds"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "danger_seeds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["seed_id", "seed_key", "category", "sink_role"],
+        "properties": {
+          "seed_id": {"type": "string", "minLength": 1},
+          "seed_key": {"type": "string", "minLength": 1},
+          "category": {"type": "string", "minLength": 1},
+          "sink_role": {"enum": ["terminal", "intermediate", "unknown"]},
+          "atlas_query_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        }
+      }
+    }
+  }
+}

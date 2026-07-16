@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony-sec.local/schemas/path-result-v1.json",
+  "title": "Per-work-item path finding result",
+  "type": "object",
+  "required": ["task_id", "work_item_id", "entry_id", "conclusions"],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "work_item_id": {"type": "string", "minLength": 1},
+    "entry_id": {"type": "string", "minLength": 1},
+    "conclusions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["seed_id", "pattern", "classification"],
+        "properties": {
+          "seed_id": {"type": "string", "minLength": 1},
+          "pattern": {"type": "string", "minLength": 1},
+          "classification": {"enum": ["candidate", "rejected", "no_path", "analysis_gap"]},
+          "admission": {
+            "type": "object",
+            "properties": {
+              "external_entry_reachable": {"type": "boolean"},
+              "seed_reachable": {"type": "boolean"},
+              "attacker_influence": {"type": "boolean"},
+              "end_to_end_sink": {"type": "boolean"},
+              "attacker_control_preserved": {"type": "boolean"},
+              "influence_mode": {"enum": ["data", "operation"]},
+              "evidence": {"type": "array", "items": {"type": "string"}}
+            }
+          },
+          "path": {"type": "array", "items": {"type": "object"}},
+          "atlas_evidence": {"type": "object"},
+          "reject_reason": {"type": "string", "minLength": 1},
+          "evidence_gap": {"type": "string", "minLength": 1}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"classification": {"const": "candidate"}}, "required": ["classification"]},
+            "then": {
+              "required": ["admission", "path", "atlas_evidence"],
+              "properties": {
+                "path": {"minItems": 2},
+                "admission": {
+                  "required": ["external_entry_reachable", "seed_reachable", "attacker_influence", "end_to_end_sink", "attacker_control_preserved"],
+                  "properties": {
+                    "external_entry_reachable": {"const": true},
+                    "seed_reachable": {"const": true},
+                    "attacker_influence": {"const": true},
+                    "end_to_end_sink": {"const": true},
+                    "attacker_control_preserved": {"const": true}
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {"properties": {"classification": {"const": "rejected"}}, "required": ["classification"]},
+            "then": {"required": ["reject_reason"]}
+          },
+          {
+            "if": {"properties": {"classification": {"const": "analysis_gap"}}, "required": ["classification"]},
+            "then": {"required": ["evidence_gap"]}
+          }
+        ]
+      }
+    }
+  }
+}

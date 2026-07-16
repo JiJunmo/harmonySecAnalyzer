@@ -26,6 +26,8 @@ permission:
 ## 输入
 task_id / run_dir / result_path / attempt / work_item_id / entry_id / seed_id / pattern。`result_path` 是状态机返回的绝对路径,是唯一允许写入的结果位置。
 
+结果由状态机按 `audit-orchestration/config/schemas/path-result.schema.json` 校验,并复核 work item、entry、seed、pattern 的跨产物引用。不要省略分类专属字段来依赖自然语言概要补全。
+
 ## 流程
 
 1. 读 `<run_dir>/analysis/attack_matrix.json`,确认 work item 的 entry/seed/pattern 与输入完全一致。

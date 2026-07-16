@@ -8,7 +8,7 @@
 
 当前实现采用**确定性项目建模 + 攻击路径驱动 + 反证优先验证**：先由脚本解析 JSON5 工程配置、组件和入口候选，再由 agent + atlas 枚举攻击面、连接入口到 sink，最后按六门槛验证是否真的构成漏洞。外部可达、敏感 API、调用链存在只会被视为 exposure/capability/path，不能直接升级为漏洞。
 
-调度状态机采用 **稀疏 Entry × Sink × Pattern 攻击矩阵 + 5 槽任务池 + streaming promotion**：Manifest 别名和重复 sink 分别归一化,机器路由在 discovery unit 关联范围内为有效矩阵单元生成 work item;中间转存节点不独立立项。path-finder 不再自行挑选 seed。路径结果通过 admission contract 后按 normalized seed/pattern 做根因级去重,每个根因只分配一个 `CAND-xxx` 和 validator,多种启动方式保留为 trigger variants。worker 使用状态机下发的绝对结果路径提交并回读产物;provider 中断、缺失/无效结果会自动重试最多 3 次。受当前 OpenCode 同步 TaskTool 限制,subagent 执行层表现为最多 5 个一批。矩阵和验证任务闭合后才能生成报告,报告产物复核通过后 session 才进入 `completed`。
+调度状态机采用 **per-unit 流式发现 + 稀疏 Entry × Sink × Pattern 攻击矩阵 + 5 槽任务池 + streaming promotion**：每个 discovery unit 独立交给 mapper,worker 只写私有结果;状态机确定性重建共享 entry/seed/evidence,并在单元完成后立即增量编译矩阵、派发路径任务。Manifest 别名和重复 sink 分别归一化,中间转存节点不独立立项。路径结果通过 admission contract 后按 normalized seed/pattern 做根因级去重,每个根因只分配一个 `CAND-xxx` 和 validator。worker 使用绝对结果路径提交并回读产物;provider 中断、缺失/无效结果会自动重试最多 3 次。发现与分析并存时使用 2+3 保留槽;受 OpenCode 同步 TaskTool 限制,执行层仍表现为最多 5 个一批。全部覆盖闭合后才能报告并 finalize。
 
 项目建模阶段生成的每个入口候选都必须被 mapper 明确且唯一地接收、排除、标记未决或记录为 Atlas 覆盖缺口；遗漏、重复归类、未知 ID 或仍未决都会阻止 `validate-ready`。已终态化的 Atlas 缺口允许生成 `partial` 报告，但必须在报告中显式披露。
 
@@ -51,7 +51,7 @@
 
 - [opencode](https://opencode.ai)
 - [atlas](https://github.com/LordCasser/atlas)：已配置于 `/Users/jixiaokui/.cargo/bin/atlas`（见 `opencode.json` 的 `mcp.atlas`）
-- Python `json5`：`python3 -m pip install -r requirements.txt`
+- Python `json5` + `jsonschema`：`python3 -m pip install -r requirements.txt`
 
 ## 使用
 
@@ -61,7 +61,7 @@ opencode
 /audit manifest /path/to/harmony/repo
 ```
 
-报告输出到 `reports/<project-name>-<target-path-hash>/<run-id>/`（`findings.json` + `report.md`）。每次审计由状态机原子分配独立 run，不覆盖或复用同一项目的历史结果。主报告只包含 `confirmed_vulnerability`，其余分层进入 protected exposure、residual risk、benign business flow、insufficient evidence 和攻击面附录。
+报告输出到 `reports/<project-name>-<target-path-hash>/<run-id>/`（`findings.json` + `report.md` + `report_snapshot.json`）。每次审计由状态机原子分配独立 run，不覆盖或复用同一项目的历史结果。最终快照记录所有报告事实输入的 SHA-256，完成后产物被改写会被状态机识别。主报告只包含 `confirmed_vulnerability`，其余分层进入 protected exposure、residual risk、benign business flow、insufficient evidence 和攻击面附录。
 
 ## 配置模型
 
@@ -75,6 +75,7 @@ opencode
 - `examples/` `tests/`：规则回归
 - `reports/`：审计产出（gitignore）
 - `.opencode/skills/audit-orchestration/scripts/`：`audit-orchestration` skill 私有状态机脚本
+- `.opencode/skills/audit-orchestration/config/schemas/`：worker、共享事实、findings 和 report snapshot 的正式 JSON Schema
 - `tools/`：独立 CLI 工具（P4）
 
 ## 状态存储
@@ -84,7 +85,7 @@ opencode
 - `project/project_model.json`：确定性项目结构、组件、权限、依赖和入口候选
 - `atlas/discovery_plan.json`：由 Manifest 锚点生成的 Atlas 分析单元及其覆盖终态
 - `atlas/query_evidence.jsonl`：mapper 执行的 Atlas 查询与结果摘要
-- `atlas/entry_list.json`、`atlas/danger_seed_list.json`：外部入口与可达危险能力种子
+- `atlas/entry_list.json`、`atlas/danger_seed_list.json`：状态机从 per-unit 私有结果确定性合并的外部入口与可达危险能力种子
 - `queue.jsonl`：任务当前状态、尝试次数、最后错误与重试历史
 - `task_events.jsonl`：append-only 调度事件
 - `candidate_index.json`：根因级增量去重、入口触发变体合并与稳定 candidate ID
@@ -99,6 +100,7 @@ opencode
 - [x] **P1.5 误报治理框架**：六门槛验证 + 反证优先 + 分层报告
 - [x] **P1.6 确定性项目建模**：`json5` 成熟解析库 + project_model/discovery_plan + Atlas scoped mapper
 - [x] **P1.7 稀疏攻击矩阵**：entry/sink 归一化 + 数据驱动 `Entry × Sink × Pattern` 路由 + per-work-item 路径任务与覆盖闭合
+- [x] **P1.8 结果契约与引用完整性**：Draft 2020-12 Schema + 分类业务不变量 + entry/seed/work/candidate/query/finding 引用校验 + 报告 SHA-256 冻结快照
 - [ ] **P2 核心**：crypto / network / icc / web 等领域专家 + Atlas 查询模式与污点增强
 - [ ] **P3 深度**：napi / dependency + finding_dedupe + plugin 轨迹
 - [ ] **P4 进阶**：装饰器数据流 + 报告导出

@@ -44,7 +44,7 @@ python3 .opencode/skills/project-modeling/scripts/project_profiler.py \
 ## 职责边界
 
 - profiler 记录 `exported=true`、URI、permission、source scope/file hint 等 Manifest 事实。
-- `attack-surface-mapper` 按 discovery plan 用 Atlas 判断入口类型、关联真实代码符号并从可达上下文发现 Web/JSBridge。
+- 状态机将 discovery plan 的每个 unit 入队;`attack-surface-mapper` 每次只处理一个 unit,状态机合并私有结果并流式下发后续路径任务。
 - `path-validator` 基于模型事实和代码证据判断实际外部可达、guard 与安全边界。
 - profiler 不生成 `entry_list.json`、`danger_seed_list.json` 或 finding。
 - NAPI/native 分析不在本轮 project-modeling 和 mapper 流程中,后续单独扩展。

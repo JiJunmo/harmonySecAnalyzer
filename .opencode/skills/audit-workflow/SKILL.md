@@ -28,35 +28,39 @@ description: 鸿蒙 ArkTS 白盒审计端到端 SOP(攻击路径驱动+状态机
 - `atlas_project open`(target_repo)
 
 ### 2. 攻击面测绘(attack-surface-mapper)
-- 读取 project model + discovery plan,按 unit scope 执行 `atlas_search → atlas_symbol/explore → atlas_calls/file_dependencies`。
+- 执行 `enqueue-discovery`,将 plan 中每个 unit 转换为独立 mapper task。
+- 每个 mapper 只读取指定 unit,按 scope 执行 `atlas_search → atlas_symbol/explore → atlas_calls/file_dependencies`,只写自己的 `result_path`。
 - 只从 Atlas 返回的可达定义源码与调用证据识别 Web/JSBridge 和危险能力,禁止逐文件 read/glob/grep。
-- 每个 project entry candidate 必须归入 entry/excluded/unresolved/coverage_gaps,不得静默跳过。
-- 落盘 `atlas/entry_list.json` + `atlas/danger_seed_list.json`,返回概要。
+- 每个 project entry candidate 必须在 unit 终态结果中归入 entry/excluded/coverage_gaps;仍 unresolved 时不得提交完成。
+- `complete(attack_surface_discovery)` 先执行正式 JSON Schema,再校验候选唯一去向和 query ID 引用,由状态机重建共享 entry/seed/query evidence 并立即增量编译矩阵。
 
-### 3. 编译攻击矩阵并入队路径发现
-- 执行 `compile-matrix`:状态机归一化 execution entry 和全部 danger seed,再按 sink role、discovery unit 关联与机器路由配置编译稀疏 `Entry × Sink × Pattern` 矩阵。
+### 3. 增量编译攻击矩阵并入队路径发现
+- 每个 discovery unit 完成后自动执行增量 `compile-matrix`:状态机归一化当前已发现的 execution entry 和 danger seed,再按 sink role、discovery unit 关联与机器路由配置编译稀疏 `Entry × Sink × Pattern` 矩阵。
+- 重编译必须继承已有 work item 的 running/terminal 状态,只为新增矩阵单元创建任务。
 - 编译前按 entry/seed 的 discovery unit 关联做保守剪枝;缺少 unit 信息时保留分析,避免错误排除跨单元路径。
 - `intermediate` seed 只表示状态存储或参数转存,不独立创建 work item 或 routing gap;每个有效终态 work item 一个 path_finding task,未实现模式进入 routing gap。
 
 ### 4. 5 槽任务池(path-finder + path-validator)✅
+- discovery 与 analysis 同时存在时使用 2+3 保留槽;只有单类任务时可占满 5 槽。
 - 连续 `next` 填满最多 5 个 running task。
+- `kind=attack_surface_discovery` → 派发 per-unit attack-surface-mapper。
 - `next` 返回完整 task envelope 与绝对 `result_path`;worker 必须写入并回读该路径后才返回概要。
 - `kind=path_finding` → 派发 path-finder(per-work-item)→ path-finder 落盘唯一结论 → `complete`。
-- `complete(path_finding)` 校验 work item 身份和候选 admission,按稳定的 seed_key/pattern 做根因级增量 dedup,写 `candidate_index.json`,并为每个独立根因立即 enqueue 一个 path_validation。
-- `kind=path_validation` → 派发 path-validator(per-candidate)→ `complete`(归类到 validation/confirmed|protected_exposure|residual|benign_business_flow|insufficient_evidence)。
+- `complete(path_finding)` 执行正式 JSON Schema,校验 work/entry/seed/pattern 引用和候选 admission,按稳定的 seed_key/pattern 做根因级增量 dedup,写 `candidate_index.json`,并为每个独立根因立即 enqueue 一个 path_validation。
+- `kind=path_validation` → 派发 path-validator(per-candidate)→ `complete` 用正式 Schema 强制六门槛/分类字段并校验 candidate/entry/task 引用,再归类到 validation/confirmed|protected_exposure|residual|benign_business_flow|insufficient_evidence。
 - provider 流中断、结果缺失、无效 JSON 或任务身份不匹配时,`complete` 在最多 3 次内自动重新入队并保留 `retry_history`;成功后清除活动 error,达到上限才 failed。
 - 当前 OpenCode TaskTool 同步等待本批 subagent,执行层以最多 5 个为一批;每批返回后逐个 complete,新生成的 validation task 可进入下一批。异步单任务补位列为低优先级遗留项。
 - 六门槛:外部可达 + 攻击者可控关键参数 + 到达敏感 sink + guard 缺失/可绕过 + 违反安全边界 + 有具体 impact
 - 反证优先:有效 guard、正常公开业务意图、未越过安全边界、不可控关键参数都必须降级。
 
 ### 5. 报告准入(validate-ready)✅
-- `validate-ready` → 检查 project model、discovery units、project entry candidate 去向、attack matrix work item、candidate validation 和 queue。planned/queued/running/failed/unresolved 阻断;terminal atlas_gap/routing gap/analysis_gap 允许报告但 coverage_status=partial。
+- `validate-ready` → 检查共享产物 Schema、project/discovery/candidate/matrix 覆盖、queue 和聚合引用完整性。planned/queued/running/failed/unresolved、Schema 错误或悬空 entry/seed/work/query/result 引用阻断;terminal atlas_gap/routing gap/analysis_gap 允许报告但 coverage_status=partial。
 - ready=false 时必须继续调度或修复;ready=true 才能报告。
 
 ### 6. 报告(report-composer)✅
 - 读 paths/ + validation/ 生成 findings.json + report.md
 - 主报告=confirmed_vulnerability(按 severity),其余分层为 protected_exposure / residual_risk / benign_business_flow / insufficient_evidence + 终态 routing gap + 攻击面
-- 报告生成后执行状态机 `finalize`;只有报告产物有效且 session.status=completed 才结束审计。
+- 报告生成后执行状态机 `finalize`;只有 findings Schema 有效、finding 引用能解析到 candidate/validation task、`report_snapshot.json` 已用 SHA-256 冻结全部报告事实输入且 session.status=completed 才结束审计。
 
 ## 六门槛与降级规则
 
@@ -108,12 +112,12 @@ path-finder / path-validator 加载,链形状表 + 各模式 source/sink/guard/r
 ## 当前实现状态
 
 - ✅ project-modeling(确定性 JSON5/Manifest 解析 + project_model/discovery_plan,不扫描源码)
-- ✅ attack-surface-mapper(Atlas scoped search + 有界图扩展 + Web/JSBridge 可达上下文发现)
+- ✅ attack-surface-mapper(per-unit Atlas scoped search + 私有结果 + 状态机确定性合并)
 - ⏳ NAPI/native 边界发现(后续扩展,本轮不实现)
 - ✅ attack-patterns skill(3 模式)
 - ✅ audit-orchestration skill(状态机调用协议)
 - ✅ path-finder(per-attack-matrix-work-item,落盘唯一 result)
 - ✅ path-validator(per-candidate,六门槛+分层落盘 result)
 - ✅ report-composer(读 jsonl)
-- ✅ audit_orchestrator.py 状态机脚本(init/compile-matrix/next/complete/validate-coverage/validate-ready/finalize/status)
+- ✅ audit_orchestrator.py 状态机脚本(init/enqueue-discovery/incremental compile-matrix/next/complete/retry/validate-coverage/validate-ready/finalize/status)
 - ✅ streaming promotion(candidate_index + task_events)

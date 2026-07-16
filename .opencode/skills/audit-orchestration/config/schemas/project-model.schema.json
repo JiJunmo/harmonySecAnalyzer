@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony-sec.local/schemas/project-model-v1.json",
+  "type": "object",
+  "required": ["schema_version", "status", "entry_candidates"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["complete", "partial", "failed"]},
+    "entry_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id"],
+        "properties": {"candidate_id": {"type": "string", "minLength": 1}}
+      }
+    },
+    "diagnostics": {"type": "array"}
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony-sec.local/schemas/attack-matrix-v1.json",
+  "type": "object",
+  "required": ["schema_version", "entries", "seeds", "work_items", "routing_gaps"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "entries": {"type": "array", "items": {"type": "object", "required": ["entry_id"]}},
+    "seeds": {"type": "array", "items": {"type": "object", "required": ["seed_id"]}},
+    "work_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["work_item_id", "entry_id", "seed_id", "pattern", "status", "task_id"],
+        "properties": {
+          "work_item_id": {"type": "string", "minLength": 1},
+          "entry_id": {"type": "string", "minLength": 1},
+          "seed_id": {"type": "string", "minLength": 1},
+          "pattern": {"type": "string", "minLength": 1},
+          "status": {"enum": ["planned", "queued", "running", "candidate", "rejected", "no_path", "analysis_gap", "failed"]},
+          "task_id": {"type": "string", "minLength": 1},
+          "result_ref": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "routing_gaps": {"type": "array", "items": {"type": "object"}}
+  }
+}

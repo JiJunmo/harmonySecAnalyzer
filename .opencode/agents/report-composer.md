@@ -60,6 +60,7 @@ run_dir。
 - `benign_business_flows`:来自 `benign_business_flow.jsonl`
 - `insufficient_evidence`:来自 `insufficient_evidence.jsonl`
 - `isolated_findings`:仅收录终态危险种子对应的 `routing_gaps`;`excluded_intermediate` 是路径过渡节点,不得作为孤立危险能力或覆盖缺口。不得将 routing/analysis gap 当作无风险
+- 分层数组中的每一行必须原样保留来源 validation 记录的 `task_id` 和 `candidate_id`;`finalize` 会机器校验 finding → candidate → validation task 引用,禁止改写或省略身份字段。
 - 每个 candidate 已按 root-cause fingerprint 去重。一个 finding 中用 `trigger_variants` 列出全部 Manifest 触发方式,不得按 entry/action 再拆成多条漏洞。
 
 ### report.md

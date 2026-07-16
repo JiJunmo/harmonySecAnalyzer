@@ -32,23 +32,24 @@ permission:
 1. **初始化**:按 `audit-orchestration` skill 执行 `new-run`,传入 `reports_root=reports`、`target_repo` 和 `scope`;后续步骤只使用命令返回的绝对 `run_dir`,不得自行构造或复用历史目录。
 2. **确定性项目建模**:调用并严格按 `project-modeling` skill 执行,传入 `target_repo` 与 `run_dir`。必须确认 skill 约定的项目模型和 Atlas discovery plan 已生成,且执行结果 `ok=true`、项目模型 `status=complete`。
 3. **激活 atlas**:`atlas_project`(action=open, project_path=target_repo)
-4. **Atlas 测绘**:派发 `attack-surface-mapper`(run_dir, target_repo, project_model, discovery_plan) → 它按 plan 的 scope/anchor 执行 Atlas search→symbol/explore→calls/file_dependencies,更新 plan 并落盘 entry_list、danger_seed_list、query_evidence.jsonl。禁止源码逐文件扫描。
-5. **编译攻击矩阵并入队**:按 `audit-orchestration` skill 执行 `compile-matrix`。状态机归一化 execution entry 与 danger seed,再按路由配置生成稀疏 `Entry × Sink × Pattern` work item,并自动一 work item 一 `path_finding` task。不得绕过该命令手工选 seed 或入队。
-6. **5 槽任务池调度**:
+4. **攻击面任务化**:按 `audit-orchestration` skill 执行 `enqueue-discovery`。状态机将 `discovery_plan.units[]` 转换为一 unit 一 `attack_surface_discovery` task;mapper 不再一次处理整个 plan,也不写共享 Atlas 文件。
+5. **5 槽流式任务池调度**:
    - 连续调用 `next <run_dir>` 直到 `worker_pool_full` 或 `no_queued`,最多并行 5 个 running task。
    - 必须把 `next` 返回的完整 task envelope 传给 subagent,尤其是绝对 `result_path` 和 `attempt`,不得让 worker 猜测结果路径。
+   - `kind=attack_surface_discovery` → 派发 `attack-surface-mapper`(task_id, run_dir, result_path, attempt, unit_id, target_repo)。
    - `kind=path_finding` → 派发 `path-finder`(task_id, run_dir, result_path, attempt, work_item_id, entry_id, seed_id, pattern)。
    - `kind=path_validation` → 派发 `path-validator`(task_id, run_dir, result_path, attempt, candidate_id)。
    - 当前 OpenCode TaskTool 会同步等待本批 subagent;无论 subagent 正常返回还是 provider 流中断,本批返回后都对每个 task 立即执行 `complete <run_dir> --task <task_id>`。
    - `complete` 返回 `retry_scheduled=true` 表示结果缺失或无效且已自动重新入队;不得手工重建任务或反复强调提示词,继续通过 `next` 领取。默认第 3 次仍失败才进入终态 failed。
+   - `complete(attack_surface_discovery)` 校验 unit candidate 全部且唯一终态化,确定性重建共享 entry/seed/query evidence,增量编译矩阵并立即 enqueue 新 path task。剩余 discovery unit 无需等待。
    - `complete(path_finding)` 会自动增量去重、分配 `CAND-xxx`、写 `candidate_index.json`、并 enqueue 对应 `path_validation` task。
    - 完成本批 complete 后继续 `next` 派发下一批,直到返回 `no_queued` 且没有 running subagent。异步单任务补位是低优先级遗留能力,不要声称当前已实现。
-7. **最终准入**:按 `audit-orchestration` skill 执行 `validate-ready`;必须 `ready=true` 才能报告。除 discovery unit/project candidate 外还检查攻击矩阵每个 work item 的唯一终态;`atlas_gap`、`analysis_gap` 和 routing gap 可终态报告但 coverage_status=partial,`planned/queued/running/unresolved/failed` 必须继续处理。
-8. **报告与终态**:派发 `report-composer`(run_dir) → 读 project model + paths/ + validation/ 生成 `findings.json` + `report.md`;返回后执行状态机 `finalize <run_dir>`,必须 `ok=true,status=completed` 才向用户报告审计完成。
+6. **最终准入**:按 `audit-orchestration` skill 执行 `validate-ready`;必须 `ready=true` 才能报告。除 discovery unit/project candidate 外还检查攻击矩阵每个 work item 的唯一终态;`atlas_gap`、`analysis_gap` 和 routing gap 可终态报告但 coverage_status=partial,`planned/queued/running/unresolved/failed` 必须继续处理。
+7. **报告与终态**:派发 `report-composer`(run_dir) → 读 project model + paths/ + validation/ 生成 `findings.json` + `report.md`;返回后执行状态机 `finalize <run_dir>`,必须 `ok=true,status=completed` 才向用户报告审计完成。
 
 ## 防偷懒约束
 
-- 一攻击矩阵 work item 一 path-finder、一根因 candidate 一 validator;Manifest trigger alias 不得重复派发
+- 一 discovery unit 一 mapper、一攻击矩阵 work item 一 path-finder、一根因 candidate 一 validator;Manifest trigger alias 不得重复派发
 - `validate-ready` 返回 ready=true 才算报告前闭合
 - **禁止"其余类似/抽样/略过"**;每 task 必须完成并 `complete`
 - 队列未闭合继续调度,**不把"是否继续"交回用户**

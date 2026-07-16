@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony-sec.local/schemas/findings-v1.json",
+  "type": "object",
+  "required": ["confirmed_vulnerabilities", "protected_exposures", "residual_risks", "benign_business_flows", "insufficient_evidence", "isolated_findings", "summary"],
+  "properties": {
+    "confirmed_vulnerabilities": {"$ref": "#/$defs/validationRows"},
+    "protected_exposures": {"$ref": "#/$defs/validationRows"},
+    "residual_risks": {"$ref": "#/$defs/validationRows"},
+    "benign_business_flows": {"$ref": "#/$defs/validationRows"},
+    "insufficient_evidence": {"$ref": "#/$defs/validationRows"},
+    "isolated_findings": {"type": "array", "items": {"type": "object"}},
+    "summary": {"type": "object"}
+  },
+  "$defs": {
+    "validationRows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "candidate_id"],
+        "properties": {
+          "task_id": {"type": "string", "minLength": 1},
+          "candidate_id": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

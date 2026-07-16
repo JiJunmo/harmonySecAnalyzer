@@ -46,6 +46,16 @@ REQUIRED = [
     ".opencode/skills/attack-patterns/SKILL.md",
     ".opencode/skills/audit-orchestration/SKILL.md",
     ".opencode/skills/audit-orchestration/config/attack_matrix_routes.json",
+    ".opencode/skills/audit-orchestration/config/schemas/discovery-result.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/path-result.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/validation-result.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/project-model.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/discovery-plan.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/entry-list.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/danger-seeds.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/attack-matrix.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/findings.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/report-snapshot.schema.json",
     ".opencode/skills/project-modeling/SKILL.md",
     "knowledge/patterns/index.md",
     "knowledge/patterns/deeplink-injection.md",
@@ -186,7 +196,7 @@ def smoke_orchestrator(orch, python):
         reports_root = os.path.join(td, "reports")
         allocate = [python, orch, "new-run", reports_root, "--target-repo", td, "--scope", "smoke"]
         allocated = []
-        for _ in range(2):
+        for _ in range(3):
             try:
                 result = subprocess.run(allocate, capture_output=True, text=True, timeout=20)
                 payload = json.loads(result.stdout)
@@ -266,6 +276,61 @@ def smoke_orchestrator(orch, python):
         if not Path(retry_task.get("result_path", "relative")).is_absolute():
             return False, "next 未返回绝对 result_path"
 
+        discovery_run = Path(allocated[2])
+        (discovery_run / "project" / "project_model.json").write_text(json.dumps({
+            "schema_version": 1, "status": "complete",
+            "entry_candidates": [{"candidate_id": "PE-SMOKE"}],
+        }), encoding="utf-8")
+        (discovery_run / "atlas" / "discovery_plan.json").write_text(json.dumps({
+            "schema_version": 1, "project_model_schema_version": 1,
+            "units": [{
+                "unit_id": "AU-SMOKE", "component_id": "CMP-SMOKE",
+                "entry_candidate_ids": ["PE-SMOKE"], "status": "planned",
+                "resolved_symbols": [], "atlas_query_ids": [], "gaps": [],
+            }],
+        }), encoding="utf-8")
+        enqueue_discovery = subprocess.run(
+            [python, orch, "enqueue-discovery", str(discovery_run)],
+            capture_output=True, text=True, timeout=20,
+        )
+        claim_discovery = subprocess.run(
+            [python, orch, "next", str(discovery_run)],
+            capture_output=True, text=True, timeout=20,
+        )
+        try:
+            enqueue_payload = json.loads(enqueue_discovery.stdout)
+            discovery_task = json.loads(claim_discovery.stdout).get("task") or {}
+        except Exception as exc:
+            return False, f"discovery smoke 输出无效: {exc}"
+        if not enqueue_payload.get("ok") or discovery_task.get("kind") != "attack_surface_discovery":
+            return False, "discovery unit 未正确入队/领取"
+        Path(discovery_task["result_path"]).write_text(json.dumps({
+            "task_id": discovery_task["task_id"], "unit_id": "AU-SMOKE", "status": "completed",
+            "resolved_symbols": ["EntryAbility.onNewWant"], "atlas_query_ids": ["q-smoke"], "gaps": [],
+            "entry_list": [{
+                "component_id": "CMP-SMOKE", "project_candidate_ids": ["PE-SMOKE"],
+                "type": "deeplink", "ability": "EntryAbility",
+                "entry_function": "EntryAbility.onNewWant", "entry_function_file": "entry/EntryAbility.ets",
+            }],
+            "excluded_candidates": [], "unresolved_candidates": [], "coverage_gaps": [],
+            "danger_seed_list": [{
+                "category": "sql", "operation": "query", "symbol": "Db.query",
+                "symbol_file": "entry/Db.ets", "location": "entry/Db.ets:20",
+                "sink_role": "terminal", "sink_parameter": "sql",
+            }],
+            "query_evidence": [{"unit_id": "AU-SMOKE", "query_id": "q-smoke", "outcome": "matched"}],
+        }), encoding="utf-8")
+        complete_discovery = subprocess.run(
+            [python, orch, "complete", str(discovery_run), "--task", discovery_task["task_id"]],
+            capture_output=True, text=True, timeout=20,
+        )
+        try:
+            discovery_complete_payload = json.loads(complete_discovery.stdout)
+        except Exception:
+            return False, f"discovery complete 非 JSON: {complete_discovery.stdout.strip()}"
+        if complete_discovery.returncode != 0 or discovery_complete_payload.get("added_path_tasks") != 1:
+            return False, f"discovery 未流式生成 path task: {complete_discovery.stderr.strip() or complete_discovery.stdout.strip()}"
+
         final_run = Path(allocated[1])
         (final_run / "project" / "project_model.json").write_text(json.dumps({
             "schema_version": 1, "status": "complete", "entry_candidates": [],
@@ -280,7 +345,11 @@ def smoke_orchestrator(orch, python):
         (final_run / "atlas" / "danger_seed_list.json").write_text(json.dumps({
             "danger_seed_list": [],
         }), encoding="utf-8")
-        (final_run / "findings.json").write_text("{}\n", encoding="utf-8")
+        (final_run / "findings.json").write_text(json.dumps({
+            "confirmed_vulnerabilities": [], "protected_exposures": [],
+            "residual_risks": [], "benign_business_flows": [],
+            "insufficient_evidence": [], "isolated_findings": [], "summary": {},
+        }) + "\n", encoding="utf-8")
         (final_run / "report.md").write_text("# Smoke report\n", encoding="utf-8")
         for c in (
             [python, orch, "compile-matrix", str(final_run)],
@@ -298,7 +367,10 @@ def smoke_orchestrator(orch, python):
                 return False, f"validate-ready 未闭合: {r.stdout.strip()}"
             if c[2] == "finalize" and payload.get("status") != "completed":
                 return False, f"finalize 未完成 session: {r.stdout.strip()}"
-        return True, "new-run 隔离 + attack matrix/自动重试/coverage/status + finalize 全通过"
+        snapshot = final_run / "report_snapshot.json"
+        if not snapshot.is_file() or len(json.loads(snapshot.read_text(encoding="utf-8")).get("artifacts", {})) < 10:
+            return False, "finalize 未生成完整 report snapshot/hash"
+        return True, "new-run 隔离 + per-unit discovery 流式下发 + Schema/引用校验 + 自动重试/coverage/finalize snapshot 全通过"
 
 
 def smoke_project_profiler(profiler, python):
@@ -502,6 +574,13 @@ def main():
         ok(f"Python json5: {json5_version}")
     else:
         fail("缺少 Python json5 依赖")
+        info(f"安装: {py} -m pip install -r {root / 'requirements.txt'}")
+        sys.exit(2)
+    jsonschema_version = python_module_version(py, "jsonschema")
+    if jsonschema_version:
+        ok(f"Python jsonschema: {jsonschema_version}")
+    else:
+        fail("缺少 Python jsonschema 依赖")
         info(f"安装: {py} -m pip install -r {root / 'requirements.txt'}")
         sys.exit(2)
     print()

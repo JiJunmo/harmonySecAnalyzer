@@ -5,7 +5,7 @@ description: 审计流水线状态机调用协议。harmony-auditor 调度时加
 
 ## 状态机脚本
 
-`scripts/audit_orchestrator.py`(Python,确定性,跨平台,无外部依赖)。harmony-auditor **通过 bash 调用**,不手写 queue/session/candidate_index。所有命令输出 JSON。
+`scripts/audit_orchestrator.py`(Python,确定性,跨平台;依赖根目录 `requirements.txt` 中的 `jsonschema`)。harmony-auditor **通过 bash 调用**,不手写 queue/session/candidate_index。所有命令输出 JSON。
 
 状态机负责:
 
@@ -20,6 +20,7 @@ description: 审计流水线状态机调用协议。harmony-auditor 调度时加
 - `analysis/attack_matrix.json`:确定性编译的稀疏 `Entry × Sink × Pattern` 矩阵;每个 work item 必须终态化。
 - `paths/*.jsonl` / `validation/*.jsonl`:审计产物归档。
 - `.lock`:状态机命令文件锁。
+- `config/schemas/*.schema.json`:worker 结果、共享事实、findings 和 report snapshot 的 Draft 2020-12 契约。`complete` 按 Schema → 业务不变量 → 跨产物引用三层准入,错误携带精确 JSON 路径并进入统一重试。
 
 ## 命令
 
@@ -30,6 +31,9 @@ python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py new-ru
 
 # 兼容/测试用底层命令:仅允许初始化空目录;已有任何审计文件时返回 run_dir_not_empty
 python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py init <empty_run_dir> --target-repo <repo> --scope <scope>
+
+# 将 discovery plan 转换为 per-unit mapper 任务
+python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py enqueue-discovery <run_dir>
 
 # 主流程:归一化 entry/sink,编译稀疏攻击矩阵,并按 work item 自动入队
 python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py compile-matrix <run_dir>
@@ -80,24 +84,30 @@ python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py status
 ## 调度协议(harmony-auditor 必须遵守)
 
 1. `new-run` 原子分配并初始化独立 run 目录 → 调 project profiler 生成 project model + Atlas discovery plan;必须 `status=complete`。后续只使用返回的 `run_dir`。
-2. `atlas_project open` → mapper 按 plan scope/anchor 做 Atlas scoped discovery,更新 unit 状态并落盘 query evidence/entry/seed。
-3. 执行 `compile-matrix`:
+2. `atlas_project open` → `enqueue-discovery`,将每个 plan unit 入队为独立 `attack_surface_discovery` task。
+3. `complete(attack_surface_discovery)`:
+   - 校验 task/unit/status 和 unit 内全部 project candidate 的唯一去向。
+   - mapper 只写 `tasks/discover-<unit>.result.json`;状态机从全部已完成 unit 结果确定性重建 discovery plan、entry list、danger seed list 和 query evidence。
+   - entry/seed 全局 ID 由执行符号/sink identity 稳定生成,不采信 mapper 自编号。
+   - 每完成一个 unit 都增量执行矩阵编译,立即入队新 path task,不等待其余 unit。
+4. 增量 `compile-matrix`:
    - 按 component/resolved symbol/file 合并 Manifest trigger alias,保存 `entry_key` 与 `trigger_variants`。
    - 按 category/symbol/file/location/sensitive parameter 合并重复危险 seed,保存 `seed_key`。
    - 使用 `config/attack_matrix_routes.json` 生成稀疏 `Entry × Sink × Pattern` work item;先按 discovery unit 关联剪枝,禁机械全量笛卡尔积。
    - `sink_role=intermediate` 记录为 `excluded_intermediate`,只作为后续路径证据,不创建 work item 或 routing gap。
    - 未实现或无兼容模式的终态 seed 显式进入 `routing_gaps`;每个有效 work item 入队一个 `path_finding` task。
-4. **5 槽任务池**:
+5. **5 槽任务池**:
+   - discovery 与 analysis 同时存在时保留 2 个 discovery 槽、3 个 path/validation 槽;单类任务可使用全部空闲槽。
    - 连续 `next` 填满最多 5 个 running task。
    - 将 `next` 返回的完整 task envelope 交给 worker;worker 只写绝对 `result_path`,写后回读校验再返回。
    - `kind=path_finding` 派发 `path-finder`。
    - `kind=path_validation` 派发 `path-validator`。
    - 当前 OpenCode TaskTool 同步等待一轮 subagent,因此实际以最多 5 个为一批返回。
    - 一批返回后逐个 `complete`;provider 中断、结果缺失、无效 JSON 或身份不匹配会在上限内自动 requeue。随后继续 `next`;异步单任务补位为低优先级遗留项。
-5. `complete(path_finding)` 先校验 task/work item/entry/seed/pattern 身份与唯一 conclusion,再机器校验 admission contract,按 `seed_key + pattern` 做根因级增量 dedup。每个根因只分配一个 `CAND-xxx` 和一个 `path_validation`。
-6. `complete(path_validation)` 按 `confirmed_vulnerability|protected_exposure|residual_risk|benign_business_flow|insufficient_evidence` 分层归类。
-7. `validate-ready` 同时检查 project model、discovery unit、entry candidate、attack matrix 与验证任务闭合。矩阵 `planned/queued/running/failed` 阻止报告;terminal atlas_gap/routing gap/analysis_gap 允许 ready 但 coverage_status=partial,必须进入报告附录。
-8. report-composer 返回后执行 `finalize`;状态机重新检查 ready 与报告产物,成功后 session 才进入 `completed`。不得仅因 report-composer 返回就声称审计完成。
+6. `complete(path_finding)` 先执行正式 Schema,再校验 task/work item/entry/seed/pattern 引用与唯一 conclusion,最后机器校验 admission contract,按 `seed_key + pattern` 做根因级增量 dedup。每个根因只分配一个 `CAND-xxx` 和一个 `path_validation`。
+7. `complete(path_validation)` 用正式 Schema 强制六门槛与分类特定字段,再校验 candidate/entry/task 引用和 protected/benign 等业务不变量,最后按五级结论分层归类。
+8. `validate-ready` 同时检查 project model、discovery unit、entry candidate、attack matrix、验证任务和聚合产物引用完整性。矩阵 `planned/queued/running/failed` 或悬空 ID/query/result 引用阻止报告;terminal atlas_gap/routing gap/analysis_gap 允许 ready 但 coverage_status=partial,必须进入报告附录。
+9. report-composer 返回后执行 `finalize`;状态机重新检查 ready、findings Schema 和 finding→candidate→validation task 引用,并生成覆盖全部报告事实输入的 `report_snapshot.json` SHA-256 清单,成功后 session 才进入 `completed`。重复 finalize 会复核哈希,发现完成后改写则失败。不得仅因 report-composer 返回就声称审计完成。
 
 ## 防偷懒约束
 
@@ -117,7 +127,7 @@ harmony-auditor 的 bash 仅限调 `audit_orchestrator.py` 与 project-modeling 
 reports/<project-name>-<target-path-hash>/
   <YYYYMMDD-HHMMSS>-<scope>-<run-id>/
     session.json / queue.jsonl
-    task_events.jsonl / candidate_index.json / .lock
+    task_events.jsonl / candidate_index.json / report_snapshot.json / .lock
     project/project_model.json
     atlas/{discovery_plan, entry_list, danger_seed_list}.json
     atlas/query_evidence.jsonl

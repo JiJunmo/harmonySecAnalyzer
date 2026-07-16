@@ -27,6 +27,8 @@ permission:
 ## 输入
 task_id / run_dir / result_path / attempt / candidate_id。`result_path` 是状态机返回的绝对路径,是唯一允许写入的结果位置。
 
+结果由状态机按 `audit-orchestration/config/schemas/validation-result.schema.json` 校验,再执行分类业务不变量和 candidate/entry/task 引用校验。六门槛、分类专属字段和降级理由不能留给报告阶段补写。
+
 ## 流程
 
 1. 读 `<run_dir>/paths/candidates.jsonl` 找该 candidate_id 的根因及全部 `path_variants`(path / taint / atlas_evidence / entry_ids),再从 entry_list 读取所有 `trigger_variants`。同一危险 seed 根因只验证一次,不同执行入口和 Manifest 启动方式作为路径/触发变体共同评估。

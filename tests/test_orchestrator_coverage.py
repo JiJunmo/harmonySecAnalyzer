@@ -105,7 +105,11 @@ class EntryCandidateCoverageTests(unittest.TestCase):
             self.make_run(Path(td))
             paths = MODULE.P(td)
             MODULE.write_json(paths["session"], {"status": "running", "run_id": "test"})
-            MODULE.write_json(paths["findings"], {"confirmed_vulnerabilities": []})
+            MODULE.write_json(paths["findings"], {
+                "confirmed_vulnerabilities": [], "protected_exposures": [],
+                "residual_risks": [], "benign_business_flows": [],
+                "insufficient_evidence": [], "isolated_findings": [], "summary": {},
+            })
             MODULE.atomic_write_text(paths["report"], "# Report\n")
 
             first = MODULE.cmd_finalize(SimpleNamespace(run_dir=td))
@@ -116,6 +120,27 @@ class EntryCandidateCoverageTests(unittest.TestCase):
             self.assertEqual(first["status"], "completed")
             self.assertEqual(session["status"], "completed")
             self.assertEqual(second["mode"], "already_finalized")
+            self.assertTrue(Path(paths["reportSnapshot"]).is_file())
+
+    def test_finalized_snapshot_detects_report_mutation(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.make_run(Path(td))
+            paths = MODULE.P(td)
+            MODULE.write_json(paths["session"], {"status": "running", "run_id": "test"})
+            MODULE.write_json(paths["findings"], {
+                "confirmed_vulnerabilities": [], "protected_exposures": [],
+                "residual_risks": [], "benign_business_flows": [],
+                "insufficient_evidence": [], "isolated_findings": [], "summary": {},
+            })
+            MODULE.atomic_write_text(paths["report"], "# Report\n")
+            MODULE.cmd_finalize(SimpleNamespace(run_dir=td))
+            MODULE.atomic_write_text(paths["report"], "# Changed report\n")
+
+            result = MODULE.cmd_finalize(SimpleNamespace(run_dir=td))
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "finalized_artifacts_changed")
+            self.assertEqual(result["verification"]["changed_artifacts"], ["report.md"])
 
     def test_finalize_requires_report_artifacts(self):
         with tempfile.TemporaryDirectory() as td:

@@ -6,6 +6,7 @@
 命令:
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py new-run <reports_root> --target-repo R [--scope S]
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py init <run_dir> [--target-repo R] [--scope S]
+  python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py enqueue-discovery <run_dir>
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py compile-matrix <run_dir>
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py enqueue-entries <run_dir>
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py enqueue <run_dir> --tasks '<JSON>'
@@ -30,6 +31,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows fallback for future portability.
@@ -39,12 +42,27 @@ except ImportError:  # pragma: no cover - Windows fallback for future portabilit
 MAX_RUNNING = 5
 MAX_ATTEMPTS = 3
 ROUTES_PATH = Path(__file__).resolve().parent.parent / "config" / "attack_matrix_routes.json"
+SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "config" / "schemas"
+RESULT_SCHEMAS = {
+    "attack_surface_discovery": "discovery-result.schema.json",
+    "path_finding": "path-result.schema.json",
+    "path_validation": "validation-result.schema.json",
+}
+SHARED_SCHEMAS = {
+    "projectModel": "project-model.schema.json",
+    "discoveryPlan": "discovery-plan.schema.json",
+    "entryList": "entry-list.schema.json",
+    "normalizedSeeds": "danger-seeds.schema.json",
+    "attackMatrix": "attack-matrix.schema.json",
+}
 
 ENTRY_TYPE_ALIASES = {
     "exported_component": "exported_ability",
 }
 
 PATH_TERMINAL_STATES = {"candidate", "rejected", "no_path", "analysis_gap"}
+DISCOVERY_TERMINAL_STATES = {"completed", "excluded", "atlas_gap"}
+DISCOVERY_RESERVED_SLOTS = 2
 
 
 def now():
@@ -88,6 +106,7 @@ def P(run):
         "insufficient": os.path.join(run, "validation", "insufficient_evidence.jsonl"),
         "findings": os.path.join(run, "findings.json"),
         "report": os.path.join(run, "report.md"),
+        "reportSnapshot": os.path.join(run, "report_snapshot.json"),
     }
 
 
@@ -220,6 +239,8 @@ def empty_candidate_index():
 
 
 def task_id_for(t):
+    if t["kind"] == "attack_surface_discovery":
+        return f"discover-{t['unit_id']}"
     if t["kind"] == "path_finding":
         if t.get("work_item_id"):
             return f"path-{t['work_item_id']}"
@@ -228,7 +249,11 @@ def task_id_for(t):
 
 
 def task_agent_for(kind):
-    return "path-finder" if kind == "path_finding" else "path-validator"
+    return {
+        "attack_surface_discovery": "attack-surface-mapper",
+        "path_finding": "path-finder",
+        "path_validation": "path-validator",
+    }[kind]
 
 
 def make_task(t):
@@ -236,6 +261,7 @@ def make_task(t):
     return {
         "task_id": task_id,
         "kind": t["kind"],
+        "unit_id": t.get("unit_id"),
         "work_item_id": t.get("work_item_id"),
         "entry_id": t.get("entry_id"),
         "seed_id": t.get("seed_id"),
@@ -307,6 +333,46 @@ def unique_values(values):
             seen.add(marker)
             result.append(value)
     return result
+
+
+def schema_path(error):
+    parts = [str(part) for part in error.absolute_path]
+    return "$" + "".join(f"[{part}]" if part.isdigit() else f".{part}" for part in parts)
+
+
+def worker_result_schema_errors(kind, result):
+    schema_name = RESULT_SCHEMAS.get(kind)
+    if not schema_name:
+        return [f"schema:$.kind:unsupported worker kind {kind}"]
+    schema = read_json(str(SCHEMAS_DIR / schema_name))
+    if not isinstance(schema, dict):
+        return [f"schema:$:missing schema {schema_name}"]
+    validator = Draft202012Validator(schema)
+    return [
+        f"schema:{schema_path(error)}:{error.message}"
+        for error in sorted(validator.iter_errors(result), key=lambda row: tuple(map(str, row.absolute_path)))
+    ]
+
+
+def document_schema_errors(schema_name, document, label):
+    schema = read_json(str(SCHEMAS_DIR / schema_name))
+    if not isinstance(schema, dict):
+        return [f"schema:{label}:missing schema {schema_name}"]
+    if document is None:
+        return [f"schema:{label}:missing_or_invalid_document"]
+    validator = Draft202012Validator(schema)
+    return [
+        f"schema:{label}{schema_path(error)[1:]}:{error.message}"
+        for error in sorted(validator.iter_errors(document), key=lambda row: tuple(map(str, row.absolute_path)))
+    ]
+
+
+def shared_artifact_schema_errors(run_dir):
+    paths = P(run_dir)
+    errors = []
+    for key, schema_name in SHARED_SCHEMAS.items():
+        errors.extend(document_schema_errors(schema_name, read_json(paths[key]), key))
+    return errors
 
 
 def stable_key(prefix, parts):
@@ -388,6 +454,19 @@ def normalize_execution_entries(run_dir):
                 if variant.get("project_candidate_id"):
                     project_candidate_ids.add(variant["project_candidate_id"])
         canonical["project_candidate_ids"] = sorted(project_candidate_ids)
+        analysis_unit_ids = {
+            unit_id
+            for row in rows
+            for unit_id in (
+                [row.get("analysis_unit_id")]
+                + (row.get("analysis_unit_ids", []) if isinstance(row.get("analysis_unit_ids", []), list) else [])
+                + (row.get("discovered_from_units", []) if isinstance(row.get("discovered_from_units", []), list) else [])
+            )
+            if unit_id
+        }
+        canonical["analysis_unit_ids"] = sorted(analysis_unit_ids)
+        if canonical["analysis_unit_ids"]:
+            canonical["analysis_unit_id"] = canonical["analysis_unit_ids"][0]
         canonical["atlas_query_ids"] = sorted({
             query_id
             for row in rows
@@ -539,6 +618,267 @@ def normalize_danger_seeds(run_dir):
     }
 
 
+def row_candidate_ids(row):
+    ids = set(row.get("project_candidate_ids", [])) if isinstance(row, dict) else set()
+    if isinstance(row, dict):
+        value = row.get("project_candidate_id") or row.get("candidate_id")
+        if value:
+            ids.add(value)
+        for variant in row.get("trigger_variants", []):
+            if isinstance(variant, dict):
+                ids.update(variant.get("project_candidate_ids", []))
+                if variant.get("project_candidate_id"):
+                    ids.add(variant["project_candidate_id"])
+    return {value for value in ids if value}
+
+
+def discovery_result_errors(plan_unit, result):
+    errors = []
+    if result.get("unit_id") != plan_unit.get("unit_id"):
+        errors.append("unit_id_mismatch")
+    if result.get("status") not in DISCOVERY_TERMINAL_STATES:
+        errors.append("invalid_discovery_status")
+    list_fields = (
+        "entry_list", "excluded_candidates", "unresolved_candidates", "coverage_gaps",
+        "danger_seed_list", "query_evidence", "resolved_symbols", "atlas_query_ids", "gaps",
+    )
+    for field in list_fields:
+        if not isinstance(result.get(field, []), list):
+            errors.append(f"{field}_must_be_list")
+    if errors:
+        return errors
+
+    if result.get("unresolved_candidates"):
+        errors.append("unresolved_candidates_not_terminal")
+    if result.get("coverage_gaps") and result.get("status") != "atlas_gap":
+        errors.append("coverage_gaps_require_atlas_gap_status")
+    if result.get("status") == "excluded" and (
+        result.get("entry_list") or result.get("danger_seed_list") or result.get("coverage_gaps")
+    ):
+        errors.append("excluded_unit_contains_discovery_output")
+    expected = set(plan_unit.get("entry_candidate_ids", []))
+    assignments = {}
+
+    def assign(rows, disposition):
+        for row in rows:
+            if not isinstance(row, dict):
+                errors.append(f"invalid_{disposition}_row")
+                continue
+            for candidate_id in row_candidate_ids(row):
+                assignments.setdefault(candidate_id, set()).add(disposition)
+
+    assign(result.get("entry_list", []), "entry")
+    assign(result.get("excluded_candidates", []), "excluded")
+    assign(result.get("coverage_gaps", []), "atlas_gap")
+    accounted = set(assignments)
+    if expected - accounted:
+        errors.append("unaccounted_project_candidates:" + ",".join(sorted(expected - accounted)))
+    if accounted - expected:
+        errors.append("unknown_project_candidates:" + ",".join(sorted(accounted - expected)))
+    conflicts = sorted(candidate_id for candidate_id, values in assignments.items() if len(values) > 1)
+    if conflicts:
+        errors.append("conflicting_project_candidates:" + ",".join(conflicts))
+
+    for entry in result.get("entry_list", []):
+        if isinstance(entry, dict):
+            identity = execution_entry_key(entry)
+            if identity[0] == "unmergeable":
+                errors.append("entry_execution_identity_incomplete")
+    for seed in result.get("danger_seed_list", []):
+        if not isinstance(seed, dict):
+            errors.append("invalid_danger_seed_row")
+            continue
+        identity = danger_seed_identity(seed)
+        if identity[0] == "unmergeable":
+            errors.append("danger_seed_identity_incomplete")
+    for evidence in result.get("query_evidence", []):
+        if not isinstance(evidence, dict):
+            errors.append("invalid_query_evidence_row")
+        elif evidence.get("unit_id") not in (None, plan_unit.get("unit_id")):
+            errors.append("query_evidence_unit_mismatch")
+    evidence_ids = [
+        row.get("query_id") for row in result.get("query_evidence", [])
+        if isinstance(row, dict) and row.get("query_id")
+    ]
+    duplicate_query_ids = sorted({query_id for query_id in evidence_ids if evidence_ids.count(query_id) > 1})
+    if duplicate_query_ids:
+        errors.append("duplicate_query_evidence_ids:" + ",".join(duplicate_query_ids))
+    known_query_ids = set(evidence_ids)
+    referenced_query_ids = set(result.get("atlas_query_ids", []))
+    for row in result.get("entry_list", []) + result.get("danger_seed_list", []):
+        if isinstance(row, dict):
+            referenced_query_ids.update(row.get("atlas_query_ids", []))
+    unresolved_query_ids = sorted(referenced_query_ids - known_query_ids)
+    if unresolved_query_ids:
+        errors.append("unresolved_atlas_query_ids:" + ",".join(unresolved_query_ids))
+    return unique_values(errors)
+
+
+def path_reference_errors(run_dir, task, result):
+    p = P(run_dir)
+    errors = []
+    matrix = read_json(p["attackMatrix"], {})
+    item = next(
+        (row for row in matrix.get("work_items", []) if row.get("work_item_id") == task.get("work_item_id")),
+        None,
+    ) if isinstance(matrix, dict) else None
+    if not item:
+        errors.append("reference:work_item_not_found")
+    else:
+        for field in ("entry_id", "seed_id", "pattern"):
+            expected = task.get(field)
+            if item.get(field) != expected:
+                errors.append(f"reference:matrix_{field}_mismatch")
+    entry_ids = {row.get("entry_id") for row in load_entries(run_dir) if isinstance(row, dict)}
+    if task.get("entry_id") not in entry_ids:
+        errors.append("reference:entry_id_not_found")
+    seed_doc = read_json(p["normalizedSeeds"], {})
+    seed_ids = {
+        row.get("seed_id") for row in seed_doc.get("danger_seeds", []) if isinstance(row, dict)
+    } if isinstance(seed_doc, dict) else set()
+    if task.get("seed_id") not in seed_ids:
+        errors.append("reference:seed_id_not_found")
+    return errors
+
+
+def validation_reference_errors(run_dir, task, result):
+    p = P(run_dir)
+    errors = []
+    candidates = {
+        row.get("candidate_id"): row
+        for row in read_jsonl(p["candidates"])
+        if isinstance(row, dict) and row.get("candidate_id")
+    }
+    candidate = candidates.get(task.get("candidate_id"))
+    index = read_json(p["candidateIndex"], empty_candidate_index())
+    indexed = index.get("candidates", {}).get(task.get("candidate_id")) if isinstance(index, dict) else None
+    if not candidate or not indexed:
+        errors.append("reference:candidate_id_not_found")
+        return errors
+    known_entries = {row.get("entry_id") for row in load_entries(run_dir) if isinstance(row, dict)}
+    result_entries = set(result.get("entry_ids", []))
+    candidate_entries = set(candidate.get("entry_ids", []))
+    if candidate.get("entry_id"):
+        candidate_entries.add(candidate["entry_id"])
+    unknown_entries = sorted(result_entries - known_entries)
+    if unknown_entries:
+        errors.append("reference:unknown_entry_ids:" + ",".join(unknown_entries))
+    if result_entries != candidate_entries:
+        errors.append("reference:candidate_entry_ids_mismatch")
+    if indexed.get("validation_task_id") != task.get("task_id"):
+        errors.append("reference:validation_task_id_mismatch")
+    return errors
+
+
+def validation_business_errors(result):
+    classification = result.get("classification")
+    checks = result.get("exploitability", {})
+    errors = []
+    if classification != "confirmed_vulnerability" and all(value is True for value in checks.values()):
+        errors.append("business:demoted_result_has_all_six_gates_true")
+    if classification == "protected_exposure":
+        effective = any(
+            isinstance(guard, dict) and guard.get("effectiveness") == "effective"
+            for guard in result.get("guards", [])
+        )
+        if not effective:
+            errors.append("business:protected_exposure_requires_effective_guard")
+        if checks.get("guard_bypassed_or_absent") is not False:
+            errors.append("business:protected_exposure_guard_gate_must_be_false")
+    if classification == "benign_business_flow" and checks.get("boundary_violated") is not False:
+        errors.append("business:benign_flow_boundary_gate_must_be_false")
+    return errors
+
+
+def rebuild_discovery_artifacts(run_dir):
+    p = P(run_dir)
+    plan = read_json(p["discoveryPlan"], {})
+    if not isinstance(plan, dict) or plan.get("schema_version") != 1:
+        return {"ok": False, "error": "discovery_plan_missing_or_invalid"}
+    queue = read_jsonl(p["queue"])
+    units = {unit.get("unit_id"): unit for unit in plan.get("units", []) if isinstance(unit, dict)}
+    entries = []
+    seeds = []
+    excluded = []
+    coverage_gaps = []
+    query_evidence = []
+    completed_units = []
+
+    discovery_tasks = sorted(
+        (
+            task for task in queue
+            if task.get("kind") == "attack_surface_discovery" and task.get("status") == "done"
+        ),
+        key=lambda task: task.get("unit_id", ""),
+    )
+    for task in discovery_tasks:
+        unit_id = task.get("unit_id")
+        unit = units.get(unit_id)
+        result = read_json(os.path.join(run_dir, task.get("result_file", "")))
+        if not unit or not isinstance(result, dict):
+            return {"ok": False, "error": "completed_discovery_result_missing", "task_id": task.get("task_id")}
+        errors = discovery_result_errors(unit, result)
+        if errors:
+            return {"ok": False, "error": "completed_discovery_result_invalid", "task_id": task.get("task_id"), "details": errors}
+
+        unit["status"] = result["status"]
+        unit["resolved_symbols"] = unique_values(result.get("resolved_symbols", []))
+        unit["atlas_query_ids"] = sorted(set(result.get("atlas_query_ids", [])))
+        unit["gaps"] = unique_values(result.get("gaps", []))
+        unit["result_file"] = task.get("result_file")
+        completed_units.append(unit_id)
+
+        for source in result.get("entry_list", []):
+            row = dict(source)
+            identity = execution_entry_key(row)
+            row["entry_id"] = "E-" + stable_key("entry", identity).split(":", 1)[1]
+            row["analysis_unit_id"] = unit_id
+            row["discovered_from_units"] = sorted(set(row.get("discovered_from_units", [])) | {unit_id})
+            entries.append(row)
+        for source in result.get("danger_seed_list", []):
+            row = dict(source)
+            identity = danger_seed_identity(row)
+            row["seed_id"] = "D-" + stable_key("seed", identity).split(":", 1)[1]
+            row["discovered_from_unit"] = unit_id
+            seeds.append(row)
+        for field, target in (("excluded_candidates", excluded), ("coverage_gaps", coverage_gaps)):
+            for source in result.get(field, []):
+                row = dict(source)
+                row["analysis_unit_id"] = unit_id
+                target.append(row)
+        for source in result.get("query_evidence", []):
+            row = dict(source)
+            row["unit_id"] = unit_id
+            query_evidence.append(row)
+
+    statuses = {status: 0 for status in ("planned", "completed", "excluded", "unresolved", "atlas_gap")}
+    for unit in plan.get("units", []):
+        status = unit.get("status") or "planned"
+        statuses[status] = statuses.get(status, 0) + 1
+    plan["summary"] = {"total": len(plan.get("units", [])), **statuses}
+    write_json(p["discoveryPlan"], plan)
+    write_json(p["entryList"], {
+        "project_model_schema_version": plan.get("project_model_schema_version"),
+        "entry_list": entries,
+        "excluded_candidates": excluded,
+        "unresolved_candidates": [],
+        "coverage_gaps": coverage_gaps,
+        "source": "per_unit_discovery_results",
+    })
+    write_json(p["dangerSeedList"], {
+        "danger_seed_list": seeds,
+        "source": "per_unit_discovery_results",
+    })
+    write_jsonl(p["queryEvidence"], query_evidence)
+    return {
+        "ok": True,
+        "completed_units": completed_units,
+        "entries": len(entries),
+        "seeds": len(seeds),
+        "query_evidence": len(query_evidence),
+    }
+
+
 def route_matches(route, entry, seed):
     entry_types = set(entry.get("entry_types", []))
     if not entry_types:
@@ -554,12 +894,14 @@ def route_matches(route, entry, seed):
 
 
 def seed_relevant_to_entry(entry, seed):
-    entry_unit = entry.get("analysis_unit_id")
+    entry_units = set(entry.get("analysis_unit_ids", []))
+    if entry.get("analysis_unit_id"):
+        entry_units.add(entry["analysis_unit_id"])
     seed_units = set(seed.get("discovered_from_units", []))
     seed_units.update(seed.get("reachable_from_units", []))
-    if not entry_unit or not seed_units:
+    if not entry_units or not seed_units:
         return True
-    return entry_unit in seed_units
+    return bool(entry_units.intersection(seed_units))
 
 
 def load_matrix_routes():
@@ -572,6 +914,12 @@ def load_matrix_routes():
 
 def compile_attack_matrix(run_dir):
     p = P(run_dir)
+    previous_matrix = read_json(p["attackMatrix"], {})
+    previous_items = {
+        item.get("work_item_id"): item
+        for item in previous_matrix.get("work_items", [])
+        if isinstance(item, dict) and item.get("work_item_id")
+    } if isinstance(previous_matrix, dict) else {}
     entries = load_entries(run_dir)
     seed_doc = read_json(p["normalizedSeeds"], {})
     seeds = seed_doc.get("danger_seeds", []) if isinstance(seed_doc, dict) else []
@@ -603,7 +951,7 @@ def compile_attack_matrix(run_dir):
                 if work_item_id in work_item_ids:
                     continue
                 work_item_ids.add(work_item_id)
-                work_items.append({
+                item = {
                     "work_item_id": work_item_id,
                     "entry_id": entry.get("entry_id"),
                     "entry_key": entry.get("entry_key"),
@@ -614,7 +962,12 @@ def compile_attack_matrix(run_dir):
                     "status": "planned",
                     "task_id": f"path-{work_item_id}",
                     "result_ref": None,
-                })
+                }
+                previous = previous_items.get(work_item_id)
+                if previous:
+                    item["status"] = previous.get("status", "planned")
+                    item["result_ref"] = previous.get("result_ref")
+                work_items.append(item)
                 entry_work_counts[entry.get("entry_id")] += 1
                 seed_work_counts[seed.get("seed_id")] += 1
             if not enabled:
@@ -831,6 +1184,149 @@ def attack_matrix_coverage(run_dir):
     }
 
 
+def artifact_reference_integrity(run_dir):
+    p = P(run_dir)
+    errors = []
+    entries = {row.get("entry_id") for row in load_entries(run_dir) if isinstance(row, dict)}
+    seed_doc = read_json(p["normalizedSeeds"], {})
+    seeds = {
+        row.get("seed_id") for row in seed_doc.get("danger_seeds", []) if isinstance(row, dict)
+    } if isinstance(seed_doc, dict) else set()
+    evidence_rows = read_jsonl(p["queryEvidence"])
+    evidence_ids = [row.get("query_id") for row in evidence_rows if isinstance(row, dict) and row.get("query_id")]
+    known_query_ids = set(evidence_ids)
+    if len(evidence_ids) != len(known_query_ids):
+        errors.append("query_evidence:duplicate_query_id")
+    entry_doc = read_json(p["entryList"], {})
+    for row in entry_doc.get("entry_list", []) if isinstance(entry_doc, dict) else []:
+        missing = sorted(set(row.get("atlas_query_ids", [])) - known_query_ids)
+        if missing:
+            errors.append(f"entry:{row.get('entry_id')}:unknown_query_ids:{','.join(missing)}")
+    for row in seed_doc.get("danger_seeds", []) if isinstance(seed_doc, dict) else []:
+        missing = sorted(set(row.get("atlas_query_ids", [])) - known_query_ids)
+        if missing:
+            errors.append(f"seed:{row.get('seed_id')}:unknown_query_ids:{','.join(missing)}")
+
+    queue = read_jsonl(p["queue"])
+    tasks = {row.get("task_id"): row for row in queue if isinstance(row, dict) and row.get("task_id")}
+    matrix = read_json(p["attackMatrix"], {})
+    for item in matrix.get("work_items", []) if isinstance(matrix, dict) else []:
+        work_id = item.get("work_item_id") or "<missing>"
+        if item.get("entry_id") not in entries:
+            errors.append(f"work_item:{work_id}:unknown_entry_id")
+        if item.get("seed_id") not in seeds:
+            errors.append(f"work_item:{work_id}:unknown_seed_id")
+        task = tasks.get(item.get("task_id"))
+        if not task or task.get("work_item_id") != work_id:
+            errors.append(f"work_item:{work_id}:task_reference_invalid")
+        if item.get("status") in PATH_TERMINAL_STATES:
+            result_ref = item.get("result_ref")
+            if not result_ref or not os.path.isfile(os.path.join(run_dir, result_ref)):
+                errors.append(f"work_item:{work_id}:terminal_result_missing")
+
+    candidate_rows = read_jsonl(p["candidates"])
+    candidate_ids = {row.get("candidate_id") for row in candidate_rows if isinstance(row, dict)}
+    index = read_json(p["candidateIndex"], empty_candidate_index())
+    indexed_ids = set(index.get("candidates", {})) if isinstance(index, dict) else set()
+    if candidate_ids != indexed_ids:
+        errors.append("candidate_index:candidate_set_mismatch")
+    validation_files = (p["confirmed"], p["protected"], p["residual"], p["benign"], p["insufficient"])
+    for path in validation_files:
+        for row in read_jsonl(path):
+            candidate_id = row.get("candidate_id")
+            task_id = row.get("task_id")
+            if candidate_id not in candidate_ids:
+                errors.append(f"validation:{candidate_id}:unknown_candidate_id")
+            task = tasks.get(task_id)
+            if not task or task.get("candidate_id") != candidate_id or task.get("status") != "done":
+                errors.append(f"validation:{candidate_id}:task_reference_invalid")
+    return {"ok": not errors, "errors": unique_values(errors)}
+
+
+def findings_reference_errors(run_dir, findings):
+    p = P(run_dir)
+    candidate_ids = {
+        row.get("candidate_id") for row in read_jsonl(p["candidates"])
+        if isinstance(row, dict) and row.get("candidate_id")
+    }
+    queue = read_jsonl(p["queue"])
+    validation_tasks = {
+        row.get("task_id"): row for row in queue
+        if row.get("kind") == "path_validation" and row.get("status") == "done"
+    }
+    errors = []
+    for field in (
+        "confirmed_vulnerabilities", "protected_exposures", "residual_risks",
+        "benign_business_flows", "insufficient_evidence",
+    ):
+        rows = findings.get(field, [])
+        if not isinstance(rows, list):
+            errors.append(f"findings:{field}:must_be_list")
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                errors.append(f"findings:{field}:invalid_row")
+                continue
+            candidate_id = row.get("candidate_id")
+            task = validation_tasks.get(row.get("task_id"))
+            if candidate_id not in candidate_ids:
+                errors.append(f"findings:{field}:{candidate_id}:unknown_candidate_id")
+            if not task or task.get("candidate_id") != candidate_id:
+                errors.append(f"findings:{field}:{candidate_id}:task_reference_invalid")
+    return unique_values(errors)
+
+
+def report_artifact_paths(run_dir):
+    p = P(run_dir)
+    return [
+        p["projectModel"], p["discoveryPlan"], p["queryEvidence"], p["entryList"],
+        p["normalizedSeeds"], p["attackMatrix"], p["candidates"], p["rejected"],
+        p["noPath"], p["analysisGaps"], p["confirmed"], p["protected"], p["residual"],
+        p["benign"], p["insufficient"], p["findings"], p["report"],
+    ]
+
+
+def artifact_hashes(run_dir):
+    hashes = {}
+    base = Path(run_dir).resolve()
+    for path in report_artifact_paths(run_dir):
+        artifact = Path(path)
+        if not artifact.is_file():
+            continue
+        relative = artifact.resolve().relative_to(base).as_posix()
+        hashes[relative] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    return hashes
+
+
+def write_report_snapshot(run_dir, session, readiness, created_at):
+    snapshot = {
+        "schema_version": 1,
+        "run_id": session.get("run_id") or os.path.basename(run_dir),
+        "created_at": created_at,
+        "coverage_status": readiness.get("coverage_status"),
+        "algorithm": "sha256",
+        "artifacts": artifact_hashes(run_dir),
+    }
+    errors = document_schema_errors("report-snapshot.schema.json", snapshot, "reportSnapshot")
+    if errors:
+        return {"ok": False, "errors": errors}
+    write_json(P(run_dir)["reportSnapshot"], snapshot)
+    return {"ok": True, "snapshot": snapshot}
+
+
+def verify_report_snapshot(run_dir):
+    path = P(run_dir)["reportSnapshot"]
+    snapshot = read_json(path)
+    errors = document_schema_errors("report-snapshot.schema.json", snapshot, "reportSnapshot")
+    if errors:
+        return {"ok": False, "errors": errors}
+    current = artifact_hashes(run_dir)
+    expected = snapshot.get("artifacts", {})
+    changed = sorted(set(current) | set(expected))
+    changed = [name for name in changed if current.get(name) != expected.get(name)]
+    return {"ok": not changed, "changed_artifacts": changed, "snapshot": snapshot}
+
+
 def update_matrix_work_item(run_dir, work_item_id, status, result_ref=None):
     if not work_item_id:
         return False
@@ -1010,18 +1506,26 @@ def cmd_enqueue(args):
     return {"ok": True, **result}
 
 
+def cmd_enqueue_discovery(args):
+    plan = read_json(P(args.run_dir)["discoveryPlan"])
+    if not isinstance(plan, dict):
+        return {"ok": False, "error": "discovery_plan_missing_or_invalid"}
+    if plan.get("schema_version") != 1:
+        return {"ok": False, "error": "discovery_plan_unsupported_schema"}
+    tasks = [
+        {"kind": "attack_surface_discovery", "unit_id": unit.get("unit_id")}
+        for unit in plan.get("units", [])
+        if isinstance(unit, dict)
+        and unit.get("unit_id")
+        and unit.get("status", "planned") not in DISCOVERY_TERMINAL_STATES
+    ]
+    queued = enqueue_tasks(args.run_dir, tasks)
+    append_event(args.run_dir, "enqueue_discovery", units=len(tasks), added=queued["added"])
+    return {"ok": True, "units": len(tasks), **queued}
+
+
 def cmd_compile_matrix(args):
     p = P(args.run_dir)
-    existing = read_json(p["attackMatrix"])
-    if isinstance(existing, dict):
-        return {
-            "ok": True,
-            "mode": "already_compiled",
-            "matrix": existing.get("summary", {}),
-            "added": 0,
-            "total": len(read_jsonl(p["queue"])),
-            "task_ids": [],
-        }
     normalization = normalize_execution_entries(args.run_dir)
     if not normalization.get("ok"):
         return normalization
@@ -1043,10 +1547,18 @@ def cmd_compile_matrix(args):
             "domain": item["domain"],
         }
         for item in matrix.get("work_items", [])
+        if item.get("status") == "planned"
     ]
     queued = enqueue_tasks(args.run_dir, tasks)
+    queue_by_id = {task.get("task_id"): task for task in read_jsonl(p["queue"])}
     for item in matrix.get("work_items", []):
-        item["status"] = "queued"
+        queue_task = queue_by_id.get(item.get("task_id"))
+        if not queue_task:
+            continue
+        queue_status = queue_task.get("status")
+        item["status"] = queue_task.get("classification") if queue_status == "done" else queue_status
+        if queue_status == "done":
+            item["result_ref"] = queue_task.get("result_file")
     write_json(p["attackMatrix"], matrix)
     append_event(
         args.run_dir,
@@ -1069,25 +1581,54 @@ def cmd_enqueue_entries(args):
     return result
 
 
+def select_next_task(queue):
+    queued_discovery = [
+        q for q in queue
+        if q.get("status") == "queued" and q.get("kind") == "attack_surface_discovery"
+    ]
+    queued_analysis = [
+        q for q in queue
+        if q.get("status") == "queued" and q.get("kind") != "attack_surface_discovery"
+    ]
+    if not queued_discovery:
+        return queued_analysis[0] if queued_analysis else None
+    if not queued_analysis:
+        return queued_discovery[0]
+
+    running_discovery = sum(
+        1 for q in queue
+        if q.get("status") == "running" and q.get("kind") == "attack_surface_discovery"
+    )
+    running_analysis = sum(
+        1 for q in queue
+        if q.get("status") == "running" and q.get("kind") != "attack_surface_discovery"
+    )
+    if running_discovery < DISCOVERY_RESERVED_SLOTS:
+        return queued_discovery[0]
+    if running_analysis < MAX_RUNNING - DISCOVERY_RESERVED_SLOTS:
+        return queued_analysis[0]
+    return queued_discovery[0]
+
+
 def cmd_next(args):
     p = P(args.run_dir)
     queue = read_jsonl(p["queue"])
     running = sum(1 for q in queue if q.get("status") == "running")
     if running >= MAX_RUNNING:
         return {"ok": True, "task": None, "reason": "worker_pool_full", "running": running}
-    for q in queue:
-        if q.get("status") == "queued":
-            q["status"] = "running"
-            q["started_at"] = now()
-            q["completed_at"] = None
-            q["error"] = None
-            q["attempts"] = q.get("attempts", 0) + 1
-            write_jsonl(p["queue"], queue)
-            update_matrix_work_item(args.run_dir, q.get("work_item_id"), "running")
-            append_event(args.run_dir, "start", task_id=q["task_id"], kind=q["kind"], attempt=q["attempts"])
-            task = dict(q)
-            task["result_path"] = str(Path(args.run_dir, q["result_file"]).resolve())
-            return {"ok": True, "task": task, "free_slots": MAX_RUNNING - running - 1}
+    q = select_next_task(queue)
+    if q:
+        q["status"] = "running"
+        q["started_at"] = now()
+        q["completed_at"] = None
+        q["error"] = None
+        q["attempts"] = q.get("attempts", 0) + 1
+        write_jsonl(p["queue"], queue)
+        update_matrix_work_item(args.run_dir, q.get("work_item_id"), "running")
+        append_event(args.run_dir, "start", task_id=q["task_id"], kind=q["kind"], attempt=q["attempts"])
+        task = dict(q)
+        task["result_path"] = str(Path(args.run_dir, q["result_file"]).resolve())
+        return {"ok": True, "task": task, "free_slots": MAX_RUNNING - running - 1}
     return {"ok": True, "task": None, "reason": "no_queued", "running": running}
 
 
@@ -1239,6 +1780,85 @@ def cmd_complete(args):
             result_path=result_path,
         )
 
+    # Legacy entry-only path tasks remain readable for old runs; all current
+    # matrix-backed workers are governed by the versioned schemas.
+    schema_errors = [] if (
+        task.get("kind") == "path_finding" and not task.get("work_item_id")
+    ) else worker_result_schema_errors(task.get("kind"), result)
+    if schema_errors:
+        return fail_or_retry_task(
+            args.run_dir,
+            queue,
+            task,
+            ",".join(schema_errors),
+            result_path=result_path,
+        )
+
+    if task.get("kind") == "attack_surface_discovery":
+        plan = read_json(p["discoveryPlan"], {})
+        plan_unit = next(
+            (
+                unit for unit in plan.get("units", [])
+                if isinstance(unit, dict) and unit.get("unit_id") == task.get("unit_id")
+            ),
+            None,
+        ) if isinstance(plan, dict) else None
+        errors = []
+        if result.get("task_id") != task["task_id"]:
+            errors.append("task_id_mismatch")
+        if not plan_unit:
+            errors.append("discovery_unit_not_found")
+        else:
+            errors.extend(discovery_result_errors(plan_unit, result))
+        if errors:
+            return fail_or_retry_task(
+                args.run_dir,
+                queue,
+                task,
+                ",".join(unique_values(errors)),
+                result_path=result_path,
+            )
+
+        task["status"] = "done"
+        task["completed_at"] = now()
+        task["classification"] = result["status"]
+        task["error"] = None
+        write_jsonl(p["queue"], queue)
+        merged = rebuild_discovery_artifacts(args.run_dir)
+        if not merged.get("ok"):
+            task["status"] = "failed"
+            task["error"] = merged.get("error")
+            write_jsonl(p["queue"], queue)
+            update_session_stats(args.run_dir)
+            append_event(args.run_dir, "fail", task_id=task["task_id"], error=task["error"])
+            return {"ok": False, "task_id": task["task_id"], "error": task["error"], "merge": merged}
+        matrix = cmd_compile_matrix(argparse.Namespace(run_dir=args.run_dir))
+        if not matrix.get("ok"):
+            task["status"] = "failed"
+            task["error"] = matrix.get("error")
+            write_jsonl(p["queue"], queue)
+            update_session_stats(args.run_dir)
+            append_event(args.run_dir, "fail", task_id=task["task_id"], error=task["error"])
+            return {"ok": False, "task_id": task["task_id"], "error": task["error"], "matrix": matrix}
+        update_session_stats(args.run_dir)
+        append_event(
+            args.run_dir,
+            "complete",
+            task_id=task["task_id"],
+            kind=task["kind"],
+            classification=result["status"],
+            added_path_tasks=matrix.get("added", 0),
+        )
+        return {
+            "ok": True,
+            "task_id": task["task_id"],
+            "classification": result["status"],
+            "discovery_merge": merged,
+            "matrix": matrix.get("matrix", {}),
+            "added_path_tasks": matrix.get("added", 0),
+            "path_task_ids": matrix.get("task_ids", []),
+        }
+
     if task.get("work_item_id"):
         conclusions = result.get("conclusions")
         errors = []
@@ -1260,6 +1880,7 @@ def cmd_complete(args):
                 errors.append("invalid_path_classification")
             conclusion["seed_key"] = task.get("seed_key")
             conclusion["work_item_id"] = task.get("work_item_id")
+        errors.extend(path_reference_errors(args.run_dir, task, result))
         if errors:
             return fail_or_retry_task(
                 args.run_dir,
@@ -1277,6 +1898,8 @@ def cmd_complete(args):
         raw_class = str(result.get("classification") or "").strip().lower().replace("-", "_").replace(" ", "_")
         if raw_class not in VALIDATION_CLASSES:
             errors.append("invalid_validation_classification")
+        errors.extend(validation_reference_errors(args.run_dir, task, result))
+        errors.extend(validation_business_errors(result))
         if errors:
             return fail_or_retry_task(
                 args.run_dir,
@@ -1409,7 +2032,9 @@ def cmd_validate_ready(args):
     candidates = set(index.get("candidates", {}).keys())
     by_status = queue_stats(queue)
     unvalidated = sorted(c for c in candidates if c not in validation_done)
-    ready = model_status == "complete" and discovery_coverage["ready"] and not candidate_coverage["unaccounted"] and not candidate_coverage["unresolved"] and not candidate_coverage["conflicts"] and not candidate_coverage["unknown"] and matrix_coverage["ready"] and not unvalidated and by_status.get("queued", 0) == 0 and by_status.get("running", 0) == 0 and by_status.get("failed", 0) == 0
+    shared_schema_errors = shared_artifact_schema_errors(args.run_dir)
+    reference_integrity = artifact_reference_integrity(args.run_dir)
+    ready = model_status == "complete" and not shared_schema_errors and discovery_coverage["ready"] and not candidate_coverage["unaccounted"] and not candidate_coverage["unresolved"] and not candidate_coverage["conflicts"] and not candidate_coverage["unknown"] and matrix_coverage["ready"] and not unvalidated and reference_integrity["ok"] and by_status.get("queued", 0) == 0 and by_status.get("running", 0) == 0 and by_status.get("failed", 0) == 0
     partial = bool(
         discovery_coverage["atlas_gaps"]
         or candidate_coverage["atlas_gaps"]
@@ -1429,6 +2054,8 @@ def cmd_validate_ready(args):
         "attack_matrix_coverage": matrix_coverage,
         "missing_entries": matrix_coverage.get("missing_entries", []),
         "unvalidated_candidates": unvalidated,
+        "shared_schema_errors": shared_schema_errors,
+        "reference_integrity": reference_integrity,
         "queue": by_status,
     }
 
@@ -1437,11 +2064,15 @@ def cmd_finalize(args):
     p = P(args.run_dir)
     session = read_json(p["session"], {})
     if session.get("status") == "completed":
+        verification = verify_report_snapshot(args.run_dir)
+        if not verification.get("ok"):
+            return {"ok": False, "error": "finalized_artifacts_changed", "verification": verification}
         return {
             "ok": True,
             "status": "completed",
             "completed_at": session.get("completed_at"),
             "mode": "already_finalized",
+            "snapshot": p["reportSnapshot"],
         }
     readiness = cmd_validate_ready(args)
     if not readiness.get("ready"):
@@ -1449,12 +2080,22 @@ def cmd_finalize(args):
     findings = read_json(p["findings"])
     if not isinstance(findings, dict):
         return {"ok": False, "error": "findings_missing_or_invalid", "path": p["findings"]}
+    finding_schema_errors = document_schema_errors("findings.schema.json", findings, "findings")
+    if finding_schema_errors:
+        return {"ok": False, "error": "findings_schema_invalid", "details": finding_schema_errors}
+    finding_errors = findings_reference_errors(args.run_dir, findings)
+    if finding_errors:
+        return {"ok": False, "error": "findings_reference_invalid", "details": finding_errors}
     if not os.path.exists(p["report"]) or not Path(p["report"]).read_text(encoding="utf-8").strip():
         return {"ok": False, "error": "report_missing_or_empty", "path": p["report"]}
     completed_at = now()
+    snapshot = write_report_snapshot(args.run_dir, session, readiness, completed_at)
+    if not snapshot.get("ok"):
+        return {"ok": False, "error": "report_snapshot_invalid", "details": snapshot.get("errors", [])}
     session["status"] = "completed"
     session["completed_at"] = completed_at
     session["coverage_status"] = readiness.get("coverage_status")
+    session["report_snapshot"] = os.path.relpath(p["reportSnapshot"], args.run_dir)
     write_json(p["session"], session)
     append_event(args.run_dir, "finalize", coverage_status=readiness.get("coverage_status"))
     return {
@@ -1462,6 +2103,7 @@ def cmd_finalize(args):
         "status": "completed",
         "completed_at": completed_at,
         "coverage_status": readiness.get("coverage_status"),
+        "snapshot": p["reportSnapshot"],
     }
 
 
@@ -1560,6 +2202,9 @@ def main():
     pi.add_argument("--target-repo")
     pi.add_argument("--scope")
 
+    ped = sub.add_parser("enqueue-discovery")
+    ped.add_argument("run_dir")
+
     pei = sub.add_parser("enqueue-entries")
     pei.add_argument("run_dir")
 
@@ -1607,6 +2252,7 @@ def main():
     cmds = {
         "new-run": cmd_new_run,
         "init": cmd_init,
+        "enqueue-discovery": cmd_enqueue_discovery,
         "enqueue-entries": cmd_enqueue_entries,
         "compile-matrix": cmd_compile_matrix,
         "enqueue": cmd_enqueue,

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony-sec.local/schemas/validation-result-v1.json",
+  "title": "Per-candidate validation result",
+  "type": "object",
+  "required": ["task_id", "candidate_id", "entry_ids", "classification", "exploitability"],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "entry_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "trigger_variants": {"type": "array", "items": {"type": "object"}},
+    "classification": {"enum": ["confirmed_vulnerability", "protected_exposure", "residual_risk", "benign_business_flow", "insufficient_evidence"]},
+    "exploitability": {
+      "type": "object",
+      "required": ["externally_reachable", "attacker_controlled", "sink_reached", "guard_bypassed_or_absent", "boundary_violated", "concrete_impact"],
+      "properties": {
+        "externally_reachable": {"type": "boolean"},
+        "attacker_controlled": {"type": "boolean"},
+        "sink_reached": {"type": "boolean"},
+        "guard_bypassed_or_absent": {"type": "boolean"},
+        "boundary_violated": {"type": "boolean"},
+        "concrete_impact": {"type": "boolean"}
+      }
+    },
+    "business_intent": {"type": "object"},
+    "security_boundary": {
+      "type": "object",
+      "properties": {"violation": {"type": "boolean"}}
+    },
+    "guards": {"type": "array", "items": {"type": "object"}},
+    "counter_evidence": {"type": "array", "items": {"type": "object"}},
+    "impact": {"type": "string", "minLength": 1},
+    "severity": {"enum": ["critical", "high", "medium", "low"]},
+    "cwe": {"type": "string", "pattern": "^CWE-[0-9]+$"},
+    "poc": {"type": "string", "minLength": 1},
+    "atlas_evidence": {"type": "object"},
+    "demotion_reason": {"type": "string", "minLength": 1},
+    "evidence_gap": {"type": "string", "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"classification": {"const": "confirmed_vulnerability"}}, "required": ["classification"]},
+      "then": {
+        "required": ["security_boundary", "impact", "severity", "cwe", "poc", "atlas_evidence"],
+        "properties": {
+          "exploitability": {
+            "properties": {
+              "externally_reachable": {"const": true},
+              "attacker_controlled": {"const": true},
+              "sink_reached": {"const": true},
+              "guard_bypassed_or_absent": {"const": true},
+              "boundary_violated": {"const": true},
+              "concrete_impact": {"const": true}
+            }
+          },
+          "security_boundary": {
+            "required": ["violation"],
+            "properties": {"violation": {"const": true}}
+          }
+        }
+      },
+      "else": {"required": ["demotion_reason"]}
+    },
+    {
+      "if": {"properties": {"classification": {"enum": ["residual_risk", "insufficient_evidence"]}}, "required": ["classification"]},
+      "then": {"required": ["evidence_gap"]}
+    },
+    {
+      "if": {"properties": {"classification": {"const": "protected_exposure"}}, "required": ["classification"]},
+      "then": {"required": ["guards"], "properties": {"guards": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"classification": {"const": "benign_business_flow"}}, "required": ["classification"]},
+      "then": {"required": ["business_intent"]}
+    }
+  ]
+}

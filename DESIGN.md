@@ -68,7 +68,7 @@ harmonySecAnalyzer-v3.1/
 ├── opencode.json                 # 主配置：provider/model/agent 权限/mcp(atlas)/permission
 ├── AGENTS.md                     # 项目级指令（opencode 原生，/init 生成；兼容 CLAUDE.md）
 ├── README.md
-├── requirements.txt              # Python 运行时依赖（json5）
+├── requirements.txt              # Python 运行时依赖（json5、jsonschema）
 ├── .opencode/                    # opencode 项目级资源目录（复数子目录，官方约定）
 │   ├── agents/                   # 主 agent + 所有 subagent（一个 .md 一个 agent）
 │   │   ├── harmony-auditor.md        # primary｜编排者：切片/派发/去重/定级
@@ -84,6 +84,7 @@ harmonySecAnalyzer-v3.1/
 │   │   ├── audit-workflow/SKILL.md       # 端到端审计 SOP（编排者必读）
 │   │   ├── audit-orchestration/          # 状态机协议 + 私有 Python 脚本
 │   │   │   ├── SKILL.md
+│   │   │   ├── config/schemas/            # worker 结果 Draft 2020-12 Schema
 │   │   │   └── scripts/audit_orchestrator.py
 │   │   ├── project-modeling/              # 确定性项目建模协议 + JSON5 解析脚本
 │   │   │   ├── SKILL.md
@@ -173,9 +174,9 @@ harmonySecAnalyzer-v3.1/
 2. **初始化 run**：编排者按 audit-orchestration skill 执行 `new-run`。状态机以目标仓规范路径生成 project key，并原子创建 `reports/<project-key>/<run-id>/`、`session.json`、`queue.jsonl` 与 validation/paths 目录；重复和并发审计不会复用目录。
 3. **确定性项目建模**：`project_profiler.py` 只读取 app/module/build-profile/oh-package JSON5，枚举组件、权限、依赖、Manifest 入口候选，并生成带 module scope/component/lifecycle anchors 的 `atlas/discovery_plan.json`。不读取源码内容；NAPI 本轮不实现。
 4. **激活 atlas**：编排者调 `atlas_project action=open project_path=<repo-path>`，打开/创建 `<repo>/.atlas/atlas.db`。后续 subagent 共享该 atlas 会话。
-5. **Atlas 攻击面测绘**：mapper 按 discovery unit 执行 scoped `search → symbol/explore → calls/file_dependencies`，只从 Atlas 返回的可达上下文发现 Web/JSBridge 与危险能力；更新 plan 并写 query_evidence/entry/seed。每个 candidate 进入 entry/excluded/unresolved/coverage_gaps。
-6. **分析计划编译与候选准入**：状态机 `compile-matrix` 分别归一化 execution entry 与 danger seed,先按 discovery unit 关联做保守剪枝,再按数据驱动路由编译稀疏 `Entry × Sink × Pattern` 攻击矩阵。`intermediate` seed 作为路径过渡证据排除出矩阵;每个有效终态 work item 分配一个 path task,未实现模式才进入 routing gap。path-finder 必须证明外部可达、正向 sink 可达、攻击者影响、终态 sink 与控制连续性,否则不得晋级。
-7. **5 槽任务池 + 可靠提交 + 流式晋级**：状态机 `next` 最多允许 5 个 running task,向 worker 下发唯一绝对 `result_path` 和 attempt。worker 写后回读;`complete` 对 provider 中断导致的结果缺失、无效 JSON 和身份错误自动重新入队,默认 3 次后才终态失败,并在 `complete(path_finding)` 成功时立即生成验证任务。当前 OpenCode TaskTool 同步阻塞父 agent,执行层实际按最多 5 个一批推进;真正的单任务完成即补位列为低优先级技术债。
+5. **流式 Atlas 攻击面测绘**：状态机将 discovery plan 转成 per-unit mapper task。mapper 按单 unit 执行 scoped `search → symbol/explore → calls/file_dependencies`,只写私有结果;状态机校验 candidate 唯一去向并确定性重建 plan/query evidence/entry/seed。任一 unit 完成即可进入后续流程。
+6. **增量分析计划编译与候选准入**：每个 unit 完成后状态机归一化当前 execution entry 与 danger seed,按 discovery unit 关联和数据驱动路由增量重编译稀疏 `Entry × Sink × Pattern` 矩阵。已有 work item 状态被继承,只为新增单元入队。`intermediate` seed 排除出矩阵;path-finder 必须证明外部可达、正向 sink 可达、攻击者影响、终态 sink 与控制连续性,否则不得晋级。
+7. **5 槽任务池 + 可靠提交 + 流式晋级**：状态机 `next` 最多允许 5 个 running task;discovery/analysis 并存时保留 2+3 槽,单类任务可用满全部槽位。worker 使用唯一绝对 `result_path`,写后回读;缺失、无效 JSON 和身份错误自动重试,默认 3 次后终态失败。当前 OpenCode TaskTool 同步阻塞父 agent,执行层实际按最多 5 个一批推进;真正的单任务完成即补位仍为低优先级技术债。
 8. **根因级 promote**：`complete(path_finding)` 校验 work item 身份与 admission,按稳定的 `seed_key + pattern` fingerprint 合并多入口触发方式,写 `candidate_index.json`、为每个独立根因分配一个 `CAND-xxx`,并 enqueue 一个 `path_validation` task。
 9. **反证优先验证**：`path-validator` 对每条候选做六门槛验证。结果分层为 `confirmed_vulnerability`、`protected_exposure`、`residual_risk`、`benign_business_flow`、`insufficient_evidence`。
 10. **报告准入**：`validate-ready` 检查 project model、discovery units、entry candidate 去向、attack matrix work item、candidate 验证和队列闭合。planned/queued/running/failed/unresolved 阻断；terminal atlas_gap/routing gap/analysis_gap 可报告但 coverage_status=partial。
@@ -373,7 +374,11 @@ permission:
 ---
 ```
 
-### 4.4 finding 统一 schema（所有 subagent 必须输出）
+### 4.4 结果契约与 finding 模型
+
+运行时已经为 `attack_surface_discovery`、`path_finding`、`path_validation` 以及 project model、discovery plan、entry list、normalized seeds、attack matrix、findings、report snapshot 建立独立 Draft 2020-12 JSON Schema。状态机接收 worker 结果时依次执行：结构 Schema、分类业务不变量、跨产物引用完整性；错误保留 JSON 字段路径并进入统一重试。`validate-ready` 复核共享 Schema 与 entry/seed/work/candidate/query/result 引用，`finalize` 再复核 finding 到 candidate 和 validation task 的链路，并用 SHA-256 冻结全部报告事实输入。
+
+下面的通用 finding 字段是后续完整 findings Schema 的目标模型；当前报告层使用分层 validation 结果作为事实来源：
 
 ```jsonc
 {
@@ -562,6 +567,7 @@ export const harmonyAuditPlugin: Plugin = async ({ project, client }) => {
 | **P1.5 误报治理框架** | 反证优先验证 + 六门槛 + `confirmed_vulnerability/protected_exposure/residual_risk/benign_business_flow/insufficient_evidence` 分层落盘与报告 | 正常业务 deeplink、有效 WebView 白名单、不可控 sink 参数等场景能够降级,不进入主漏洞报告 |
 | **P1.6 确定性项目建模** | project-modeling skill + Python `json5` 解析库 + project_model 契约 + mapper/validator 职责拆分 + 报告准入检查 | app/module/build/dependency 可重复解析；每个入口候选有明确去向；解析失败不会静默形成虚假覆盖 |
 | **P1.7 稀疏攻击矩阵** | entry/sink 归一化 + 数据驱动 route config + `attack_matrix.json` + per-work-item path-finder + 矩阵覆盖准入 | 不做无意义全量任务；每个有效 Entry × Sink × Pattern 单元都有唯一终态，routing/analysis gap 显式披露 |
+| **P1.8 结果契约与引用完整性** | worker/共享/findings/snapshot JSON Schema + `jsonschema` 校验 + 分类业务约束 + 跨产物引用校验 + 报告 SHA-256 快照 | 缺字段、非法分类、六门槛矛盾、悬空引用会重试或阻断报告；完成后产物改写可检测 |
 | **P2 核心 + 污点** | crypto / network / icc / web 等领域专家 + Atlas scoped discovery/path/trace 增强 + `atlas-query-patterns` skill | 扩展常见漏洞覆盖并量化 analysis unit/candidate/Atlas gap |
 | **P3 深度** | napi-auditor（atlas `lifecycle`/`branch_diff`/`fp_dispatches` for C/C++）+ dependency-auditor + `cve_lookup` + `finding_dedupe` + plugin 轨迹 | NAPI native 内存安全 + 依赖 CVE + 可追溯证据链 |
 | **P4 进阶** | `tools/arkts-decoration-flow/`（装饰器/异步状态流补充）+ 可选知识检索 MCP + 报告导出（HTML/PDF） | 装饰器状态流覆盖 + 大仓稳定性 |
