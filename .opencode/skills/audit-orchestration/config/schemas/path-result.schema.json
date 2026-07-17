@@ -19,6 +19,27 @@
           "seed_id": {"type": "string", "minLength": 1},
           "pattern": {"type": "string", "minLength": 1},
           "classification": {"enum": ["candidate", "rejected", "no_path", "analysis_gap"]},
+          "root_cause": {
+            "type": "object",
+            "required": ["boundary", "mechanism", "file", "symbol", "branch", "controlled_property"],
+            "properties": {
+              "boundary": {
+                "enum": ["data_structure", "path", "origin", "component", "identity", "message", "data_owner", "business_authorization", "other"]
+              },
+              "mechanism": {
+                "enum": ["missing_guard", "bypassed_guard", "incorrect_guard", "unsafe_transform", "untrusted_dispatch", "other"]
+              },
+              "file": {"type": "string", "minLength": 1},
+              "symbol": {"type": "string", "minLength": 1},
+              "branch": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.-]+=[A-Za-z0-9_.:*-]+$"
+              },
+              "controlled_property": {"type": "string", "minLength": 1},
+              "location": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          },
           "admission": {
             "type": "object",
             "properties": {
@@ -40,7 +61,7 @@
           {
             "if": {"properties": {"classification": {"const": "candidate"}}, "required": ["classification"]},
             "then": {
-              "required": ["admission", "path", "atlas_evidence"],
+              "required": ["root_cause", "admission", "path", "atlas_evidence"],
               "properties": {
                 "path": {"minItems": 2},
                 "admission": {

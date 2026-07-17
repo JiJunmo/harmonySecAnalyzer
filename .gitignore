@@ -1,6 +1,8 @@
 # 审计产出
 reports/*
 !reports/.gitkeep
+outputs/
+.claude/
 
 # atlas 索引（若在被审计仓生成）
 .atlas/

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harmony-sec.local/schemas/golden-cases-v1.json",
+  "type": "object",
+  "required": ["schema_version", "case_kinds", "cases"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "case_kinds": {"type": "array", "items": {"enum": ["vulnerability", "effective_guard", "benign_business", "insufficient_evidence"]}, "uniqueItems": true},
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["case_id", "capability_id", "pattern_id", "kind", "project_model_facts", "code_facts", "path", "validation", "forbidden_reasoning"],
+        "properties": {
+          "case_id": {"type": "string", "minLength": 1},
+          "capability_id": {"type": "string", "pattern": "^CAP-[A-Z0-9-]+$"},
+          "pattern_id": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["vulnerability", "effective_guard", "benign_business", "insufficient_evidence"]},
+          "project_model_facts": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "code_facts": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+          "path": {
+            "type": "object",
+            "required": ["classification", "required_admission"],
+            "properties": {
+              "classification": {"const": "candidate"},
+              "required_admission": {"type": "array", "minItems": 5, "items": {"type": "string"}, "uniqueItems": true}
+            }
+          },
+          "validation": {
+            "type": "object",
+            "required": ["classification", "gates", "required_evidence"],
+            "properties": {
+              "classification": {"enum": ["confirmed_vulnerability", "protected_exposure", "benign_business_flow", "insufficient_evidence"]},
+              "gates": {
+                "type": "object",
+                "required": ["externally_reachable", "attacker_controlled", "sink_reached", "guard_bypassed_or_absent", "boundary_violated", "concrete_impact"],
+                "additionalProperties": {"type": "boolean"}
+              },
+              "required_evidence": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+            }
+          },
+          "forbidden_reasoning": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

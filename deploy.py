@@ -45,7 +45,9 @@ REQUIRED = [
     ".opencode/skills/audit-workflow/SKILL.md",
     ".opencode/skills/attack-patterns/SKILL.md",
     ".opencode/skills/audit-orchestration/SKILL.md",
-    ".opencode/skills/audit-orchestration/config/attack_matrix_routes.json",
+    ".opencode/skills/audit-orchestration/config/audit_capabilities.json",
+    ".opencode/skills/audit-orchestration/config/schemas/audit-capabilities.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/golden-cases.schema.json",
     ".opencode/skills/audit-orchestration/config/schemas/discovery-result.schema.json",
     ".opencode/skills/audit-orchestration/config/schemas/path-result.schema.json",
     ".opencode/skills/audit-orchestration/config/schemas/validation-result.schema.json",
@@ -57,11 +59,18 @@ REQUIRED = [
     ".opencode/skills/audit-orchestration/config/schemas/findings.schema.json",
     ".opencode/skills/audit-orchestration/config/schemas/report-snapshot.schema.json",
     ".opencode/skills/project-modeling/SKILL.md",
-    "knowledge/patterns/index.md",
-    "knowledge/patterns/deeplink-injection.md",
-    "knowledge/patterns/exported-ability-file.md",
-    "knowledge/patterns/web-jsbridge.md",
+    "tests/golden/audit_capability_cases.json",
 ]
+
+_capabilities_path = Path(__file__).resolve().parent / ".opencode/skills/audit-orchestration/config/audit_capabilities.json"
+if _capabilities_path.is_file():
+    _capabilities = json.loads(_capabilities_path.read_text(encoding="utf-8"))
+    REQUIRED.extend(
+        f".opencode/skills/attack-patterns/patterns/{pattern_id}.md"
+        for capability in _capabilities.get("capabilities", [])
+        if isinstance(capability.get("routing"), dict) and capability["routing"].get("enabled") is True
+        for pattern_id in capability.get("pattern_ids", [])
+    )
 
 # 全局安装/卸载的项目资源白名单(不动第三方)
 OWNED_AGENTS = ["harmony-auditor.md", "attack-surface-mapper.md", "path-finder.md",
@@ -227,8 +236,9 @@ def smoke_orchestrator(orch, python):
         }), encoding="utf-8")
         (atlas_dir / "danger_seed_list.json").write_text(json.dumps({
             "danger_seed_list": [{
-                "seed_id": "D001", "category": "jsbridge", "operation": "bridge call",
+                "seed_id": "D001", "category": "fs", "operation": "bridge file read",
                 "symbol": "WebBridge.openFile", "symbol_file": "WebBridge.ets", "location": "WebBridge.ets:42",
+                "sink_role": "terminal", "sink_parameter": "path", "tags": ["web", "jsbridge"],
             }],
         }), encoding="utf-8")
         cmds = [

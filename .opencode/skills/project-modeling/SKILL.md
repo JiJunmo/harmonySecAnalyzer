@@ -29,15 +29,16 @@ python3 .opencode/skills/project-modeling/scripts/project_profiler.py \
 - `application`：`app.json5` 中的应用标识、版本和厂商事实。
 - `modules`：每个 `module.json5` 的模块类型、设备类型、权限与组件声明。
 - `components`：Ability/ExtensionAbility 的统一扁平视图，含 exported、permission、skills、URI 和生命周期候选。
-- `entry_candidates`：由 Manifest 事实确定性推导的入口候选；它只是事实候选，不等于外部可达。
+- `entry_candidates`：由 Manifest 事实确定性推导的入口候选；包括外部组件触发候选和 service/app-service 的 `ipc_service_candidate`,它只是事实候选，不等于外部可达或 Stub 已发布。
 - `dependencies`：`oh-package.json5` 的 dependencies/devDependencies/dynamicDependencies。
 - `build_profiles`：`build-profile.json5` 中的 products/modules 摘要。
 - `diagnostics`：解析失败、结构异常或缺失配置。`status=partial` 时不得静默当作完整覆盖。
 
 ## discovery_plan.json
 
-- 每个具有 Manifest 入口候选的组件生成一个 `AU-xxx` analysis unit。
+- 每个具有 Manifest 入口候选或 IPC service 候选的组件生成一个 `AU-xxx` analysis unit。
 - unit 包含 Atlas `search` 必需的 project-relative `scope`、组件/生命周期 anchors、source file hint 和 project candidate IDs。
+- IPC unit 额外声明 `analysis_kinds=ipc_server`、`ipc_candidate_ids`,并提供 `RemoteObject`、`onRemoteMessageRequest`、`addSystemAbility` 锚点；Stub 发布与 transaction code 仍由 mapper 通过 Atlas 确认。
 - 初始状态为 `planned`;mapper 更新为 `completed/excluded/unresolved/atlas_gap`。
 - `source_content_scanned=false` 是固定契约,确保 profiler 不承担源码扫描。
 

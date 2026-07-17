@@ -65,7 +65,7 @@ permission:
   "coverage_gaps": [],
   "danger_seed_list": [
     {
-      "category": "sql|fs|command|rce|network|ability_data|distributed|provider|jsbridge|crypto|privacy|archive|...",
+      "category": "sql|fs|command|rce|network|ability_data|distributed|provider|jsbridge|web_navigation|crypto|privacy|archive|...",
       "operation": "Bridge 方法调用文件能力",
       "call": "bridge.openFile",
       "location": "WebBridge.ets:42",
@@ -74,6 +74,8 @@ permission:
       "sink_role": "terminal|intermediate|unknown",
       "sink_parameter": "path",
       "tags": ["web", "jsbridge"],
+      "controlled_properties": ["parameters.path"],
+      "target_component_hint": null,
       "atlas_query_ids": ["q-..."],
       "note": "是否可控待 path-finder 追踪"
     }
@@ -110,15 +112,40 @@ permission:
    - 在 Atlas 返回的可达定义源码和 callsite evidence 中识别 `Web`、`loadUrl`、`javaScriptProxy`、`registerJavaScriptProxy` 及项目自定义 Web/Bridge wrapper。
    - Web 不是独立外部入口;它继承 Manifest 入口 reachability,作为路径中的 capability/boundary。
    - 定位 Bridge 对象和项目内方法后,用 `atlas_search → symbol/explore → calls` 确认方法与敏感能力。
-   - 发现 JSBridge 或不可信 Web 加载能力时生成 `jsbridge`/`network` 等 seed;仅有 Web UI 且没有可达敏感能力时不直接生成风险结论。
+   - `Web.src`/`loadUrl` 的真实 URL 参数是导航终态 seed:`category=web_navigation`,`sink_role=terminal`,`sink_parameter=url`,`tags=["web","navigation"]`;不得把页面导航泛化成普通 `network` seed。
+   - `javaScriptProxy`/`registerJavaScriptProxy` 及 bridge 对象/方法只记录 Web-to-native 边界:`category=jsbridge`,`sink_role=intermediate`,并保留 object/method/registration evidence;注册本身不是漏洞 sink。
+   - bridge 方法下游的真实敏感操作才生成终态 seed:使用实际 category(fs/command/rce/privacy/ability_data/provider/network 等),标记 `sink_role=terminal`,`tags=["web","jsbridge"]`,并在 note/evidence 中绑定 bridge object + method。
+   - 仅有 Web UI、仅有 bridge 注册或 bridge 下游没有敏感影响时不生成 JSBridge 终态风险种子。
 
 5. **危险能力种子**
-   - 从可达上下文记录 fs/sql/command/network/ability_data/provider/jsbridge/crypto/privacy/archive 等项目内符号。
+   - 从可达上下文记录 fs/sql/command/network/ability_data/provider/jsbridge/web_navigation/crypto/privacy/archive 等项目内符号。
    - 每个 seed 必须有 Atlas 确认的项目符号和查询证据。外部 API 文本无法绑定项目符号时写 coverage gap,不臆造 seed。
    - 产生安全影响的操作标 `terminal`;仅状态存储/参数转存标 `intermediate`;无法判断标 `unknown`。尽可能填写 `sink_parameter`。
    - Web/JSBridge、公共事件等边界信号写入 `tags`;不得为普通 network/fs 调用无依据添加 `web` 标签。
 
-6. **结束 unit**
+6. **Want 转发发现**
+   - 在外部入口可达上下文中识别 `startAbility`、`startAbilityForResult`、`startAbilityByCall` 及项目 wrapper。只有实际发起组件调度的调用是终态 seed;Want 构造、字段赋值、路由对象保存均为 intermediate。
+   - 外部 `want`/`uri`/`parameters` 控制或选择转发 Want 的 `bundleName/moduleName/abilityName/uri/action/entities/parameters` 时,生成 `category=ability_data`,`sink_role=terminal`,`sink_parameter=want`,`tags=["icc","want","want_redirect"]`。
+   - seed 必须记录 `controlled_properties`;能够静态解析时记录 `target_component_hint`、目标 bundle/module/ability 和启动 API。目标固定但安全敏感 parameters 被原样转发时仍可形成 seed;目标与参数均由固定映射重建时不得伪造攻击者控制。
+   - `startAbility` 的存在、跳转到普通公开页面、固定业务路由或仅转发展示 ID 都不构成漏洞结论。目标是否私有、入口/目标 permission、caller guard、目标 allowlist 和具体 impact 交给 path-validator 结合 project model 反证。
+
+7. **DataShare 发现**
+   - 对 `DataShareExtensionAbility` 的 `query/insert/update/delete/openFile` lifecycle anchor 做有界扩展。lifecycle 方法是外部 entry/boundary,不是自动的危险 sink。
+   - 查询链只在 caller 提供的 URI、predicates、selection/order/limit 或参数到达真实数据库查询时生成终态 seed。使用实际 `category=sql|provider`,`sink_parameter=query`,`tags=["provider","datashare","datashare_query"]`,并记录 `controlled_properties` 和对应 query lifecycle。
+   - `DataSharePredicates`/参数绑定等结构化查询仍可记录为 seed,由 validator 判断 guard 是否有效;但仅有 `query()` 回调或返回公开数据、未到达项目内数据库操作时不得臆造 SQL sink。
+   - 文件链只在 caller URI/path/mode 到达实际 `fs.open/read/write`、文件描述符返回或等价 wrapper 时生成终态 seed。使用实际 `category=fs|provider`,`sink_parameter=file`,`tags=["provider","datashare","datashare_file"]`,并记录 URI/path/mode 的受控字段。
+   - URI 解析、path 拼接、predicate 构造和参数暂存均标 intermediate。Manifest read/write permission、URI matcher、canonical containment、mode allowlist 和 owner check 只记录为 guard evidence,不在 mapper 阶段判漏洞。
+
+8. **IPC/RPC 服务端发现**
+   - 仅当 unit 的 `analysis_kinds` 含 `ipc_server` 时执行。对 `ipc_candidate_ids` 使用 `onRemoteMessageRequest`/`RemoteObject`/`addSystemAbility` anchors,定位 Stub 定义及其发布关系。
+   - 只有 Stub 经 `ServiceExtensionAbility.onConnect` 返回、AppService/SAMgr 注册或等价远端发布点可达时,才生成 `type=ipc_stub_transaction` entry。仅有 Proxy、未发布 RemoteObject、死亡监听或本地辅助类时,将 IPC candidate 放入 `excluded_candidates`,不得声明服务端覆盖。
+   - 每个 transaction code/分支独立生成 entry。必须记录 `ipc_stub_class`,`ipc_descriptor`,`transaction_code`,`publication_point`,`publication_kind`,`remote_reachable`;entry identity 由 Stub class + descriptor + code + publication point 构成。动态 code 只能部分分解时使用可复核的 code expression/location 作为稳定 `transaction_code`,并写入 `gaps`;只有完全无法形成稳定 transaction 身份时才将整个 IPC candidate 置为 `atlas_gap`,不得让同一 candidate 同时进入 entry 与 coverage gap。
+   - IPC entry 的 `external_input` 至少包含 `code`、`MessageSequence data` 与 caller identity;`reachable_condition` 描述发布方式和 interface descriptor。interface token/descriptor 只表示协议隔离,不是 caller authorization。
+   - transaction 分支下游的真实敏感操作生成终态 seed,使用实际 category,并添加 `tags=["ipc","ipc_transaction"]`;记录 transaction code、Stub 和 publication evidence。只有 `code` 分支、读 parcel 或参数暂存均为 intermediate。
+   - `MessageSequence.read*` 得到的字段影响 sink 安全敏感参数时,同一终态 seed 额外添加 `ipc_message` tag,记录 `controlled_properties`、read symbol/type 和 sink parameter。类型/长度/范围/枚举校验即使存在也保留为 guard evidence,由 validator 判断有效性。
+   - `IPCSkeleton.getCallingTokenId/Uid/Pid/DeviceID`、`isLocalCalling`、permission/业务授权检查作为 caller guard evidence。缺少这些 API 不自动确认漏洞;必须结合 transaction 的预期公开性与具体敏感影响。
+
+9. **结束 unit**
    - 写入 resolved_symbols、atlas_query_ids、gaps 和唯一终态 `completed|excluded|atlas_gap`。
    - 将全部 project candidate IDs 唯一分配到 entry/excluded/coverage_gaps。
    - 写入并回读 `result_path`,确认 JSON 可解析且 task_id/unit_id/status/候选去向正确后,才返回 `{task_id, unit_id, status, entries, seeds, result_written:true}`。禁止先返回概要再落盘。

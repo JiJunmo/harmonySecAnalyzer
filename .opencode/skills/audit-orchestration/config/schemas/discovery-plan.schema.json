@@ -14,6 +14,8 @@
           "unit_id": {"type": "string", "minLength": 1},
           "status": {"enum": ["planned", "running", "completed", "excluded", "unresolved", "atlas_gap"]},
           "entry_candidate_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "analysis_kinds": {"type": "array", "items": {"enum": ["manifest_entry", "ipc_server"]}, "uniqueItems": true},
+          "ipc_candidate_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
           "entry_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
           "atlas_query_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
         }

@@ -28,6 +28,29 @@ class ResultContractTests(unittest.TestCase):
 
         self.assertTrue(any("schema:$.conclusions[0]" in error and "seed_id" in error for error in errors))
 
+    def test_candidate_path_requires_structured_root_cause(self):
+        errors = MODULE.worker_result_schema_errors("path_finding", {
+            "task_id": "path-AW-1",
+            "work_item_id": "AW-1",
+            "entry_id": "E-1",
+            "conclusions": [{
+                "seed_id": "D-1",
+                "pattern": "exported-ability-file",
+                "classification": "candidate",
+                "admission": {
+                    "external_entry_reachable": True,
+                    "seed_reachable": True,
+                    "attacker_influence": True,
+                    "end_to_end_sink": True,
+                    "attacker_control_preserved": True,
+                },
+                "path": [{"stage": "entrypoint"}, {"stage": "sink"}],
+                "atlas_evidence": {"query_id": "q-1"},
+            }],
+        })
+
+        self.assertTrue(any("root_cause" in error for error in errors))
+
     def test_confirmed_validation_requires_all_six_gates_and_exploit_artifacts(self):
         errors = MODULE.worker_result_schema_errors("path_validation", {
             "task_id": "val-CAND-001",
@@ -82,6 +105,32 @@ class ResultContractTests(unittest.TestCase):
         errors = MODULE.discovery_result_errors(unit, result)
 
         self.assertIn("unresolved_atlas_query_ids:q-missing", errors)
+
+    def test_ipc_discovery_entry_requires_stable_transaction_identity(self):
+        result = {
+            "task_id": "discover-AU-IPC", "unit_id": "AU-IPC", "status": "completed",
+            "resolved_symbols": ["AccountStub.onRemoteMessageRequest"], "atlas_query_ids": ["q-ipc"],
+            "gaps": [], "excluded_candidates": [], "unresolved_candidates": [], "coverage_gaps": [],
+            "entry_list": [{
+                "component_id": "CMP-IPC", "project_candidate_ids": ["PE-IPC"],
+                "type": "ipc_stub_transaction", "ability": "AccountStub",
+                "entry_function": "AccountStub.onRemoteMessageRequest",
+                "entry_function_file": "service/AccountStub.ets",
+                "ipc_stub_class": "AccountStub", "ipc_descriptor": "ohos.demo.IAccount",
+                "transaction_code": 7, "publication_point": "AccountService.onConnect",
+                "publication_kind": "service_on_connect", "remote_reachable": True,
+            }],
+            "danger_seed_list": [{
+                "category": "privacy", "sink_role": "terminal", "symbol": "AccountStore.read",
+                "atlas_query_ids": ["q-ipc"],
+            }],
+            "query_evidence": [{"query_id": "q-ipc", "outcome": "matched"}],
+        }
+
+        self.assertEqual(MODULE.worker_result_schema_errors("attack_surface_discovery", result), [])
+        del result["entry_list"][0]["transaction_code"]
+        errors = MODULE.worker_result_schema_errors("attack_surface_discovery", result)
+        self.assertTrue(any("transaction_code" in error for error in errors))
 
     def test_ready_is_blocked_when_aggregate_reference_is_corrupted(self):
         with tempfile.TemporaryDirectory() as td:

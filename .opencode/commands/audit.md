@@ -5,11 +5,8 @@ subtask: false
 ---
 对 $2 执行「$1」范围的安全审计。
 
-scope 取值：
-- full：全量（默认）
-- quick：仅 manifest + 硬编码 + 网络明文（快速过一遍）
-- manifest：仅 module.json5/app.json5 配置审计
-- injection / crypto / network / icc / web / napi / dep：单领域深审（P2/P3 起支持）
+scope 用作本次运行的审计焦点和目录标签；省略时为 `full`。实际启用的漏洞能力与路由以
+`audit-orchestration` Skill 的能力注册表为准，不得因 scope 名称假定尚未注册的能力。
 
 若 $2 未提供，询问用户目标仓绝对路径。若 $1 未提供，默认 full。
 

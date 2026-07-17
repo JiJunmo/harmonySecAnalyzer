@@ -31,7 +31,7 @@ task_id / run_dir / result_path / attempt / candidate_id。`result_path` 是状�
 
 ## 流程
 
-1. 读 `<run_dir>/paths/candidates.jsonl` 找该 candidate_id 的根因及全部 `path_variants`(path / taint / atlas_evidence / entry_ids),再从 entry_list 读取所有 `trigger_variants`。同一危险 seed 根因只验证一次,不同执行入口和 Manifest 启动方式作为路径/触发变体共同评估。
+1. 读 `<run_dir>/paths/candidates.jsonl` 找该 candidate_id 的结构化 `root_cause`、全部 `seed_ids/seed_keys` 及 `path_variants`(path / taint / atlas_evidence / entry_ids),再从 entry_list 读取所有 `trigger_variants`。同一根因命中的多个危险 seed 只验证一次,不同 sink 证据、执行入口和 Manifest 启动方式作为路径/触发变体共同评估。
 2. 加载 `attack-patterns` skill 取正常业务形态、漏洞成立条件、有效 guard 条件、降级条件与反证规则。
 3. **反证优先 triage**:先尝试证明它不是漏洞。必须检查:
    - 是否是明确设计的公开业务入口,且输入只选择公开业务对象或正常路由。

@@ -46,7 +46,7 @@ description: 鸿蒙 ArkTS 白盒审计端到端 SOP(攻击路径驱动+状态机
 - `kind=attack_surface_discovery` → 派发 per-unit attack-surface-mapper。
 - `next` 返回完整 task envelope 与绝对 `result_path`;worker 必须写入并回读该路径后才返回概要。
 - `kind=path_finding` → 派发 path-finder(per-work-item)→ path-finder 落盘唯一结论 → `complete`。
-- `complete(path_finding)` 执行正式 JSON Schema,校验 work/entry/seed/pattern 引用和候选 admission,按稳定的 seed_key/pattern 做根因级增量 dedup,写 `candidate_index.json`,并为每个独立根因立即 enqueue 一个 path_validation。
+- `complete(path_finding)` 执行正式 JSON Schema,校验 work/entry/seed/pattern 引用和候选 admission,按结构化 root_cause 六元组 + pattern 做根因级增量 dedup；多个 seed 作为同一候选的证据别名保留,写 `candidate_index.json`,并为每个独立根因立即 enqueue 一个 path_validation。
 - `kind=path_validation` → 派发 path-validator(per-candidate)→ `complete` 用正式 Schema 强制六门槛/分类字段并校验 candidate/entry/task 引用,再归类到 validation/confirmed|protected_exposure|residual|benign_business_flow|insufficient_evidence。
 - provider 流中断、结果缺失、无效 JSON 或任务身份不匹配时,`complete` 在最多 3 次内自动重新入队并保留 `retry_history`;成功后清除活动 error,达到上限才 failed。
 - 当前 OpenCode TaskTool 同步等待本批 subagent,执行层以最多 5 个为一批;每批返回后逐个 complete,新生成的 validation task 可进入下一批。异步单任务补位列为低优先级遗留项。
@@ -108,16 +108,3 @@ reports/<project-name>-<target-path-hash>/
 ## 模式卡(attack-patterns skill)
 
 path-finder / path-validator 加载,链形状表 + 各模式 source/sink/guard/reject 规则,开放可扩展。
-
-## 当前实现状态
-
-- ✅ project-modeling(确定性 JSON5/Manifest 解析 + project_model/discovery_plan,不扫描源码)
-- ✅ attack-surface-mapper(per-unit Atlas scoped search + 私有结果 + 状态机确定性合并)
-- ⏳ NAPI/native 边界发现(后续扩展,本轮不实现)
-- ✅ attack-patterns skill(3 模式)
-- ✅ audit-orchestration skill(状态机调用协议)
-- ✅ path-finder(per-attack-matrix-work-item,落盘唯一 result)
-- ✅ path-validator(per-candidate,六门槛+分层落盘 result)
-- ✅ report-composer(读 jsonl)
-- ✅ audit_orchestrator.py 状态机脚本(init/enqueue-discovery/incremental compile-matrix/next/complete/retry/validate-coverage/validate-ready/finalize/status)
-- ✅ streaming promotion(candidate_index + task_events)

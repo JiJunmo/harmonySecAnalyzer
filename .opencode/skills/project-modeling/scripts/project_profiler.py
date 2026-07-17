@@ -164,6 +164,12 @@ def make_entry_candidates(components):
                 })
         if component.get("uri"):
             add("extension_uri", component, base, {"uri": component["uri"], "extension_type": component.get("extension_type")})
+        extension_type = str(component.get("extension_type") or "").lower()
+        if "service" in extension_type:
+            add("ipc_service_candidate", component, base, {
+                "extension_type": component.get("extension_type"),
+                "requires_stub_publication_evidence": True,
+            })
 
     return candidates
 
@@ -180,6 +186,12 @@ def build_discovery_plan(model):
         candidate_ids = sorted(candidates_by_component.get(component["component_id"], []))
         if not candidate_ids:
             continue
+        ipc_candidate_ids = sorted(
+            candidate["candidate_id"]
+            for candidate in model.get("entry_candidates", [])
+            if candidate.get("component_id") == component["component_id"]
+            and candidate.get("type") == "ipc_service_candidate"
+        )
         anchors = []
         if component.get("name"):
             anchors.append({"kind": "component", "query": component["name"]})
@@ -187,10 +199,19 @@ def build_discovery_plan(model):
             {"kind": "lifecycle", "query": name}
             for name in component.get("lifecycle_candidates", [])
         )
+        if ipc_candidate_ids:
+            anchors.extend([
+                {"kind": "ipc", "query": "onRemoteMessageRequest"},
+                {"kind": "ipc", "query": "RemoteObject"},
+                {"kind": "ipc_publication", "query": "addSystemAbility"},
+            ])
+        manifest_candidate_ids = sorted(set(candidate_ids) - set(ipc_candidate_ids))
         units.append({
             "unit_id": f"AU-{len(units) + 1:03d}",
             "component_id": component["component_id"],
             "entry_candidate_ids": candidate_ids,
+            "analysis_kinds": (["manifest_entry"] if manifest_candidate_ids else []) + (["ipc_server"] if ipc_candidate_ids else []),
+            "ipc_candidate_ids": ipc_candidate_ids,
             "scope": component["source_scope"],
             "source_file_hint": component.get("source_file_hint"),
             "anchors": anchors,

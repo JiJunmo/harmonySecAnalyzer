@@ -103,6 +103,37 @@ class ProjectProfilerTests(unittest.TestCase):
             self.assertEqual(model["summary"]["parse_errors"], 1)
             self.assertEqual(model["parsed_files"][0]["status"], "error")
 
+    def test_service_extension_gets_ipc_discovery_candidate_even_when_not_exported(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "service" / "src" / "main").mkdir(parents=True)
+            (root / "service" / "src" / "main" / "module.json5").write_text(
+                """
+                {
+                  module: {
+                    name: 'service',
+                    extensionAbilities: [{
+                      name: 'AccountService',
+                      srcEntry: './ets/AccountService.ets',
+                      type: 'service',
+                      exported: false,
+                    }],
+                  },
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            model = MODULE.profile_project(root)
+            plan = MODULE.build_discovery_plan(model)
+
+            candidates = model["entry_candidates"]
+            self.assertEqual([row["type"] for row in candidates], ["ipc_service_candidate"])
+            self.assertEqual(len(plan["units"]), 1)
+            self.assertEqual(plan["units"][0]["analysis_kinds"], ["ipc_server"])
+            self.assertEqual(plan["units"][0]["ipc_candidate_ids"], [candidates[0]["candidate_id"]])
+            self.assertIn("onRemoteMessageRequest", {row["query"] for row in plan["units"][0]["anchors"]})
+
 
 if __name__ == "__main__":
     unittest.main()

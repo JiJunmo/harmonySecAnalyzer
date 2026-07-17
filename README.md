@@ -1,107 +1,98 @@
 # harmonySecAnalyzer-v3.1
 
-适配 opencode 的鸿蒙 ArkTS 代码仓白盒安全审计多智能体系统。
+面向 HarmonyOS ArkTS 工程的白盒安全审计多智能体系统，运行于
+[OpenCode](https://opencode.ai)，使用 [Atlas](https://github.com/LordCasser/atlas)
+完成代码检索、调用关系和数据流分析。
 
-## 是什么
+系统采用“确定性建模 + 攻击路径发现 + 反证优先验证”的方式工作。外部可达、敏感
+API 或调用链本身只代表攻击面；只有攻击者可控输入越过有效安全边界并产生具体影响，
+才会被确认为漏洞。
 
-用 opencode 原生 `agent / subagent / skill / command` 机制 + [atlas MCP](https://github.com/LordCasser/atlas)（适配 ArkTS 的代码索引/调用图/数据流引擎）编排多智能体，对鸿蒙 ArkTS 代码仓做白盒安全审计与漏洞挖掘，输出分层结构化报告。
+## 快速开始
 
-当前实现采用**确定性项目建模 + 攻击路径驱动 + 反证优先验证**：先由脚本解析 JSON5 工程配置、组件和入口候选，再由 agent + atlas 枚举攻击面、连接入口到 sink，最后按六门槛验证是否真的构成漏洞。外部可达、敏感 API、调用链存在只会被视为 exposure/capability/path，不能直接升级为漏洞。
-
-调度状态机采用 **per-unit 流式发现 + 稀疏 Entry × Sink × Pattern 攻击矩阵 + 5 槽任务池 + streaming promotion**：每个 discovery unit 独立交给 mapper,worker 只写私有结果;状态机确定性重建共享 entry/seed/evidence,并在单元完成后立即增量编译矩阵、派发路径任务。Manifest 别名和重复 sink 分别归一化,中间转存节点不独立立项。路径结果通过 admission contract 后按 normalized seed/pattern 做根因级去重,每个根因只分配一个 `CAND-xxx` 和 validator。worker 使用绝对结果路径提交并回读产物;provider 中断、缺失/无效结果会自动重试最多 3 次。发现与分析并存时使用 2+3 保留槽;受 OpenCode 同步 TaskTool 限制,执行层仍表现为最多 5 个一批。全部覆盖闭合后才能报告并 finalize。
-
-项目建模阶段生成的每个入口候选都必须被 mapper 明确且唯一地接收、排除、标记未决或记录为 Atlas 覆盖缺口；遗漏、重复归类、未知 ID 或仍未决都会阻止 `validate-ready`。已终态化的 Atlas 缺口允许生成 `partial` 报告，但必须在报告中显式披露。
-
-完整设计见 [DESIGN.md](./DESIGN.md)。
-
-## 架构（当前流水线）
-
-`项目解析 → 逻辑审计与漏洞发现 → 漏洞验证 → 报告生成`
-
-| 阶段 | Agent | 状态 |
-|---|---|---|
-| 项目建模 | `project-modeling/scripts/project_profiler.py` | ✅ P1.6 |
-| 编排 | `harmony-auditor`（primary） | ✅ P1 |
-| 攻击面测绘 | `attack-surface-mapper` | ✅ P1 |
-| 路径发现 | `path-finder` | ✅ P1 |
-| 漏洞验证 | `path-validator` | ✅ P1 |
-| 报告生成 | `report-composer` | ✅ P1 |
-| 领域专家扩展 | crypto / network / icc / web / dependency | ⏳ P2/P3 |
-| NAPI/native 审计 | 独立扩展 | ⏳ 后续 |
-
-## 漏洞确认标准
-
-`path-validator` 只有在六门槛全部满足时才输出 `confirmed_vulnerability`：
-
-1. 外部可达
-2. 攻击者可控关键参数
-3. 可控值到达敏感 sink
-4. guard 缺失或可绕过
-5. 违反身份、权限、来源、域名、路径、组件、数据所有权或业务授权边界
-6. 有具体安全影响
-
-降级分类：
-
-- `protected_exposure`：有外部暴露和敏感能力，但有效 guard 将行为约束在安全范围。
-- `benign_business_flow`：属于预期公开业务能力，未越过安全边界。
-- `residual_risk`：路径可疑或防护较弱，但缺少确认漏洞的关键证据。
-- `insufficient_evidence`：证据不足，不臆造。
-
-## 依赖
-
-- [opencode](https://opencode.ai)
-- [atlas](https://github.com/LordCasser/atlas)：已配置于 `/Users/jixiaokui/.cargo/bin/atlas`（见 `opencode.json` 的 `mcp.atlas`）
-- Python `json5` + `jsonschema`：`python3 -m pip install -r requirements.txt`
-
-## 使用
+安装 Python 依赖：
 
 ```bash
-opencode
-# 在 opencode 内
+python3 -m pip install -r requirements.txt
+```
+
+启动 OpenCode 后执行：
+
+```text
 /audit manifest /path/to/harmony/repo
 ```
 
-报告输出到 `reports/<project-name>-<target-path-hash>/<run-id>/`（`findings.json` + `report.md` + `report_snapshot.json`）。每次审计由状态机原子分配独立 run，不覆盖或复用同一项目的历史结果。最终快照记录所有报告事实输入的 SHA-256，完成后产物被改写会被状态机识别。主报告只包含 `confirmed_vulnerability`，其余分层进入 protected exposure、residual risk、benign business flow、insufficient evidence 和攻击面附录。
+审计产物写入独立目录：
 
-## 配置模型
+```text
+reports/<project>-<path-hash>/<timestamp>-<scope>-<run-id>/
+```
 
-所有 agent 均未写死 `model` 字段，统一跟随 opencode 默认模型。运行前用 `opencode auth login` 配置 provider（anthropic / openai / glm 等），启动后在 TUI 用 `/model` 选择模型，所有 agent 即用该模型。
+同一项目重复审计不会复用或覆盖历史运行。
+
+## 工作流
+
+```text
+项目建模 -> 攻击面测绘 -> 攻击路径发现 -> 漏洞验证 -> 报告生成
+```
+
+| 环节 | 实现组件 | 职责 |
+|---|---|---|
+| 总控 | `harmony-auditor` Agent | 启动运行、调度任务、检查准入 |
+| 项目建模 | `project-modeling` Skill | 解析 JSON5/Manifest，生成项目模型和发现计划 |
+| 攻击面测绘 | `attack-surface-mapper` Agent | 按分析单元使用 Atlas 识别入口和危险能力 |
+| 路径编译与调度 | `audit-orchestration` Skill | 归一化入口/危险点，编译稀疏攻击矩阵，管理状态 |
+| 路径发现 | `path-finder` Agent | 验证入口到危险操作的可达路径与数据控制关系 |
+| 漏洞验证 | `path-validator` Agent | 按六门槛检查防护、边界和影响 |
+| 报告 | `report-composer` Agent | 聚合已经验证的结构化结论 |
+
+完整边界和数据契约见 [DESIGN.md](./DESIGN.md)。
+
+## 结论分层
+
+`confirmed_vulnerability` 必须同时满足：
+
+1. 外部可达；
+2. 攻击者可控关键参数；
+3. 可控值到达敏感操作；
+4. 防护缺失或可绕过；
+5. 越过身份、权限、来源、域名、路径、组件、数据所有权或业务授权边界；
+6. 造成具体安全影响。
+
+未满足全部门槛的路径按证据降级为：
+
+- `protected_exposure`：存在敏感能力，但有效防护限制了滥用。
+- `benign_business_flow`：属于预期公开业务，未越过安全边界。
+- `residual_risk`：存在可疑路径或薄弱防护，但证据不足以确认漏洞。
+- `insufficient_evidence`：关键事实缺失。
 
 ## 目录
 
-- `.opencode/`：opencode 资源（agents/commands/skills/tools/plugins）—— opencode 强制约定目录
-- `rules/`：静态规则预留目录（当前主流程不使用 Semgrep）
-- `knowledge/`：漏洞知识库、权限映射、CWE 表
-- `examples/` `tests/`：规则回归
-- `reports/`：审计产出（gitignore）
-- `.opencode/skills/audit-orchestration/scripts/`：`audit-orchestration` skill 私有状态机脚本
-- `.opencode/skills/audit-orchestration/config/schemas/`：worker、共享事实、findings 和 report snapshot 的正式 JSON Schema
-- `tools/`：独立 CLI 工具（P4）
+```text
+.opencode/
+  commands/audit.md                 # 用户入口
+  agents/                           # 编排与工作 Agent
+  skills/
+    project-modeling/               # 确定性项目建模
+    audit-orchestration/            # 状态机、配置和数据契约
+    attack-patterns/                # 审计语义与模式卡
+    audit-workflow/                 # 端到端流程约束
+docs/                               # 辅助设计和测试文档
+reports/                            # 运行产物，不提交版本库
+tests/                              # 单元、契约与语义回归
+deploy.py                           # 部署与完整性检查
+```
 
-## 状态存储
+能力启用状态、路由条件和模式绑定的唯一机器配置是
+`.opencode/skills/audit-orchestration/config/audit_capabilities.json`。漏洞判定的领域语义
+由 `.opencode/skills/attack-patterns/patterns/` 中的模式卡维护。
 
-每次审计运行写入 `reports/<project-name>-<target-path-hash>/<YYYYMMDD-HHMMSS>-<scope>-<run-id>/`：
+## 验证
 
-- `project/project_model.json`：确定性项目结构、组件、权限、依赖和入口候选
-- `atlas/discovery_plan.json`：由 Manifest 锚点生成的 Atlas 分析单元及其覆盖终态
-- `atlas/query_evidence.jsonl`：mapper 执行的 Atlas 查询与结果摘要
-- `atlas/entry_list.json`、`atlas/danger_seed_list.json`：状态机从 per-unit 私有结果确定性合并的外部入口与可达危险能力种子
-- `queue.jsonl`：任务当前状态、尝试次数、最后错误与重试历史
-- `task_events.jsonl`：append-only 调度事件
-- `candidate_index.json`：根因级增量去重、入口触发变体合并与稳定 candidate ID
-- `analysis/danger_seeds.json`：按 sink 符号、位置和敏感参数归一化的危险操作
-- `analysis/attack_matrix.json`：按 discovery unit 关联剪枝的稀疏 Entry × Sink × Pattern 工作项、终态 routing gap、中间节点排除与覆盖台账
-- `paths/*.jsonl`：路径发现结果
-- `validation/*.jsonl`：分层验证结果
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 deploy.py --check-only
+```
 
-## 路线图
-
-- [x] **P1 骨架**：harmony-auditor + attack-surface-mapper + path-finder + path-validator + report-composer + `/audit` + audit-workflow/audit-orchestration skill + atlas 接入
-- [x] **P1.5 误报治理框架**：六门槛验证 + 反证优先 + 分层报告
-- [x] **P1.6 确定性项目建模**：`json5` 成熟解析库 + project_model/discovery_plan + Atlas scoped mapper
-- [x] **P1.7 稀疏攻击矩阵**：entry/sink 归一化 + 数据驱动 `Entry × Sink × Pattern` 路由 + per-work-item 路径任务与覆盖闭合
-- [x] **P1.8 结果契约与引用完整性**：Draft 2020-12 Schema + 分类业务不变量 + entry/seed/work/candidate/query/finding 引用校验 + 报告 SHA-256 冻结快照
-- [ ] **P2 核心**：crypto / network / icc / web 等领域专家 + Atlas 查询模式与污点增强
-- [ ] **P3 深度**：napi / dependency + finding_dedupe + plugin 轨迹
-- [ ] **P4 进阶**：装饰器数据流 + 报告导出
-- [ ] **P4/低优先级技术债**：基于 OpenCode async session/plugin 实现真正的滑动 subagent 池；任一任务完成后立即 `complete → next` 补位,替代当前 5 个一批的同步执行
+`deploy.py` 会检查必需组件、JSON Schema、能力注册表与脚本可执行性。项目当前不接入
+Semgrep，也不包含 NAPI/native 审计实现。

@@ -16,11 +16,20 @@ def args(**values):
     return SimpleNamespace(**values)
 
 
-def admitted_candidate(seed_id="D-001", end_to_end=True):
+def admitted_candidate(seed_id="D-001", end_to_end=True, branch="channel=external"):
     return {
         "seed_id": seed_id,
         "classification": "candidate",
-        "pattern": "web-jsbridge",
+        "pattern": "web-untrusted-navigation",
+        "root_cause": {
+            "boundary": "origin",
+            "mechanism": "missing_guard",
+            "file": "Entry.ets",
+            "symbol": "Entry.openExternalPage",
+            "branch": branch,
+            "controlled_property": "want.parameters.url",
+            "location": "20",
+        },
         "admission": {
             "external_entry_reachable": True,
             "seed_reachable": True,
@@ -64,7 +73,7 @@ class EntryNormalizationTests(unittest.TestCase):
             self.assertEqual(entry["entry_types"], ["deeplink", "exported_ability", "implicit_want"])
             self.assertEqual(entry["project_candidate_ids"], ["PE-001", "PE-002", "PE-003"])
 
-    def test_enqueue_entries_merges_manifest_aliases_by_execution_symbol(self):
+    def test_compile_matrix_merges_manifest_aliases_by_execution_symbol(self):
         with tempfile.TemporaryDirectory() as td:
             run = Path(td) / "run"
             MODULE.cmd_init(args(run_dir=str(run), target_repo="/tmp/target", scope="full"))
@@ -98,8 +107,9 @@ class EntryNormalizationTests(unittest.TestCase):
             })
             MODULE.write_json(paths["dangerSeedList"], {
                 "danger_seed_list": [{
-                    "seed_id": "D-001", "category": "jsbridge", "operation": "bridge call",
+                    "seed_id": "D-001", "category": "fs", "operation": "bridge file read",
                     "symbol": "WebBridge.openFile", "symbol_file": "WebBridge.ets", "location": "WebBridge.ets:42",
+                    "sink_role": "terminal", "sink_parameter": "path", "tags": ["web", "jsbridge"],
                 }],
             })
 
@@ -117,6 +127,34 @@ class EntryNormalizationTests(unittest.TestCase):
             self.assertEqual(entries[0]["entry_types"], ["exported_ability", "implicit_want"])
             self.assertEqual(len(entries[0]["trigger_variants"]), 3)
             self.assertEqual(plan["units"][0]["entry_ids"], ["E-001"])
+
+    def test_ipc_transactions_keep_distinct_entry_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = Path(td) / "run"
+            MODULE.cmd_init(args(run_dir=str(run), target_repo="/tmp/target", scope="full"))
+            paths = MODULE.P(str(run))
+            common = {
+                "analysis_unit_id": "AU-IPC", "component_id": "CMP-IPC",
+                "ability": "AccountStub", "entry_function": "AccountStub.onRemoteMessageRequest",
+                "entry_function_file": "service/AccountStub.ets", "type": "ipc_stub_transaction",
+                "project_candidate_ids": ["PE-IPC"], "ipc_stub_class": "AccountStub",
+                "ipc_descriptor": "ohos.demo.IAccount", "publication_point": "AccountService.onConnect",
+            }
+            MODULE.write_json(paths["entryList"], {
+                "entry_list": [
+                    {**common, "entry_id": "E-IPC-1", "transaction_code": 1},
+                    {**common, "entry_id": "E-IPC-2", "transaction_code": 2},
+                ],
+            })
+
+            result = MODULE.normalize_execution_entries(str(run))
+            entries = MODULE.load_entries(str(run))
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["before"], 2)
+            self.assertEqual(result["after"], 2)
+            self.assertEqual({row["transaction_code"] for row in entries}, {1, 2})
+            self.assertEqual(len({row["entry_key"] for row in entries}), 2)
 
 
 class CandidateAdmissionAndDedupTests(unittest.TestCase):
@@ -156,6 +194,46 @@ class CandidateAdmissionAndDedupTests(unittest.TestCase):
             self.assertEqual(len(validation_tasks), 1)
             self.assertEqual(candidates[0]["entry_ids"], ["E-001", "E-002"])
             self.assertEqual(len(candidates[0]["path_variants"]), 2)
+
+    def test_same_root_cause_from_multiple_seeds_keeps_seed_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = self.make_run(td)
+            self.write_result(run, "E-001", admitted_candidate(seed_id="D-OPEN"))
+            self.write_result(run, "E-002", admitted_candidate(seed_id="D-READ"))
+
+            MODULE.cmd_next(args(run_dir=str(run)))
+            MODULE.cmd_complete(args(run_dir=str(run), task="path-E-001"))
+            MODULE.cmd_next(args(run_dir=str(run)))
+            MODULE.cmd_complete(args(run_dir=str(run), task="path-E-002"))
+            paths = MODULE.P(str(run))
+            index = MODULE.read_json(paths["candidateIndex"])
+            candidate = MODULE.read_jsonl(paths["candidates"])[0]
+
+            self.assertEqual(len(index["candidates"]), 1)
+            self.assertTrue(candidate["fingerprint"].startswith("root:"))
+            self.assertEqual(candidate["seed_ids"], ["D-OPEN", "D-READ"])
+            self.assertEqual(
+                [variant["seed_id"] for variant in candidate["path_variants"]],
+                ["D-OPEN", "D-READ"],
+            )
+
+    def test_distinct_root_branches_to_same_sink_remain_separate(self):
+        with tempfile.TemporaryDirectory() as td:
+            run = self.make_run(td)
+            self.write_result(run, "E-001", admitted_candidate(seed_id="D-OPEN", branch="channel=partner"))
+            self.write_result(run, "E-002", admitted_candidate(seed_id="D-OPEN", branch="channel=workspace"))
+
+            MODULE.cmd_next(args(run_dir=str(run)))
+            MODULE.cmd_complete(args(run_dir=str(run), task="path-E-001"))
+            MODULE.cmd_next(args(run_dir=str(run)))
+            MODULE.cmd_complete(args(run_dir=str(run), task="path-E-002"))
+            paths = MODULE.P(str(run))
+
+            self.assertEqual(len(MODULE.read_json(paths["candidateIndex"])["candidates"]), 2)
+            self.assertEqual(
+                len([row for row in MODULE.read_jsonl(paths["queue"]) if row["kind"] == "path_validation"]),
+                2,
+            )
 
     def test_incomplete_path_fails_candidate_admission(self):
         with tempfile.TemporaryDirectory() as td:

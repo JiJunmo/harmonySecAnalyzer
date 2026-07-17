@@ -65,7 +65,9 @@ class AttackMatrixTests(unittest.TestCase):
             self.assertEqual(seeds["danger_seeds"][0]["seed_aliases"], ["D-001", "D-002"])
             self.assertEqual(len(matrix["work_items"]), 1)
             self.assertEqual(matrix["work_items"][0]["pattern"], "deeplink-injection")
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-INJ-001")
             self.assertEqual(queue[0]["work_item_id"], matrix["work_items"][0]["work_item_id"])
+            self.assertEqual(queue[0]["capability_id"], "CAP-INJ-001")
 
     def test_incompatible_pair_is_not_added_as_cartesian_work(self):
         with tempfile.TemporaryDirectory() as td:
@@ -76,6 +78,241 @@ class AttackMatrixTests(unittest.TestCase):
 
             self.assertEqual(matrix["work_items"], [])
             self.assertEqual(matrix["routing_gaps"][0]["reason"], "no_compatible_pattern_route")
+
+    def test_web_navigation_routes_only_to_navigation_capability(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-WEB-001", "category": "web_navigation", "operation": "load URL",
+                "symbol": "WebPage.load", "symbol_file": "WebPage.ets", "location": "WebPage.ets:20",
+                "sink_role": "terminal", "sink_parameter": "url", "tags": ["web", "navigation"],
+            }
+            run = self.make_run(td, seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-WEB-001")
+            self.assertEqual(matrix["work_items"][0]["pattern"], "web-untrusted-navigation")
+
+    def test_jsbridge_terminal_sink_routes_only_to_bridge_capability(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-WEB-002", "category": "fs", "operation": "bridge file read",
+                "symbol": "WebBridge.openFile", "symbol_file": "WebBridge.ets", "location": "WebBridge.ets:42",
+                "sink_role": "terminal", "sink_parameter": "path", "tags": ["web", "jsbridge"],
+            }
+            run = self.make_run(td, seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-WEB-002")
+            self.assertEqual(matrix["work_items"][0]["pattern"], "web-jsbridge-origin-exposure")
+
+    def test_generic_sensitive_sink_does_not_enter_jsbridge_route(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-WEB-003", "category": "network", "operation": "send request",
+                "symbol": "ApiClient.send", "symbol_file": "ApiClient.ets", "location": "ApiClient.ets:18",
+                "sink_role": "terminal", "sink_parameter": "body",
+            }
+            run = self.make_run(td, seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(matrix["work_items"], [])
+            self.assertEqual(matrix["routing_gaps"][0]["reason"], "no_compatible_pattern_route")
+
+    def test_jsbridge_registration_is_intermediate_and_not_routed(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-WEB-004", "category": "jsbridge", "operation": "register proxy",
+                "symbol": "WebPage.registerBridge", "symbol_file": "WebPage.ets", "location": "WebPage.ets:30",
+                "sink_role": "intermediate", "tags": ["web", "jsbridge"],
+            }
+            run = self.make_run(td, seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(matrix["work_items"], [])
+            self.assertEqual(matrix["routing_gaps"], [])
+            self.assertEqual(matrix["seeds"][0]["disposition"], "excluded_intermediate")
+
+    def test_want_redirect_seed_routes_to_icc_capability(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-ICC-001", "category": "ability_data", "operation": "forward Want",
+                "symbol": "ProxyAbility.forward", "symbol_file": "ProxyAbility.ets", "location": "ProxyAbility.ets:35",
+                "sink_role": "terminal", "sink_parameter": "want",
+                "tags": ["icc", "want", "want_redirect"],
+                "controlled_properties": ["abilityName", "parameters.operation"],
+            }
+            run = self.make_run(td, entry_type="exported_ability", seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-ICC-001")
+            self.assertEqual(matrix["work_items"][0]["pattern"], "want-redirect")
+
+    def test_generic_ability_data_seed_does_not_enter_want_redirect(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-ICC-002", "category": "ability_data", "operation": "update state",
+                "symbol": "StateStore.update", "symbol_file": "StateStore.ets", "location": "StateStore.ets:22",
+                "sink_role": "terminal", "sink_parameter": "value",
+            }
+            run = self.make_run(td, entry_type="exported_ability", seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(matrix["work_items"], [])
+            self.assertEqual(matrix["routing_gaps"][0]["reason"], "no_compatible_pattern_route")
+
+    def test_jsbridge_ability_dispatch_does_not_enter_want_redirect(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-ICC-003", "category": "ability_data", "operation": "bridge starts Ability",
+                "symbol": "WebBridge.openPage", "symbol_file": "WebBridge.ets", "location": "WebBridge.ets:50",
+                "sink_role": "terminal", "sink_parameter": "want", "tags": ["web", "jsbridge"],
+            }
+            run = self.make_run(td, entry_type="exported_ability", seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-WEB-002")
+
+    def test_datashare_query_routes_only_to_query_capability(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-PROVIDER-001", "category": "sql", "operation": "provider query",
+                "symbol": "CatalogStore.query", "symbol_file": "CatalogStore.ets", "location": "CatalogStore.ets:31",
+                "sink_role": "terminal", "sink_parameter": "query",
+                "tags": ["provider", "datashare", "datashare_query"],
+                "controlled_properties": ["order", "selection"],
+            }
+            run = self.make_run(td, entry_type="extension_uri", seeds=[seed])
+            paths = MODULE.P(str(run))
+            entries = MODULE.read_json(paths["entryList"])
+            entries["entry_list"][0]["entry_types"] = ["deeplink", "implicit_want", "extension_uri"]
+            MODULE.write_json(paths["entryList"], entries)
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(paths["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-PROVIDER-001")
+            self.assertEqual(matrix["work_items"][0]["pattern"], "datashare-query-injection")
+
+    def test_datashare_file_routes_only_to_file_capability(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-PROVIDER-002", "category": "fs", "operation": "provider file open",
+                "symbol": "ShareProvider.open", "symbol_file": "ShareProvider.ets", "location": "ShareProvider.ets:44",
+                "sink_role": "terminal", "sink_parameter": "file",
+                "tags": ["provider", "datashare", "datashare_file"],
+                "controlled_properties": ["uri.path", "mode"],
+            }
+            run = self.make_run(td, entry_type="extension_uri", seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-PROVIDER-002")
+            self.assertEqual(matrix["work_items"][0]["pattern"], "datashare-file-access")
+
+    def test_jsbridge_file_sink_is_excluded_from_generic_file_route(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-PROVIDER-003", "category": "fs", "operation": "bridge file read",
+                "symbol": "WebBridge.read", "symbol_file": "WebBridge.ets", "location": "WebBridge.ets:60",
+                "sink_role": "terminal", "sink_parameter": "path", "tags": ["web", "jsbridge"],
+            }
+            run = self.make_run(td, entry_type="extension_uri", seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-WEB-002")
+
+    def test_untagged_extension_file_sink_remains_generic_file_capability(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-PROVIDER-004", "category": "fs", "operation": "extension file read",
+                "symbol": "FileExtension.read", "symbol_file": "FileExtension.ets", "location": "FileExtension.ets:25",
+                "sink_role": "terminal", "sink_parameter": "path",
+            }
+            run = self.make_run(td, entry_type="extension_uri", seeds=[seed])
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(MODULE.P(str(run))["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-FS-001")
+
+    def test_ipc_transaction_routes_to_authorization_capability(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-IPC-001", "category": "privacy", "operation": "read private account",
+                "symbol": "AccountStore.read", "symbol_file": "AccountStore.ets", "location": "AccountStore.ets:40",
+                "sink_role": "terminal", "sink_parameter": "accountId", "tags": ["ipc", "ipc_transaction"],
+            }
+            run = self.make_run(td, entry_type="ipc_stub_transaction", seeds=[seed])
+            paths = MODULE.P(str(run))
+            entries = MODULE.read_json(paths["entryList"])
+            entries["entry_list"][0].update({
+                "ability": "AccountStub", "entry_function": "AccountStub.onRemoteMessageRequest",
+                "entry_function_file": "AccountStub.ets", "ipc_stub_class": "AccountStub",
+                "ipc_descriptor": "ohos.demo.IAccount", "transaction_code": 7,
+                "publication_point": "AccountService.onConnect",
+            })
+            MODULE.write_json(paths["entryList"], entries)
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(paths["attackMatrix"])
+
+            self.assertEqual(len(matrix["work_items"]), 1)
+            self.assertEqual(matrix["work_items"][0]["capability_id"], "CAP-IPC-001")
+            self.assertEqual(matrix["work_items"][0]["pattern"], "ipc-unauthorized-transaction")
+
+    def test_ipc_message_sink_creates_separate_authorization_and_input_work(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = {
+                "seed_id": "D-IPC-002", "category": "command", "operation": "run maintenance command",
+                "symbol": "Maintenance.run", "symbol_file": "Maintenance.ets", "location": "Maintenance.ets:55",
+                "sink_role": "terminal", "sink_parameter": "command",
+                "tags": ["ipc", "ipc_transaction", "ipc_message"],
+                "controlled_properties": ["message_string"],
+            }
+            run = self.make_run(td, entry_type="ipc_stub_transaction", seeds=[seed])
+            paths = MODULE.P(str(run))
+            entries = MODULE.read_json(paths["entryList"])
+            entries["entry_list"][0].update({
+                "ability": "MaintenanceStub", "entry_function": "MaintenanceStub.onRemoteMessageRequest",
+                "entry_function_file": "MaintenanceStub.ets", "ipc_stub_class": "MaintenanceStub",
+                "ipc_descriptor": "ohos.demo.IMaintenance", "transaction_code": 4,
+                "publication_point": "SystemAbility.addSystemAbility",
+            })
+            MODULE.write_json(paths["entryList"], entries)
+
+            MODULE.cmd_compile_matrix(SimpleNamespace(run_dir=str(run)))
+            matrix = MODULE.read_json(paths["attackMatrix"])
+
+            self.assertEqual(
+                {row["capability_id"] for row in matrix["work_items"]},
+                {"CAP-IPC-001", "CAP-IPC-002"},
+            )
+            self.assertEqual(len(matrix["work_items"]), 2)
 
     def test_intermediate_seed_is_excluded_without_routing_gap(self):
         with tempfile.TemporaryDirectory() as td:

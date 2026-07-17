@@ -8,7 +8,6 @@
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py init <run_dir> [--target-repo R] [--scope S]
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py enqueue-discovery <run_dir>
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py compile-matrix <run_dir>
-  python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py enqueue-entries <run_dir>
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py enqueue <run_dir> --tasks '<JSON>'
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py next <run_dir>
   python .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py complete <run_dir> --task <task_id>
@@ -41,8 +40,9 @@ except ImportError:  # pragma: no cover - Windows fallback for future portabilit
 
 MAX_RUNNING = 5
 MAX_ATTEMPTS = 3
-ROUTES_PATH = Path(__file__).resolve().parent.parent / "config" / "attack_matrix_routes.json"
+CAPABILITIES_PATH = Path(__file__).resolve().parent.parent / "config" / "audit_capabilities.json"
 SCHEMAS_DIR = Path(__file__).resolve().parent.parent / "config" / "schemas"
+PATTERN_CARDS_DIR = Path(__file__).resolve().parent.parent.parent / "attack-patterns" / "patterns"
 RESULT_SCHEMAS = {
     "attack_surface_discovery": "discovery-result.schema.json",
     "path_finding": "path-result.schema.json",
@@ -235,7 +235,13 @@ def empty_session(args):
 
 
 def empty_candidate_index():
-    return {"next_candidate_no": 1, "fingerprints": {}, "candidates": {}}
+    return {
+        "schema_version": 2,
+        "identity_strategy": "structured_root_cause_v1",
+        "next_candidate_no": 1,
+        "fingerprints": {},
+        "candidates": {},
+    }
 
 
 def task_id_for(t):
@@ -263,6 +269,7 @@ def make_task(t):
         "kind": t["kind"],
         "unit_id": t.get("unit_id"),
         "work_item_id": t.get("work_item_id"),
+        "capability_id": t.get("capability_id"),
         "entry_id": t.get("entry_id"),
         "seed_id": t.get("seed_id"),
         "seed_key": t.get("seed_key"),
@@ -321,6 +328,16 @@ def execution_entry_key(entry):
     )
     if not all(identity):
         return ("unmergeable", entry.get("entry_id"))
+    if entry.get("type") == "ipc_stub_transaction" or entry.get("transaction_code") is not None:
+        ipc_identity = (
+            str(entry.get("ipc_stub_class") or entry.get("ability") or ""),
+            str(entry.get("ipc_descriptor") or ""),
+            str(entry.get("transaction_code") if entry.get("transaction_code") is not None else ""),
+            str(entry.get("publication_point") or ""),
+        )
+        if not all(ipc_identity):
+            return ("unmergeable", entry.get("entry_id"))
+        return identity + ipc_identity
     return identity
 
 
@@ -890,6 +907,9 @@ def route_matches(route, entry, seed):
     required_tags = set(route.get("seed_tags_any", []))
     if required_tags and not required_tags.intersection(seed.get("tags", [])):
         return False
+    excluded_tags = set(route.get("seed_tags_none", []))
+    if excluded_tags.intersection(seed.get("tags", [])):
+        return False
     return seed.get("sink_role", "terminal") != "intermediate"
 
 
@@ -905,11 +925,36 @@ def seed_relevant_to_entry(entry, seed):
 
 
 def load_matrix_routes():
-    config = read_json(str(ROUTES_PATH))
-    if not isinstance(config, dict) or config.get("schema_version") != 1:
+    registry = read_json(str(CAPABILITIES_PATH))
+    if document_schema_errors("audit-capabilities.schema.json", registry, "auditCapabilities"):
         return None
-    routes = config.get("routes")
-    return routes if isinstance(routes, list) else None
+
+    routes = []
+    for capability in registry.get("capabilities", []):
+        routing = capability.get("routing")
+        if routing is None:
+            continue
+        pattern_ids = capability.get("pattern_ids", [])
+        if not pattern_ids:
+            return None
+        if routing.get("enabled") is True and (
+            capability.get("status") not in {"partial", "implemented"}
+            or capability.get("implementation", {}).get("route") is not True
+            or capability.get("implementation", {}).get("pattern_card") is not True
+        ):
+            return None
+        for pattern_id in pattern_ids:
+            if routing.get("enabled") is True and not (PATTERN_CARDS_DIR / f"{pattern_id}.md").is_file():
+                return None
+            routes.append({
+                "capability_id": capability.get("capability_id"),
+                "pattern_id": pattern_id,
+                "domain": capability.get("domain"),
+                "entry_types": capability.get("entry_types", []),
+                "seed_categories": capability.get("seed_categories", []),
+                **routing,
+            })
+    return routes
 
 
 def compile_attack_matrix(run_dir):
@@ -925,7 +970,7 @@ def compile_attack_matrix(run_dir):
     seeds = seed_doc.get("danger_seeds", []) if isinstance(seed_doc, dict) else []
     routes = load_matrix_routes()
     if routes is None:
-        return {"ok": False, "error": "attack_matrix_routes_missing_or_invalid", "path": str(ROUTES_PATH)}
+        return {"ok": False, "error": "audit_capabilities_missing_or_invalid", "path": str(CAPABILITIES_PATH)}
 
     work_items = []
     work_item_ids = set()
@@ -953,6 +998,7 @@ def compile_attack_matrix(run_dir):
                 work_item_ids.add(work_item_id)
                 item = {
                     "work_item_id": work_item_id,
+                    "capability_id": route.get("capability_id"),
                     "entry_id": entry.get("entry_id"),
                     "entry_key": entry.get("entry_key"),
                     "seed_id": seed.get("seed_id"),
@@ -977,6 +1023,7 @@ def compile_attack_matrix(run_dir):
                         continue
                     gap_keys.add(gap_key)
                     routing_gaps.append({
+                        "capability_id": route.get("capability_id"),
                         "entry_id": entry.get("entry_id"),
                         "seed_id": seed.get("seed_id"),
                         "seed_key": seed.get("seed_key"),
@@ -1003,7 +1050,7 @@ def compile_attack_matrix(run_dir):
         "schema_version": 1,
         "matrix_type": "sparse_entry_sink_pattern",
         "generated_at": now(),
-        "routing_config": str(ROUTES_PATH),
+        "routing_config": str(CAPABILITIES_PATH),
         "entries": [
             {
                 "entry_id": entry.get("entry_id"),
@@ -1344,11 +1391,26 @@ def update_matrix_work_item(run_dir, work_item_id, status, result_ref=None):
     return True
 
 
+def normalize_root_identity_value(value):
+    return " ".join(str(value or "").strip().replace("\\", "/").lower().split())
+
+
 def make_candidate_fingerprint(conclusion):
-    return "|".join([
-        str(conclusion.get("seed_key") or conclusion.get("seed_id") or ""),
-        str(conclusion.get("pattern") or ""),
-    ])
+    root = conclusion.get("root_cause")
+    if not isinstance(root, dict):
+        return ""
+    identity = (
+        normalize_root_identity_value(conclusion.get("pattern")),
+        normalize_root_identity_value(root.get("boundary")),
+        normalize_root_identity_value(root.get("mechanism")),
+        normalize_root_identity_value(root.get("file")),
+        normalize_root_identity_value(root.get("symbol")),
+        normalize_root_identity_value(root.get("branch")),
+        normalize_root_identity_value(root.get("controlled_property")),
+    )
+    if any(not value for value in identity):
+        return ""
+    return stable_key("root", identity)
 
 
 def candidate_admission(conclusion):
@@ -1376,6 +1438,8 @@ def candidate_path_variant(task, conclusion):
     return {
         "work_item_id": task.get("work_item_id"),
         "entry_id": task.get("entry_id"),
+        "seed_id": conclusion.get("seed_id"),
+        "seed_key": conclusion.get("seed_key"),
         "source_task_id": task.get("task_id"),
         "path": conclusion.get("path", []),
         "taint_flow": conclusion.get("taint_flow", ""),
@@ -1388,16 +1452,26 @@ def promote_candidate(run_dir, queue, task, conclusion, index):
     p = P(run_dir)
     entry_id = task.get("entry_id")
     fingerprint = make_candidate_fingerprint(conclusion)
+    if not fingerprint:
+        raise ValueError("candidate_root_cause_identity_missing")
     existing_id = index.setdefault("fingerprints", {}).get(fingerprint)
     if existing_id:
         existing = index.setdefault("candidates", {}).setdefault(existing_id, {})
         existing["entry_ids"] = sorted(set(existing.get("entry_ids", []) + [entry_id]))
         existing["source_task_ids"] = sorted(set(existing.get("source_task_ids", []) + [task["task_id"]]))
+        existing["seed_ids"] = sorted(set(
+            existing.get("seed_ids", []) + [conclusion.get("seed_id")]
+        ) - {None})
+        existing["seed_keys"] = sorted(set(
+            existing.get("seed_keys", []) + [conclusion.get("seed_key")]
+        ) - {None})
         rows = read_jsonl(p["candidates"])
         for row in rows:
             if row.get("candidate_id") == existing_id:
                 row["entry_ids"] = existing["entry_ids"]
                 row["source_task_ids"] = existing["source_task_ids"]
+                row["seed_ids"] = existing["seed_ids"]
+                row["seed_keys"] = existing["seed_keys"]
                 variants = row.setdefault("path_variants", [])
                 if not any(variant.get("source_task_id") == task["task_id"] for variant in variants):
                     variants.append(candidate_path_variant(task, conclusion))
@@ -1414,6 +1488,8 @@ def promote_candidate(run_dir, queue, task, conclusion, index):
         "task_id": task["task_id"],
         "entry_id": entry_id,
         "entry_ids": [entry_id],
+        "seed_ids": [conclusion.get("seed_id")],
+        "seed_keys": [conclusion.get("seed_key")] if conclusion.get("seed_key") else [],
         "source_task_ids": [task["task_id"]],
         "path_variants": [candidate_path_variant(task, conclusion)],
     }
@@ -1421,11 +1497,15 @@ def promote_candidate(run_dir, queue, task, conclusion, index):
     index["fingerprints"][fingerprint] = candidate_id
     index.setdefault("candidates", {})[candidate_id] = {
         "fingerprint": fingerprint,
+        "root_cause_key": fingerprint,
+        "root_cause": conclusion.get("root_cause"),
         "entry_id": entry_id,
         "entry_ids": [entry_id],
         "source_task_ids": [task["task_id"]],
         "seed_id": conclusion.get("seed_id"),
         "seed_key": conclusion.get("seed_key"),
+        "seed_ids": [conclusion.get("seed_id")],
+        "seed_keys": [conclusion.get("seed_key")] if conclusion.get("seed_key") else [],
         "pattern": conclusion.get("pattern"),
         "created_from_task": task["task_id"],
         "validation_task_id": validation_task_id,
@@ -1540,6 +1620,7 @@ def cmd_compile_matrix(args):
         {
             "kind": "path_finding",
             "work_item_id": item["work_item_id"],
+            "capability_id": item.get("capability_id"),
             "entry_id": item["entry_id"],
             "seed_id": item["seed_id"],
             "seed_key": item["seed_key"],
@@ -1573,12 +1654,6 @@ def cmd_compile_matrix(args):
         "matrix": matrix_result,
         **queued,
     }
-
-
-def cmd_enqueue_entries(args):
-    result = cmd_compile_matrix(args)
-    result.setdefault("compatibility_note", "enqueue-entries now compiles the sparse attack matrix")
-    return result
 
 
 def select_next_task(queue):
@@ -2107,28 +2182,6 @@ def cmd_finalize(args):
     }
 
 
-def cmd_dedup_candidates(args):
-    # Compatibility command. Streaming promotion already performs incremental dedup.
-    index = read_json(P(args.run_dir)["candidateIndex"], empty_candidate_index())
-    return {
-        "ok": True,
-        "mode": "streaming",
-        "before": len(index.get("fingerprints", {})),
-        "after": len(index.get("fingerprints", {})),
-        "note": "dedup is performed during complete(path_finding)",
-    }
-
-
-def cmd_enqueue_validation(args):
-    # Compatibility command. Validation tasks are enqueued during complete(path_finding).
-    return {
-        "ok": True,
-        "mode": "streaming",
-        "added": 0,
-        "note": "validation tasks are enqueued during complete(path_finding)",
-    }
-
-
 def queue_stats(queue):
     by_status = {}
     for q in queue:
@@ -2205,9 +2258,6 @@ def main():
     ped = sub.add_parser("enqueue-discovery")
     ped.add_argument("run_dir")
 
-    pei = sub.add_parser("enqueue-entries")
-    pei.add_argument("run_dir")
-
     pcm = sub.add_parser("compile-matrix")
     pcm.add_argument("run_dir")
 
@@ -2236,12 +2286,6 @@ def main():
     pf = sub.add_parser("finalize")
     pf.add_argument("run_dir")
 
-    pd = sub.add_parser("dedup-candidates")
-    pd.add_argument("run_dir")
-
-    pev = sub.add_parser("enqueue-validation")
-    pev.add_argument("run_dir")
-
     ps = sub.add_parser("status")
     ps.add_argument("run_dir")
 
@@ -2253,7 +2297,6 @@ def main():
         "new-run": cmd_new_run,
         "init": cmd_init,
         "enqueue-discovery": cmd_enqueue_discovery,
-        "enqueue-entries": cmd_enqueue_entries,
         "compile-matrix": cmd_compile_matrix,
         "enqueue": cmd_enqueue,
         "next": cmd_next,
@@ -2262,8 +2305,6 @@ def main():
         "validate-coverage": cmd_validate_coverage,
         "validate-ready": cmd_validate_ready,
         "finalize": cmd_finalize,
-        "dedup-candidates": cmd_dedup_candidates,
-        "enqueue-validation": cmd_enqueue_validation,
         "status": cmd_status,
     }
 
