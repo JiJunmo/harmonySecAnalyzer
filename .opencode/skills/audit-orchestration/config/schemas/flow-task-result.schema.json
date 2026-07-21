@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["task_id", "flows", "evidence"],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "flows": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/flow"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["evidence_id", "kind", "source", "summary"],
+      "properties": {
+        "evidence_id": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "content_ref": {"type": ["string", "null"]},
+        "sha256": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "fact": {
+      "type": "object",
+      "required": ["fact_key", "type", "body", "evidence_refs"],
+      "properties": {
+        "fact_key": {"type": "string", "minLength": 1},
+        "type": {"enum": ["entrypoint", "reachability", "control", "transform", "guard", "operation", "effect", "dead_end", "gap"]},
+        "body": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": true
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "kind", "evidence_refs"],
+      "properties": {
+        "from": {"type": "string", "minLength": 1},
+        "to": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
+    "continuation": {
+      "type": "object",
+      "required": ["semantic_key", "kind", "target", "reason", "evidence_refs"],
+      "properties": {
+        "semantic_key": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["component_dispatch", "callback_dispatch", "shared_handler", "async_resume", "unknown_target"]},
+        "target": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
+    "flow": {
+      "type": "object",
+      "required": ["flow_key", "root_entry_id", "branch_key", "controlled_property", "current_symbol", "status", "controlled_values", "facts", "edges", "continuations"],
+      "properties": {
+        "flow_key": {"type": "string", "minLength": 1},
+        "root_entry_id": {"type": "string", "minLength": 1},
+        "parent_flow_id": {"type": ["string", "null"]},
+        "branch_key": {"type": "string", "pattern": "^[^=\\s]+=[^\\r\\n]+$"},
+        "controlled_property": {"type": "string", "minLength": 1},
+        "current_symbol": {"type": "string", "minLength": 1},
+        "status": {"enum": ["open", "connected", "blocked", "benign", "gap"]},
+        "controlled_values": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "facts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/fact"}},
+        "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
+        "continuations": {"type": "array", "items": {"$ref": "#/$defs/continuation"}}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

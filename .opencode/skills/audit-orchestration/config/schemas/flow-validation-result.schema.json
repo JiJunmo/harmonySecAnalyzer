@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["task_id", "flow_id", "classification", "title", "gates", "root_cause", "boundary", "impact", "severity", "cwe", "poc", "guards", "reason", "evidence_refs"],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "flow_id": {"type": "string", "minLength": 1},
+    "classification": {"enum": ["confirmed_vulnerability", "protected_exposure", "benign_business_flow", "insufficient_evidence", "residual_risk"]},
+    "title": {"type": "string", "minLength": 1},
+    "gates": {
+      "type": "object",
+      "required": ["externally_reachable", "attacker_controlled", "operation_reached", "guard_absent_or_bypassed", "boundary_violated", "observable_effect"],
+      "properties": {
+        "externally_reachable": {"type": "boolean"},
+        "attacker_controlled": {"type": "boolean"},
+        "operation_reached": {"type": "boolean"},
+        "guard_absent_or_bypassed": {"type": "boolean"},
+        "boundary_violated": {"type": "boolean"},
+        "observable_effect": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "root_cause": {
+      "type": "object",
+      "required": ["operation_location", "branch", "boundary", "controlled_property"],
+      "properties": {
+        "operation_location": {"type": "string", "minLength": 1},
+        "branch": {"type": "string", "minLength": 1},
+        "boundary": {"type": "string", "minLength": 1},
+        "controlled_property": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "boundary": {"type": "string", "minLength": 1},
+    "impact": {"type": ["string", "null"]},
+    "severity": {"enum": ["critical", "high", "medium", "low", "info", null]},
+    "cwe": {"type": ["string", "null"]},
+    "poc": {"type": ["string", "null"]},
+    "guards": {"type": "array", "items": {"type": "object"}},
+    "reason": {"type": "string", "minLength": 1},
+    "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  },
+  "additionalProperties": false
+}

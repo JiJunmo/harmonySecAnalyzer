@@ -3,7 +3,7 @@
 ## 1. 文档用途
 
 本文档用于指导改造 `HarmonyAppAnalyzerDemo`，目标是在一个可安装、可操作的 HarmonyOS
-APP 中覆盖 harmonySecAnalyzer 当前启用的 9 项审计能力，并观察 2 项尚未启用能力的表现。
+APP 中覆盖 harmonySecAnalyzer 当前启用的 12 项审计能力，并观察 1 项尚未启用能力的表现。
 
 本文档属于测试标准答案，不应放入被审计 APP 仓库。正式盲测前，被测仓中不得保留
 `PLAN.md`、漏洞清单、预期结论或其他能够泄露答案的材料。
@@ -95,7 +95,7 @@ APP 首页按钮只用于方便人工触发，不能成为唯一调用入口。
 ├── AdminConsoleAbility                  # 私有敏感组件，exported=false
 ├── WorkspaceDataShareExtension          # 查询、文件与账户数据
 ├── BackupServiceExtension               # 对外备份 IPC 服务
-└── AutomationSubscriber                 # 自动化公共事件订阅
+└── AutomationEventManager               # 由 EntryAbility 生命周期管理的动态公共事件订阅
 ```
 
 ## 5. Manifest 设计
@@ -104,7 +104,7 @@ APP 首页按钮只用于方便人工触发，不能成为唯一调用入口。
 
 | 组件 | exported | 外部入口 | 用途 |
 |---|---:|---|---|
-| `EntryAbility` | true | Launcher | 首页，不承载测试缺陷 |
+| `EntryAbility` | true | Launcher | 首页并管理 CommonEvent 订阅生命周期，不直接实现 Sink |
 | `ArchiveSearchAbility` | true | `collab://search/archive` | SQL 注入路径 |
 | `CatalogSearchAbility` | true | `collab://search/catalog` | SQL 安全对照 |
 | `AttachmentPreviewAbility` | true | `collab://attachment/open` | 文件路径缺陷 |
@@ -127,7 +127,9 @@ APP 首页按钮只用于方便人工触发，不能成为唯一调用入口。
 
 组件类必须继承对应的 DataShare/Service Extension 基类。
 
-`AutomationSubscriber` 可以由正常 Ability 生命周期动态注册，不需要伪装成 Extension。
+`AutomationEventManager` 是普通业务类，不声明为独立 Ability/Extension。`EntryAbility.onCreate`
+创建并注册订阅者，`EntryAbility.onDestroy` 退订并释放；这样可证明订阅在真实 APP 生命周期中
+成立，避免存在源码但订阅永远没有注册。
 
 ## 6. 数据准备
 
@@ -256,6 +258,17 @@ collab://portal/support?article=<external>
 
 **正常业务：** 固定 `resource://rawfile/help.html`，不注册 Bridge。
 
+**能力认证变体：**
+
+- `host-substring`：使用 host 子串判断，使 `trusted.example.attacker.test` 可进入带应用会话的 Web 上下文。
+- `decode-order`：先校验原始字符串、后解码并加载，解码后目标可变为本地资源 scheme。
+- `redirect-gap`：只校验初始合作方 Origin，重定向后的最终目标不复验且仍携带应用特权上下文。
+- `isolated-browser`：允许任意公开网络 URL，但不携带应用会话、特权 header、本地资源或 Native Bridge；预期为正常业务。
+- `redirect-unresolved`：最终目标和依赖内策略无法由 Atlas 解析；预期为证据不足，不得猜测漏洞或安全。
+
+每个变体都应使用独立业务函数和稳定路由参数，便于 `/audit capability CAP-WEB-001` 对根因、
+控制组件和最终分类做确定性比对；不要通过复制多个 Ability 制造入口噪声。
+
 ### T04 Web 工作台 Native Bridge
 
 **能力：** `CAP-WEB-002`
@@ -290,6 +303,17 @@ JavaScript 不足以构成该能力的终态 Sink。
 
 导航控制和 Bridge 暴露是两个独立根因，审计器可以分别报告。
 
+**能力认证变体：**
+
+- `persistent-after-navigation`：在可信页注册 Bridge，之后导航到不可信 Origin，但 Bridge 未撤销且仍可调用敏感方法。
+- `native-authorization`：不可信 Origin 可以调用 Bridge，但 Native 方法独立校验用户会话、对象所有权和参数；预期为有效防护。
+- `method-allowlist-only`：仅暴露固定敏感方法，但方法参数可选择任意对象且没有所有权授权；预期仍为漏洞。
+- `readonly-local`：固定本地页只暴露语言、主题、版本 getter，没有敏感 source 或副作用 sink；预期为正常业务。
+- `registration-unresolved`：依赖封装导致最终 Origin、注册时机或跨导航撤销关系不可解析；预期为证据不足。
+
+每个敏感变体必须绑定稳定的 bridge object、method、registration callsite 和真实 Native sink，
+不能只通过增加 `javaScriptProxy` 文本制造测试命中。
+
 ### T05 通知目标转发
 
 **能力：** `CAP-ICC-001`
@@ -322,6 +346,18 @@ collab://notice/open?scene=workspace
 ```
 
 `windowStage.loadContent` 和 `router.pushUrl` 不能代替该用例的组件 Want 调度。
+
+**能力认证变体：**
+
+- `dynamic-target-operation`：外部 nested Want 同时控制目标 Ability 和敏感 operation，目标未重新授权；预期为漏洞。
+- `fixed-target-sensitive-parameter`：目标 Ability 固定，但外部 `operation/resourceId` 被整包或逐项透传到受保护操作；预期仍为漏洞。
+- `caller-without-object-authorization`：代理只验证 caller TokenId，目标未校验 `resourceId` 所有权；预期仍为漏洞，根因是对象授权缺失而非身份绕过。
+- `reconstructed-authorized`：目标由不可变映射选择，新建 Want 仅复制参数白名单，目标再校验操作权限与对象所有权；预期为有效防护。
+- `public-internal-route`：固定内部组件仅展示公开对象，无受保护操作；预期为正常业务。
+- `wrapper-unresolved`：依赖封装隐藏目标映射、转发字段或目标授权；预期为证据不足，不能猜测私有影响。
+
+每个变体必须真实调用 `startAbility*`，并保留可追踪的入口参数、Want 构造、目标 Ability 和目标业务操作；
+目标选择与参数转发是两个独立控制维度，不能只通过切换 `abilityName` 制造差异。
 
 ### T06 DataShare 查询
 
@@ -436,9 +472,127 @@ onRemoteMessageRequest
 
 Code 201 使用固定 snapshot ID 映射、长度限制、读取结果检查和 canonical containment。
 
+### T10 IPC 服务身份代理
+
+**能力：** `CAP-IPC-003`
+
+| Code | 业务 | 设计 |
+|---:|---|---|
+| 300 | 删除调用方选择的受保护快照 | 未在身份切换前校验 caller、permission 和 snapshot owner |
+| 301 | 删除已授权快照 | 切换前绑定原始 TokenId、permission、owner 和固定操作 |
+
+Code 300 的真实路径：
+
+```text
+onRemoteMessageRequest
+→ 保存调用方提供的 snapshotId
+→ IPCSkeleton.resetCallingIdentity()
+→ 以服务权限删除对应快照
+→ finally 中 restoreCallingIdentity()
+```
+
+`restoreCallingIdentity` 只证明身份恢复，不代表此前删除操作已获授权。Code 301 必须在
+身份切换前保存原始 caller，并完成 permission、对象所有权和操作范围校验。
+
+### T11 自定义公共事件触发固定操作
+
+**能力：** `CAP-ICC-002`
+
+`EntryAbility.onCreate` 创建 `AutomationEventManager`，后者使用一个独立
+`CommonEventSubscribeInfo` 订阅：
+
+```text
+collab.automation.PURGE_CURRENT
+```
+
+**缺陷路径：**
+
+```text
+EntryAbility.onCreate
+→ createSubscriber({ events: ['collab.automation.PURGE_CURRENT'] })
+→ commonEventManager.subscribe
+→ CommonEvent callback
+→ SnapshotRepository.deleteCurrentSnapshot()
+→ 固定映射 filesDir/backups/snapshot-a.json
+→ fileIo.unlinkSync
+```
+
+事件数据不参与目标选择，事件一旦到达就执行固定的受保护删除操作。订阅信息不配置
+`publisherBundleName` 或 `publisherPermission`，回调中也不执行业务授权。该路径只表达
+“不可信发布者可以触发固定受保护操作”，不能与参数注入合并为同一根因。
+
+**安全对照：**
+
+使用另一个订阅者和独立事件：
+
+```text
+collab.automation.PURGE_APPROVED
+```
+
+对应 `CommonEventSubscribeInfo` 必须同时配置：
+
+- `publisherBundleName = 'com.jihe.neu.AutomationService'`。
+- `publisherPermission = 'com.jihe.neu.permission.AUTOMATION_PUBLISH'`。
+- `module.json5#definePermissions` 声明该自定义权限的授权方式和可用级别，能够排除普通三方应用。
+- callback 在删除前校验固定业务角色和当前账户允许操作的快照。
+
+发布侧 `CommonEventPublishData.subscriberPermissions/bundleName` 不能代替上述订阅侧限制。
+
+**正常业务：**
+
+`collab.automation.REFRESH_PUBLIC` 不限制发布者，但只更新内存中的公开列表刷新标记和 UI，
+不读取、删除或修改受保护状态，应判为正常业务而不是漏洞。
+
+### T12 自定义公共事件数据控制敏感参数
+
+**能力：** `CAP-ICC-003`
+
+**缺陷事件：**
+
+```text
+collab.automation.IMPORT_RAW
+```
+
+**缺陷路径：**
+
+```text
+CommonEventData.parameters['filePath']
+→ 类型检查为 string
+→ DocumentImporter.importFromPath(filePath)
+→ fileIo.openSync(filePath, READ_ONLY)
+→ 读取 APP 沙箱内测试文件
+```
+
+订阅信息不限制发布者，且路径没有 allowlist、固定目录映射或 canonical containment。类型检查
+只能证明值是字符串，不能证明路径位于授权范围。测试 payload 仅访问 APP 测试目录。
+
+**安全对照：**
+
+使用独立事件 `collab.automation.IMPORT_SHARED`：
+
+```text
+CommonEventData.parameters['documentId']
+→ 检查类型、长度和固定 ID allowlist
+→ 服务端映射到 filesDir/shared 下的文件名
+→ canonical path 必须位于 filesDir/shared
+→ fileIo.openSync(path, READ_ONLY)
+```
+
+该安全路径可以保持发布者公开，用于单独证明完整的数据与领域约束足以阻止越界；不能通过
+外部 `mode` 参数切换到 `IMPORT_RAW` 的实现。
+
+**入口与反例约束：**
+
+- 所有订阅均由 `EntryAbility` 的真实生命周期注册，不能只保留一个从未启动的
+  `exported=false` Ability。
+- 动态订阅只在 APP 运行且满足前台回调条件时触发，测试步骤应先启动并保持 APP 前台。
+- 系统公共事件和 `@ohos.events.emitter` 不属于这两个用例。
+- 自定义事件名称全局唯一只避免冲突，不是发布者认证。
+- APP 内自发布按钮只能用于功能 smoke；攻击者可达性需要由外部测试发布器验证。
+
 ## 8. 尚未启用能力的观察用例
 
-### T10 跨账户数据所有权
+### T13 跨账户数据所有权
 
 **目标能力：** `CAP-PROVIDER-003`
 
@@ -446,23 +600,6 @@ DataShare 使用结构化 Predicates，不存在 SQL 注入，但允许调用者
 其他账户记录。安全对照从调用者身份推导 owner scope，不采信外部 owner。
 
 当前系统不应把它错误报告为 SQL 注入。理想表现是明确记录未覆盖能力或分析缺口。
-
-### T11 公共事件触发受保护操作
-
-**目标能力：** `CAP-ICC-002`
-
-订阅 `collab.automation.RUN`：
-
-```text
-CommonEventData
-→ action/snapshotId
-→ 启动备份或删除测试快照
-```
-
-缺陷路径不验证发布权限或可信发布者；安全对照使用受权限保护的独立事件，并限制 action
-与参数。仅刷新 UI 的事件作为正常业务。
-
-当前系统不得把普通订阅行为直接确认为漏洞。
 
 ## 9. 预期结果矩阵
 
@@ -477,8 +614,10 @@ CommonEventData
 | T07 DataShare File | confirmed/candidate | protected |
 | T08 IPC Authorization | confirmed/candidate | protected |
 | T09 IPC Message | confirmed/candidate | protected |
-| T10 Owner | 不应误报为 SQL 注入 | planned capability gap |
-| T11 Common Event | 不应仅因订阅而确认 | disabled routing/coverage gap |
+| T10 IPC Deputy | confirmed/candidate | protected/benign |
+| T11 Common Event Trigger | confirmed/candidate | protected/benign |
+| T12 Common Event Data | confirmed/candidate | protected/benign |
+| T13 Owner | 不应误报为 SQL 注入 | planned capability gap |
 
 ## 10. 代码组织建议
 
@@ -526,11 +665,12 @@ entry/src/main/ets/
 2. 实现数据库与测试文件初始化。
 3. 完成 T01、T02、T03、T05 四类 Ability 路径。
 4. 完成 T06、T07 DataShare 回调。
-5. 完成 T08、T09 RemoteObject Transaction。
+5. 完成 T08、T09、T10 RemoteObject Transaction。
 6. 完成 T04 WebView 与 Bridge Origin 控制。
-7. 添加 T10、T11 能力缺口观察项。
-8. 移除所有答案式标记，完成外部触发和功能验收。
-9. 复制一份干净仓库执行盲测，不在审计后回写被测代码。
+7. 完成 T11、T12 CommonEvent 动态订阅、缺陷路径和独立安全对照。
+8. 添加 T13 能力缺口观察项。
+9. 移除所有答案式标记，完成外部触发和功能验收。
+10. 复制一份干净仓库执行盲测，不在审计后回写被测代码。
 
 ## 13. APP 验收清单
 
@@ -538,9 +678,9 @@ entry/src/main/ets/
 - [ ] 每个导出 Ability 可以从外部 Deeplink/Want 触发。
 - [ ] DataShare 是真实 Extension，外部客户端可以调用 `query/openFile`。
 - [ ] Service 是真实 Extension，外部客户端可以连接并发送 Transaction。
-- [ ] 9 条缺陷路径全部到达真实终态 API。
-- [ ] 9 条安全路径使用独立、不可被外部关闭的 Guard。
+- [ ] 12 条缺陷路径全部到达真实终态 API。
+- [ ] 12 条安全路径使用独立、不可被外部关闭的 Guard。
 - [ ] 正常业务路径没有越过安全边界。
-- [ ] T10/T11 不会被错误归类为已启用能力。
+- [ ] T13 不会被错误归类为已启用能力。
 - [ ] 源码中没有答案式命名、注释和 UI。
 - [ ] 被测仓中没有本设计文档和标准答案。

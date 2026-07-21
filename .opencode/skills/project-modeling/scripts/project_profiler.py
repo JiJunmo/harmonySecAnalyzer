@@ -125,7 +125,12 @@ def normalize_component(raw, kind, module_name, module_file, module_scope, compo
     }
 
 
-def make_entry_candidates(components):
+def is_production_source_scope(scope):
+    parts = {part.lower() for part in Path(str(scope or "")).parts}
+    return not parts.intersection({"test", "ohostest", "mock", "unittest"})
+
+
+def make_entry_candidates(components, modules):
     candidates = []
     next_id = 1
 
@@ -148,6 +153,8 @@ def make_entry_candidates(components):
         next_id += 1
 
     for component in components:
+        if not is_production_source_scope(component.get("source_scope")):
+            continue
         base = f"{component['module_file']}#{component['kind']}:{component.get('name') or component['component_id']}"
         if component.get("exported") is True:
             add("exported_component", component, base, {"exported": True})
@@ -171,71 +178,29 @@ def make_entry_candidates(components):
                 "requires_stub_publication_evidence": True,
             })
 
-    return candidates
-
-
-def build_discovery_plan(model):
-    candidates_by_component = {}
-    for candidate in model.get("entry_candidates", []):
-        component_id = candidate.get("component_id")
-        if component_id:
-            candidates_by_component.setdefault(component_id, []).append(candidate["candidate_id"])
-
-    units = []
-    for component in model.get("components", []):
-        candidate_ids = sorted(candidates_by_component.get(component["component_id"], []))
-        if not candidate_ids:
+    for module in modules:
+        if not is_production_source_scope(module.get("source_scope")):
             continue
-        ipc_candidate_ids = sorted(
-            candidate["candidate_id"]
-            for candidate in model.get("entry_candidates", [])
-            if candidate.get("component_id") == component["component_id"]
-            and candidate.get("type") == "ipc_service_candidate"
-        )
-        anchors = []
-        if component.get("name"):
-            anchors.append({"kind": "component", "query": component["name"]})
-        anchors.extend(
-            {"kind": "lifecycle", "query": name}
-            for name in component.get("lifecycle_candidates", [])
-        )
-        if ipc_candidate_ids:
-            anchors.extend([
-                {"kind": "ipc", "query": "onRemoteMessageRequest"},
-                {"kind": "ipc", "query": "RemoteObject"},
-                {"kind": "ipc_publication", "query": "addSystemAbility"},
-            ])
-        manifest_candidate_ids = sorted(set(candidate_ids) - set(ipc_candidate_ids))
-        units.append({
-            "unit_id": f"AU-{len(units) + 1:03d}",
-            "component_id": component["component_id"],
-            "entry_candidate_ids": candidate_ids,
-            "analysis_kinds": (["manifest_entry"] if manifest_candidate_ids else []) + (["ipc_server"] if ipc_candidate_ids else []),
-            "ipc_candidate_ids": ipc_candidate_ids,
-            "scope": component["source_scope"],
-            "source_file_hint": component.get("source_file_hint"),
-            "anchors": anchors,
-            "status": "planned",
-            "resolved_symbols": [],
-            "atlas_query_ids": [],
-            "gaps": [],
+        candidates.append({
+            "candidate_id": f"PE-{next_id:03d}",
+            "type": "common_event_candidate",
+            "source": "module_scope",
+            "component_id": None,
+            "component_name": None,
+            "module_name": module.get("name"),
+            "module_id": module.get("module_id"),
+            "location": module.get("file"),
+            "exported": None,
+            "permissions": [],
+            "src_entry": module.get("src_entry"),
+            "lifecycle_candidates": [],
+            "trigger_facts": {
+                "requires_custom_event_subscription_evidence": True,
+            },
         })
-    return {
-        "schema_version": 1,
-        "project_model_schema_version": model.get("schema_version"),
-        "target_repo": model.get("target_repo"),
-        "strategy": "manifest_anchors_atlas_scoped_expansion",
-        "source_content_scanned": False,
-        "units": units,
-        "summary": {
-            "total": len(units),
-            "planned": len(units),
-            "completed": 0,
-            "excluded": 0,
-            "unresolved": 0,
-            "atlas_gap": 0,
-        },
-    }
+        next_id += 1
+
+    return candidates
 
 
 def profile_project(target_repo):
@@ -289,6 +254,7 @@ def profile_project(target_repo):
     modules = []
     components = []
     requested_permissions = []
+    defined_permissions = []
     module_files = sorted(by_name.get("module.json5", []))
     if not module_files:
         diagnostics.append({"severity": "error", "kind": "missing_config", "file": None, "message": "module.json5 not found"})
@@ -312,6 +278,18 @@ def profile_project(target_repo):
                     "used_scene": item.get("usedScene"),
                 })
         requested_permissions.extend(row for row in permission_rows if row.get("name"))
+        defined_permission_rows = []
+        for item in as_list(module.get("definePermissions")):
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            defined_permission_rows.append({
+                "name": item.get("name"),
+                "grant_mode": item.get("grantMode"),
+                "available_level": item.get("availableLevel"),
+                "provision_enable": item.get("provisionEnable"),
+                "distributed_scene_enable": item.get("distributedSceneEnable"),
+            })
+        defined_permissions.extend(defined_permission_rows)
         module_file = relpath(path, root)
         module_scope = relpath(path.parent, root)
         module_components = []
@@ -333,6 +311,7 @@ def profile_project(target_repo):
             "installation_free": module.get("installationFree"),
             "virtual_machine": module.get("virtualMachine"),
             "request_permissions": permission_rows,
+            "defined_permissions": defined_permission_rows,
             "component_ids": module_components,
         })
 
@@ -360,7 +339,7 @@ def profile_project(target_repo):
             "modules": app.get("modules", data.get("modules", [])),
         })
 
-    entry_candidates = make_entry_candidates(components)
+    entry_candidates = make_entry_candidates(components, modules)
     status = "partial" if any(d["severity"] == "error" for d in diagnostics) else "complete"
     return {
         "schema_version": SCHEMA_VERSION,
@@ -372,6 +351,7 @@ def profile_project(target_repo):
             "components": len(components),
             "entry_candidates": len(entry_candidates),
             "requested_permissions": len({row["name"] for row in requested_permissions}),
+            "defined_permissions": len({row["name"] for row in defined_permissions}),
             "dependencies": len(dependencies),
             "parse_errors": sum(1 for d in diagnostics if d["severity"] == "error"),
         },
@@ -380,6 +360,7 @@ def profile_project(target_repo):
         "components": components,
         "entry_candidates": entry_candidates,
         "requested_permissions": requested_permissions,
+        "defined_permissions": defined_permissions,
         "dependencies": dependencies,
         "build_profiles": build_profiles,
         "parsed_files": parsed_files,
@@ -413,20 +394,15 @@ def main():
     parser = argparse.ArgumentParser(description="Deterministically profile a HarmonyOS/OpenHarmony project")
     parser.add_argument("target_repo")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--plan-output", required=True)
     args = parser.parse_args()
     try:
         model = profile_project(args.target_repo)
-        plan = build_discovery_plan(model)
         write_json_atomic(args.output, model)
-        write_json_atomic(args.plan_output, plan)
         print(json.dumps({
             "ok": True,
             "status": model["status"],
             "output": str(Path(args.output).resolve()),
-            "plan_output": str(Path(args.plan_output).resolve()),
             "summary": model["summary"],
-            "discovery_units": len(plan["units"]),
             "diagnostics": model["diagnostics"],
         }, ensure_ascii=False, indent=2))
     except Exception as exc:

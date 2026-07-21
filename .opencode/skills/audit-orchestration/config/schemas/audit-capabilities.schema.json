@@ -1,82 +1,33 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://harmony-sec.local/schemas/audit-capabilities-v1.json",
   "type": "object",
-  "required": ["schema_version", "baseline_date", "status_definitions", "scoring", "capabilities"],
+  "required": ["schema_version", "baseline_date", "status_definitions", "capabilities"],
   "properties": {
     "schema_version": {"const": 1},
     "baseline_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
     "status_definitions": {"type": "object"},
-    "scoring": {"type": "object"},
     "capabilities": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
         "required": [
-          "capability_id", "title", "domain", "analysis_mode", "pattern_ids",
-          "entry_types", "seed_categories", "routing", "attacker_controlled_properties",
-          "security_boundaries", "expected_guards", "atlas_strategy", "status",
-          "priority", "score", "implementation", "next_action"
+          "capability_id", "title", "domain", "pattern_ids", "entry_types",
+          "attacker_controlled_properties", "security_boundaries", "expected_guards",
+          "atlas_strategy", "status", "priority", "next_action"
         ],
         "properties": {
           "capability_id": {"type": "string", "pattern": "^CAP-[A-Z0-9-]+$"},
           "title": {"type": "string", "minLength": 1},
           "domain": {"type": "string", "minLength": 1},
-          "analysis_mode": {"enum": ["entry_sink_pattern", "source_sink_pattern", "asset_rule"]},
           "pattern_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
           "entry_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "seed_categories": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "routing": {
-            "oneOf": [
-              {"type": "null"},
-              {
-                "type": "object",
-                "required": ["enabled"],
-                "properties": {
-                  "enabled": {"type": "boolean"},
-                  "seed_tags_any": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-                  "seed_tags_none": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-                  "gap_reason": {"type": "string", "minLength": 1}
-                },
-                "allOf": [{
-                  "if": {"properties": {"enabled": {"const": false}}},
-                  "then": {"required": ["gap_reason"]}
-                }],
-                "additionalProperties": false
-              }
-            ]
-          },
           "attacker_controlled_properties": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
           "security_boundaries": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
           "expected_guards": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
           "atlas_strategy": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
           "status": {"enum": ["implemented", "partial", "planned", "deferred"]},
           "priority": {"enum": ["P0", "P1", "P2", "P3"]},
-          "score": {
-            "type": "object",
-            "required": ["impact", "prevalence", "atlas_feasibility", "false_positive_control", "testability", "total"],
-            "properties": {
-              "impact": {"type": "integer", "minimum": 1, "maximum": 5},
-              "prevalence": {"type": "integer", "minimum": 1, "maximum": 5},
-              "atlas_feasibility": {"type": "integer", "minimum": 1, "maximum": 5},
-              "false_positive_control": {"type": "integer", "minimum": 1, "maximum": 5},
-              "testability": {"type": "integer", "minimum": 1, "maximum": 5},
-              "total": {"type": "integer", "minimum": 5, "maximum": 25}
-            },
-            "additionalProperties": false
-          },
-          "implementation": {
-            "type": "object",
-            "required": ["route", "pattern_card", "worker_contract", "golden_corpus"],
-            "properties": {
-              "route": {"type": "boolean"},
-              "pattern_card": {"type": "boolean"},
-              "worker_contract": {"type": "boolean"},
-              "golden_corpus": {"type": "boolean"}
-            },
-            "additionalProperties": false
-          },
           "next_action": {"type": "string", "minLength": 1}
         },
         "additionalProperties": false

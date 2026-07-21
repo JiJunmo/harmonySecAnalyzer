@@ -1,13 +1,17 @@
 ---
-description: 启动鸿蒙 ArkTS 白盒安全审计
+description: 对 HarmonyOS ArkTS 项目执行入口驱动的白盒安全审计
 agent: harmony-auditor
-subtask: false
 ---
-对 $2 执行「$1」范围的安全审计。
 
-scope 用作本次运行的审计焦点和目录标签；省略时为 `full`。实际启用的漏洞能力与路由以
-`audit-orchestration` Skill 的能力注册表为准，不得因 scope 名称假定尚未注册的能力。
+审计参数：`$ARGUMENTS`
 
-若 $2 未提供，询问用户目标仓绝对路径。若 $1 未提供，默认 full。
+语法：
 
-按 audit-workflow skill 执行：先确定性项目建模，再 `atlas_project open`，然后攻击面测绘 → 流式路径发现与验证 → 报告准入 → 分层报告，最终写入 `reports/` 目录。
+- `/audit <repo-path>`：全量审计。
+- `/audit --capability <CAP-ID> <repo-path>`：只启用指定能力画像，仍使用同一证据流架构。
+- `/audit --component <AbilityName> <repo-path>`：只审计指定 Ability 或 ExtensionAbility。
+- `/audit --component <module/AbilityName> <repo-path>`：使用模块限定名消除同名组件歧义。
+
+`--component` 与 `--capability` 均可重复并可组合。组件过滤在 Entry Planning 前确定性执行，不匹配的组件不创建审计任务。
+
+为本次审计创建隔离 run，完成项目建模与 Atlas 索引，依次推进 Entry Planning、Flow Analysis、Pattern Evaluation 和 Flow Validation；确定性准入通过后生成 Markdown 与 HTML 报告。
