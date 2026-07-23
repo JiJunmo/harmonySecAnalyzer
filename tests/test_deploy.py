@@ -19,7 +19,11 @@ class DeployTest(unittest.TestCase):
             commands.append(command)
             action = next(actions)
             payload = {"ok": True, "action": action, "files_indexed": 1}
-            return deploy.subprocess.CompletedProcess(command, 0, stdout=deploy.json.dumps(payload), stderr="")
+            output = Path(command[command.index("--output") + 1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(deploy.json.dumps(payload), encoding="utf-8")
+            noisy_stdout = "Atlas\xc2\xa0index\xc2\xa0complete\n"
+            return deploy.subprocess.CompletedProcess(command, 0, stdout=noisy_stdout, stderr="")
 
         with patch.object(deploy.subprocess, "run", side_effect=completed):
             good, message = deploy.smoke_atlas_indexer(

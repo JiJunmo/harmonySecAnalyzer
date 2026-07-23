@@ -222,7 +222,10 @@ def smoke_atlas_indexer(indexer, python, atlas):
             )
             if result.returncode != 0:
                 return False, f"Atlas indexer 失败: {result.stderr.strip() or result.stdout.strip()}"
-            payload = json.loads(result.stdout)
+            try:
+                payload = json.loads(output.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as exc:
+                return False, f"Atlas index result 文件无效: {exc}"
             actions.append(payload.get("action"))
             files_indexed = payload.get("files_indexed")
             if not payload.get("ok") or not isinstance(files_indexed, int) or files_indexed <= 0:
