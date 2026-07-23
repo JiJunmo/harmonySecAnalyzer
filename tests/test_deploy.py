@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import deploy
 
@@ -9,6 +10,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeployTest(unittest.TestCase):
+    def test_atlas_smoke_uses_resolved_executable_instead_of_temporary_stub(self):
+        atlas = Path("C:/Tools/atlas.exe")
+        actions = iter(("index", "sync"))
+        commands = []
+
+        def completed(command, **kwargs):
+            commands.append(command)
+            action = next(actions)
+            payload = {"ok": True, "action": action, "files_indexed": 3}
+            return deploy.subprocess.CompletedProcess(command, 0, stdout=deploy.json.dumps(payload), stderr="")
+
+        with patch.object(deploy.subprocess, "run", side_effect=completed):
+            good, message = deploy.smoke_atlas_indexer(
+                ROOT / deploy.ATLAS_INDEXER_REL, "python", atlas,
+            )
+
+        self.assertTrue(good, message)
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            self.assertEqual(command[command.index("--atlas") + 1], str(atlas))
+            self.assertNotEqual(Path(command[command.index("--atlas") + 1]).parent, Path(tempfile.gettempdir()))
+
     def test_global_install_rewrites_runtime_paths(self):
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "opencode"

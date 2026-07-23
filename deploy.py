@@ -199,32 +199,16 @@ def validate_structure(root):
 
 # ---------------- 状态机 smoke ----------------
 
-def smoke_atlas_indexer(indexer, python):
+def smoke_atlas_indexer(indexer, python, atlas):
     """Verify first-run index, repeat sync, status validation and output persistence."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         target = root / "target"
         target.mkdir()
-        fake_atlas = root / "atlas"
-        fake_atlas.write_text(
-            """#!/usr/bin/env python3
-import sys
-from pathlib import Path
-command = sys.argv[1]
-project = Path(sys.argv[sys.argv.index('--project') + 1])
-database = project / '.atlas' / 'atlas.db'
-if command in ('index', 'sync'):
-    database.parent.mkdir(parents=True, exist_ok=True)
-    database.write_bytes(b'smoke')
-    print(command + ' complete')
-elif command == 'status':
-    print('Files indexed:   3')
-else:
-    sys.exit(2)
-""",
+        (target / "Smoke.ets").write_text(
+            "export function atlasSmoke(): boolean { return true; }\n",
             encoding="utf-8",
         )
-        fake_atlas.chmod(0o755)
         output = root / "run" / "atlas" / "index_status.json"
 
         actions = []
@@ -232,7 +216,7 @@ else:
             result = subprocess.run(
                 [
                     python, str(indexer), str(target), "--output", str(output),
-                    "--atlas", str(fake_atlas),
+                    "--atlas", str(atlas),
                 ],
                 capture_output=True, text=True, timeout=20,
             )
@@ -247,7 +231,7 @@ else:
         return True, "首次 full-analysis index + 后续 incremental sync 通过"
 
 
-def smoke_flow_runtime(orch, python):
+def smoke_flow_runtime(orch, python, atlas):
     """Exercise deterministic preparation, isolated allocation and entry resolution."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -255,29 +239,15 @@ def smoke_flow_runtime(orch, python):
         module = target / "entry/src/main"
         module.mkdir(parents=True)
         (module / "module.json5").write_text(
-            "{module:{name:'entry',abilities:[{name:'EntryAbility',exported:true}]}}",
+            "{module:{name:'entry',abilities:[{name:'EntryAbility',exported:true,srcEntry:'./ets/EntryAbility.ets'}]}}",
             encoding="utf-8",
         )
-        atlas = root / "atlas"
-        atlas.write_text(
-            """#!/usr/bin/env python3
-import sys
-from pathlib import Path
-command = sys.argv[1]
-project = Path(sys.argv[sys.argv.index('--project') + 1])
-database = project / '.atlas' / 'atlas.db'
-if command in ('index', 'sync'):
-    database.parent.mkdir(parents=True, exist_ok=True)
-    database.write_bytes(b'smoke')
-    print(command + ' complete')
-elif command == 'status':
-    print('Files indexed:   3')
-else:
-    sys.exit(2)
-""",
+        source = module / "ets" / "EntryAbility.ets"
+        source.parent.mkdir()
+        source.write_text(
+            "export default class EntryAbility { onCreate(): void {} }\n",
             encoding="utf-8",
         )
-        atlas.chmod(0o755)
 
         def invoke(*args):
             result = subprocess.run([python, str(orch), *map(str, args)], capture_output=True, text=True, timeout=20)
@@ -547,13 +517,13 @@ def main():
         else:
             fail(f"项目建模 smoke 失败: {msg}")
             validation_ok = False
-        good, msg = smoke_atlas_indexer(root / ATLAS_INDEXER_REL, py)
+        good, msg = smoke_atlas_indexer(root / ATLAS_INDEXER_REL, py, atlas)
         if good:
             ok(f"Atlas 索引 smoke: {msg}")
         else:
             fail(f"Atlas 索引 smoke 失败: {msg}")
             validation_ok = False
-        good, msg = smoke_flow_runtime(root / ORCH_REL, py)
+        good, msg = smoke_flow_runtime(root / ORCH_REL, py, atlas)
         if good:
             ok(f"状态机 smoke: {msg}")
         else:
