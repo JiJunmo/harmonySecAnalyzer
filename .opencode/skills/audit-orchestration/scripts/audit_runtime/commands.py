@@ -2,299 +2,137 @@
 from __future__ import annotations
 
 import json
-import shutil
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .common import *
-from .contracts import SCHEMA_BY_TASK, normalize_submission, validate_submission
+from .contracts import normalize_submission, validate_submission
+from .lifecycle import candidate_rows, initialize_run, new_run, run_row, update_session
+from .scheduler import claim_tasks, fail_task, readiness, transition_failure
 from .store import *
-
-
-def _run_row(conn):
-    row = conn.execute("SELECT * FROM runs LIMIT 1").fetchone()
-    if row is None:
-        raise ValueError("run_not_initialized")
-    return row
 
 
 def _project_candidate_ids(paths, conn=None):
     model = read_json(paths["project_model"], {})
-    component_filter = row_json(_run_row(conn), "component_filter_json", []) if conn else []
-    return [row["candidate_id"] for row in _candidate_rows(model, component_filter)]
+    component_filter = row_json(run_row(conn), "component_filter_json", []) if conn else []
+    return [row["candidate_id"] for row in candidate_rows(model, component_filter)]
 
 
-def new_run(reports_root, target_repo, mode="full", capabilities=None, components=None):
-    target = Path(target_repo).expanduser().resolve()
-    if not target.is_dir():
-        raise ValueError(f"target_repo_not_found:{target}")
-    selected = capabilities or []
-    selected_components = list(dict.fromkeys(
-        str(component).strip() for component in (components or []) if str(component).strip()
-    ))
-    if mode == "capability" and not selected:
-        raise ValueError("capability_mode_requires_filter")
-    if mode == "full" and selected:
-        raise ValueError("full_mode_cannot_filter_capabilities")
-    load_capabilities(selected)
-    root = Path(reports_root).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    run_id = stable_id("RUN", {"target": str(target), "stamp": stamp})
-    run_dir = root / f"{target.name}-{stamp}-{run_id[-6:]}"
-    paths = ensure_run_dirs(run_dir)
-    initialize_database(paths["db"])
-    with database(paths["db"]) as conn, transaction(conn):
-        stamp_iso = now()
-        conn.execute(
-            """INSERT INTO runs
-               (run_id,target_repo,audit_mode,capability_filter_json,component_filter_json,status,created_at,updated_at,finalized_at)
-               VALUES (?,?,?,?,?,?,?,?,NULL)""",
-            (run_id, str(target), mode, canonical_json(selected), canonical_json(selected_components),
-             "created", stamp_iso, stamp_iso),
-        )
-        append_event(conn, "run_created", run_id, {
-            "target_repo": str(target), "mode": mode, "components": selected_components,
-        })
-    write_json(paths["session"], {
-        "schema_version": 1, "run_id": run_id, "run_dir": str(run_dir),
-        "target_repo": str(target), "mode": mode, "capabilities": selected,
-        "components": selected_components,
-        "status": "created", "created_at": stamp_iso,
-    })
-    return {"ok": True, "run_id": run_id, "run_dir": str(run_dir)}
-
-
-def initialize_run(run_dir, project_model):
-    paths = ensure_run_dirs(run_dir)
-    source = Path(project_model).expanduser().resolve()
-    model = read_json(source)
-    if not isinstance(model, dict) or model.get("status") != "complete":
-        raise ValueError("invalid_project_model")
-    if source != paths["project_model"].resolve():
-        shutil.copyfile(source, paths["project_model"])
-    with database(paths["db"]) as conn, transaction(conn):
-        run = _run_row(conn)
-        if run["status"] != "created":
-            raise ValueError(f"run_already_initialized:{run['status']}")
-        component_filter = row_json(run, "component_filter_json", [])
-        candidates = _candidate_rows(model, component_filter)
-        task_id = enqueue_task(conn, "entry-plan", "entry_planning", payload={
-            "project_model": str(paths["project_model"]), "entry_candidates": candidates,
-        })
-        conn.execute("UPDATE runs SET status='running',updated_at=? WHERE run_id=?", (now(), run["run_id"]))
-        append_event(conn, "run_initialized", run["run_id"], {
-            "entry_candidates": len(candidates), "components": component_filter,
-        })
-    _update_session(paths, "running")
-    return {"ok": True, "task_id": task_id, "entry_candidates": len(candidates)}
-
-
-def _component_aliases(candidate):
-    name = str(candidate.get("component_name") or "").strip()
-    module = str(candidate.get("module_name") or "").strip()
-    if not name:
-        return set()
-    aliases = {name, name.removeprefix("./"), name.rsplit(".", 1)[-1]}
-    for short_name in tuple(aliases):
-        if module:
-            aliases.update({f"{module}/{short_name}", f"{module}:{short_name}"})
-    return aliases
-
-
-def _candidate_rows(model, component_filter=None):
-    rows = [
-        row for row in model.get("entry_candidates", [])
-        if isinstance(row, dict) and row.get("candidate_id")
-    ]
-    requested = list(dict.fromkeys(component_filter or []))
-    if not requested:
-        return rows
-    matched = {target: [] for target in requested}
-    for row in rows:
-        aliases = _component_aliases(row)
-        for target in requested:
-            if target in aliases:
-                matched[target].append(row)
-    missing = [target for target, candidates in matched.items() if not candidates]
-    if missing:
-        raise ValueError("component_has_no_entry_candidates:" + ",".join(missing))
-    selected_ids = {
-        row["candidate_id"] for candidates in matched.values() for row in candidates
-    }
-    return [row for row in rows if row["candidate_id"] in selected_ids]
-
-
-def claim_tasks(run_dir, limit=5, worker="harmony-auditor", lease_seconds=1800, max_workers=5):
-    paths = run_paths(run_dir)
-    claimed = []
-    reclaimed = []
-    with database(paths["db"]) as conn, transaction(conn):
-        _run_row(conn)
-        stamp = now()
-        expired = conn.execute(
-            "SELECT task_id FROM tasks WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<?",
-            (stamp,),
-        ).fetchall()
-        for row in expired:
-            conn.execute(
-                "UPDATE tasks SET status='queued',lease_owner=NULL,lease_expires_at=NULL,error=?,updated_at=? WHERE task_id=?",
-                ("lease_expired", stamp, row["task_id"]),
-            )
-            reclaimed.append(row["task_id"])
-            append_event(conn, "task_lease_expired", row["task_id"], {})
-
-        running = conn.execute("SELECT COUNT(*) n FROM tasks WHERE status='running'").fetchone()["n"]
-        capacity = max(0, int(max_workers) - running)
-        claim_limit = min(max(1, min(int(limit), 32)), capacity)
-        if claim_limit == 0:
-            return {
-                "ok": True, "tasks": [], "count": 0, "running": running,
-                "capacity": 0, "reclaimed": reclaimed, "reason": "worker_pool_full",
-            }
-        rows = conn.execute(
-            """SELECT t.* FROM tasks t
-               WHERE t.status='queued' AND NOT EXISTS (
-                 SELECT 1 FROM task_dependencies d JOIN tasks p ON p.task_id=d.depends_on
-                 WHERE d.task_id=t.task_id AND p.status<>'completed')
-               ORDER BY t.created_at,t.task_id LIMIT ?""", (claim_limit,),
-        ).fetchall()
-        expires = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
-        for row in rows:
-            conn.execute(
-                "UPDATE tasks SET status='running',attempts=attempts+1,lease_owner=?,lease_expires_at=?,updated_at=? WHERE task_id=?",
-                (worker, expires, now(), row["task_id"]),
-            )
-            updated = conn.execute("SELECT * FROM tasks WHERE task_id=?", (row["task_id"],)).fetchone()
-            doc = task_document(updated)
-            doc["input"] = _task_context(conn, updated)
-            task_path = paths["tasks"] / f"{row['task_id']}.json"
-            submission_path = paths["tasks"] / f"{row['task_id']}.submission.json"
-            doc["task_file"] = str(task_path)
-            doc["submission_file"] = str(submission_path)
-            doc["result_schema_file"] = str(SCHEMAS_DIR / SCHEMA_BY_TASK[row["kind"]])
-            submission_path.unlink(missing_ok=True)
-            write_json(task_path, doc)
-            claimed.append({
-                "task_id": row["task_id"], "kind": row["kind"],
-                "assigned_agent": row["agent"], "attempt": updated["attempts"],
-                "task_file": str(task_path), "submission_file": str(submission_path),
-                "result_schema_file": doc["result_schema_file"],
-            })
-            append_event(conn, "task_claimed", row["task_id"], {"worker": worker})
-        running += len(claimed)
+def _assessment_gap_result(conn, task, error):
+    """Close one repeatedly invalid assessment without aborting unrelated paths."""
+    path = conn.execute("SELECT * FROM paths WHERE path_id=?", (task["subject_id"],)).fetchone()
+    flow = conn.execute("SELECT * FROM flows WHERE flow_id=?", (path["terminal_flow_id"],)).fetchone()
+    flow_ids = row_json(path, "flow_ids_json", [])
+    operation = None
+    fallback_fact = None
+    if flow_ids:
+        placeholders = ",".join("?" for _ in flow_ids)
+        operation = conn.execute(
+            f"SELECT * FROM facts WHERE flow_id IN ({placeholders}) AND fact_type='operation' "
+            "ORDER BY created_at,fact_id LIMIT 1", flow_ids,
+        ).fetchone()
+        fallback_fact = operation or conn.execute(
+            f"SELECT * FROM facts WHERE flow_id IN ({placeholders}) ORDER BY created_at,fact_id LIMIT 1",
+            flow_ids,
+        ).fetchone()
+    evidence_refs = row_json(fallback_fact, "evidence_json", []) if fallback_fact else []
+    location = operation["location"] if operation and operation["location"] else flow["current_symbol"]
     return {
-        "ok": True, "tasks": claimed, "count": len(claimed), "running": running,
-        "capacity": max(0, int(max_workers) - running), "reclaimed": reclaimed,
+        "task_id": task["task_id"], "path_id": task["subject_id"],
+        "summary": "Security assessment could not be completed after repeated invalid submissions.",
+        "assessments": [{
+            "capability_id": None, "pattern_id": None, "category": "unassessed",
+            "operation_fact_id": operation["fact_id"] if operation else None,
+            "classification": "insufficient_evidence", "title": "安全判定未完成",
+            "exploitability": {name: False for name in SIX_EXPLOITABILITY_CHECKS},
+            "root_cause": {
+                "operation_location": location, "branch": flow["branch_key"],
+                "boundary": "unassessed", "controlled_property": flow["controlled_property"],
+            },
+            "guards": [], "counter_evidence": [],
+            "demotion_reason": "安全判定结果连续未通过提交契约，未将该路径计为漏洞。",
+            "evidence_gap": error, "evidence_refs": evidence_refs,
+        }],
+        "evidence": [],
     }
 
 
-def _flow_context(conn, flow_id):
-    flow = conn.execute("SELECT * FROM flows WHERE flow_id=?", (flow_id,)).fetchone()
-    if flow is None:
-        return None
-    doc = dict(flow)
-    for source, target in (("controlled_values_json", "controlled_values"), ("payload_json", "payload")):
-        doc[target] = json.loads(doc.pop(source))
-    doc["facts"] = []
-    for row in conn.execute("SELECT * FROM facts WHERE flow_id=? ORDER BY created_at,fact_id", (flow_id,)):
-        fact = dict(row)
-        fact["evidence_refs"] = json.loads(fact.pop("evidence_json"))
-        fact["payload"] = json.loads(fact.pop("payload_json"))
-        doc["facts"].append(fact)
-    doc["edges"] = [dict(row) for row in conn.execute("SELECT * FROM edges WHERE flow_id=? ORDER BY created_at,edge_id", (flow_id,))]
-    return doc
-
-
-def _attach_ancestors(conn, flow):
-    ancestors = []
-    seen = {flow["flow_id"]}
-    parent_id = flow.get("parent_flow_id")
-    while parent_id and parent_id not in seen:
-        seen.add(parent_id)
-        parent = _flow_context(conn, parent_id)
-        if not parent:
-            break
-        ancestors.append(parent)
-        parent_id = parent.get("parent_flow_id")
-    flow["ancestors"] = ancestors
-    return flow
-
-
-def _task_context(conn, task):
-    payload = row_json(task, "input_json", {})
-    if task["kind"] == "entry_exploration":
-        return payload
-    if task["kind"] in {"shared_handler", "chain_correlation"}:
-        continuations = []
-        for row in conn.execute("SELECT * FROM continuations WHERE task_id=? ORDER BY created_at", (task["task_id"],)):
-            item = dict(row)
-            item["evidence_refs"] = json.loads(item.pop("evidence_json"))
-            item["parent_flow"] = _flow_context(conn, row["flow_id"])
-            root_entry = conn.execute(
-                "SELECT e.* FROM entries e JOIN flows f ON f.root_entry_id=e.entry_id WHERE f.flow_id=?", (row["flow_id"],)
-            ).fetchone()
-            profile_ids = set(row_json(root_entry, "profiles_json", [])) if root_entry else set()
-            item["capability_profiles"] = [cap for cap in load_capabilities() if cap["capability_id"] in profile_ids]
-            continuations.append(item)
-        return {**payload, "continuations": continuations}
-    if task["kind"] in {"pattern_evaluation", "flow_validation"}:
-        flow = _flow_context(conn, task["subject_id"])
-        if flow:
-            _attach_ancestors(conn, flow)
-        entry = None
-        if flow:
-            row = conn.execute("SELECT * FROM entries WHERE entry_id=?", (flow["root_entry_id"],)).fetchone()
-            if row:
-                entry = dict(row)
-                entry["profiles"] = json.loads(entry.pop("profiles_json"))
-                entry["discriminator"] = json.loads(entry.pop("discriminator_json"))
-                entry["payload"] = json.loads(entry.pop("payload_json"))
-        hypotheses = [dict(row) for row in conn.execute("SELECT * FROM hypotheses WHERE flow_id=?", (task["subject_id"],))]
-        profile_ids = set((entry or {}).get("profiles", []))
-        capability_profiles = [row for row in load_capabilities() if row["capability_id"] in profile_ids]
-        return {**payload, "flow": flow, "entry": entry, "capability_profiles": capability_profiles, "hypotheses": hypotheses}
-    return payload
-
-
-def submit_result(run_dir, task_id, input_path):
+def submit_result(run_dir, task_id, input_path, attempt=None):
     paths = run_paths(run_dir)
     result = read_json(input_path)
-    if not isinstance(result, dict):
-        raise ValueError("invalid_result_json")
+    rejected = None
+    degraded_error = None
     with database(paths["db"]) as conn, transaction(conn):
         task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
         if task is None:
             raise ValueError("task_not_found")
         if task["status"] != "running":
-            raise ValueError(f"task_not_running:{task['status']}")
-        result = normalize_submission(result, task["kind"])
-        errors = validate_submission(result, task, conn, _project_candidate_ids(paths, conn))
-        if errors:
-            raise ValueError("invalid_submission:" + "|".join(errors))
-        if task["kind"] == "entry_planning":
-            summary = _merge_entry_plan(conn, task, result)
-        elif task["kind"] in {"entry_exploration", "shared_handler", "chain_correlation"}:
-            summary = _merge_flows(conn, task, result)
-        elif task["kind"] == "pattern_evaluation":
-            summary = _merge_patterns(conn, task, result)
-        elif task["kind"] == "flow_validation":
-            summary = _merge_validation(conn, task, result)
+            return {
+                "ok": True, "accepted": False, "task_id": task_id,
+                "status": task["status"], "error": f"task_not_running:{task['status']}",
+                "ignored": True,
+            }
+        if attempt is not None and int(attempt) != task["attempts"]:
+            return {
+                "ok": True, "accepted": False, "task_id": task_id, "status": task["status"],
+                "error": f"stale_attempt:expected={task['attempts']}:actual={attempt}", "ignored": True,
+            }
+        expected_input = paths["tasks"] / f"{task_id}.attempt-{task['attempts']}.submission.json"
+        if attempt is not None and Path(input_path).expanduser().resolve() != expected_input.resolve():
+            return {
+                "ok": True, "accepted": False, "task_id": task_id, "status": task["status"],
+                "error": "unexpected_submission_path", "ignored": True,
+            }
+        if not isinstance(result, dict):
+            error = "invalid_result_json"
+            rejected = {"error": error, "status": transition_failure(conn, task, error)}
         else:
-            raise ValueError(f"unsupported_task_kind:{task['kind']}")
-        result_ref = paths["tasks"] / f"{task_id}.result.json"
-        write_json(result_ref, result)
-        conn.execute(
-            "UPDATE tasks SET status='completed',result_ref=?,lease_owner=NULL,lease_expires_at=NULL,error=NULL,updated_at=? WHERE task_id=?",
-            (str(result_ref), now(), task_id),
-        )
-        conn.execute("UPDATE continuations SET status='resolved',updated_at=? WHERE task_id=?", (now(), task_id))
-        append_event(conn, "task_completed", task_id, summary)
-    export_state(run_dir)
+            result = normalize_submission(result, task, conn)
+            errors = validate_submission(result, task, conn, _project_candidate_ids(paths, conn))
+            if errors:
+                error = "invalid_submission:" + "|".join(errors)
+                if task["kind"] == "security_assessment" and task["attempts"] >= MAX_TASK_ATTEMPTS:
+                    degraded_error = error
+                    result = _assessment_gap_result(conn, task, error)
+                    summary = _merge_security_assessment(conn, task, result)
+                    result_ref = paths["tasks"] / f"{task_id}.result.json"
+                    write_json(result_ref, result)
+                    conn.execute(
+                        "UPDATE tasks SET status='completed',result_ref=?,error=?,updated_at=? WHERE task_id=?",
+                        (str(result_ref), "degraded:" + error, now(), task_id),
+                    )
+                    append_event(conn, "task_degraded", task_id, {
+                        "error": error, "classification": "insufficient_evidence", **summary,
+                    })
+                else:
+                    rejected = {"error": error, "status": transition_failure(conn, task, error)}
+            else:
+                if task["kind"] == "entry_resolution":
+                    summary = _merge_entry_resolution(conn, task, result)
+                elif task["kind"] in {"entry_path_discovery", "continuation_resolution"}:
+                    summary = _merge_flows(conn, task, result)
+                elif task["kind"] == "security_assessment":
+                    summary = _merge_security_assessment(conn, task, result)
+                else:
+                    raise ValueError(f"unsupported_task_kind:{task['kind']}")
+                result_ref = paths["tasks"] / f"{task_id}.result.json"
+                write_json(result_ref, result)
+                conn.execute(
+                    "UPDATE tasks SET status='completed',result_ref=?,error=NULL,updated_at=? WHERE task_id=?",
+                    (str(result_ref), now(), task_id),
+                )
+                append_event(conn, "task_completed", task_id, summary)
+    if rejected:
+        if rejected["status"] == "failed":
+            update_session(paths, "failed", rejected["error"])
+        return {"ok": True, "accepted": False, "task_id": task_id, **rejected}
     submitted = Path(input_path).expanduser().resolve()
     if submitted != result_ref.resolve():
         submitted.unlink(missing_ok=True)
-    return {"ok": True, "task_id": task_id, **summary}
+    return {
+        "ok": True, "accepted": True, "task_id": task_id,
+        "status": "completed", "degraded": degraded_error is not None,
+        **({"error": degraded_error} if degraded_error else {}), **summary,
+    }
 
 
 def _insert_evidence(conn, task_id, rows):
@@ -315,10 +153,14 @@ def _evidence_refs(rows, identities):
     return [identities.get(ref, ref) for ref in rows]
 
 
-def _merge_entry_plan(conn, task, result):
+def _merge_entry_resolution(conn, task, result):
     evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
-    capabilities = load_capabilities(row_json(_run_row(conn), "capability_filter_json", []))
+    run = run_row(conn)
+    capabilities = load_capabilities(row_json(run, "capability_filter_json", []))
+    capability_scoped = run["audit_mode"] == "capability"
     created = []
+    path_tasks_created = 0
+    outside_capability_scope = 0
     candidate_entries = {}
     candidate_evidence = {}
     for entry in result["entries"]:
@@ -336,9 +178,13 @@ def _merge_entry_plan(conn, task, result):
         for candidate_id in entry["project_candidate_ids"]:
             candidate_entries.setdefault(candidate_id, []).append(entry_id)
             candidate_evidence.setdefault(candidate_id, set()).update(entry_payload["evidence_refs"])
-        enqueue_task(conn, f"entry:{entry_id}", "entry_exploration", entry_id, {
-            "entry": {**entry_payload, "entry_id": entry_id}, "capability_profiles": profile_rows,
-        }, [task["task_id"]])
+        if not capability_scoped or profiles:
+            enqueue_task(conn, f"entry:{entry_id}", "entry_path_discovery", entry_id, {
+                "entry": {**entry_payload, "entry_id": entry_id}, "capability_profiles": profile_rows,
+            }, [task["task_id"]])
+            path_tasks_created += 1
+        else:
+            outside_capability_scope += 1
         created.append(entry_id)
     for candidate_id, entry_ids in candidate_entries.items():
         singular_entry_id = entry_ids[0] if len(entry_ids) == 1 else None
@@ -350,12 +196,48 @@ def _merge_entry_plan(conn, task, result):
             for candidate_id in row["project_candidate_ids"]:
                 conn.execute("INSERT INTO entry_dispositions VALUES (?,?,?,?,?)", (
                     candidate_id, disposition, None, row["reason"], canonical_json(_evidence_refs(row["evidence_refs"], evidence_ids))))
-    return {"entries_created": len(created)}
+    return {
+        "entries_created": len(created),
+        "path_tasks_created": path_tasks_created,
+        "entries_outside_capability_scope": outside_capability_scope,
+    }
+
+
+def _flow_lineage_ids(conn, flow_id):
+    lineage = []
+    seen = set()
+    current = flow_id
+    while current and current not in seen:
+        seen.add(current)
+        lineage.append(current)
+        row = conn.execute("SELECT parent_flow_id FROM flows WHERE flow_id=?", (current,)).fetchone()
+        current = row["parent_flow_id"] if row else None
+    return list(reversed(lineage))
+
+
+def _create_path(conn, terminal_flow_id, status, source_task_id, gap_continuation_id=None):
+    flow = conn.execute("SELECT root_entry_id FROM flows WHERE flow_id=?", (terminal_flow_id,)).fetchone()
+    path_id = stable_id("PATH", [terminal_flow_id, gap_continuation_id])
+    stamp = now()
+    conn.execute(
+        """INSERT INTO paths(path_id,root_entry_id,terminal_flow_id,gap_continuation_id,status,flow_ids_json,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?)
+           ON CONFLICT(path_id) DO UPDATE SET status=excluded.status,flow_ids_json=excluded.flow_ids_json,
+             updated_at=excluded.updated_at""",
+        (path_id, flow["root_entry_id"], terminal_flow_id, gap_continuation_id, status,
+         canonical_json(_flow_lineage_ids(conn, terminal_flow_id)), stamp, stamp),
+    )
+    enqueue_task(conn, f"security:{path_id}", "security_assessment", path_id, {
+        "path_id": path_id,
+    }, [source_task_id])
+    return path_id, "security_assessment"
 
 
 def _merge_flows(conn, task, result):
     evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
     produced = []
+    paths_created = []
+    followup_count = 0
     for item in result["flows"]:
         item_payload = {
             **item,
@@ -363,36 +245,35 @@ def _merge_flows(conn, task, result):
             "edges": [{**row, "evidence_refs": _evidence_refs(row["evidence_refs"], evidence_ids)} for row in item["edges"]],
             "continuations": [{**row, "evidence_refs": _evidence_refs(row["evidence_refs"], evidence_ids)} for row in item["continuations"]],
         }
-        canonical_flow_key = flow_identity_key(item)
-        flow_id = stable_id("FLOW", canonical_flow_key)
-        old = conn.execute("SELECT * FROM flows WHERE flow_key=?", (canonical_flow_key,)).fetchone()
-        if old and any(old[k] != item[v] for k, v in (
-            ("root_entry_id", "root_entry_id"), ("branch_key", "branch_key"),
-            ("controlled_property", "controlled_property"))):
-            raise ValueError(f"flow_identity_conflict:{canonical_flow_key}")
+        identity_key = flow_identity_key(item)
+        flow_id = stable_id("FLOW", identity_key)
         stamp = now()
         conn.execute(
-            """INSERT INTO flows(flow_id,flow_key,root_entry_id,parent_flow_id,branch_key,controlled_property,current_symbol,status,controlled_values_json,payload_json,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(flow_key) DO UPDATE SET current_symbol=excluded.current_symbol,status=excluded.status,
+            """INSERT INTO flows(flow_id,identity_key,root_entry_id,parent_flow_id,producer_task_id,branch_key,controlled_property,current_symbol,status,controlled_values_json,payload_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(identity_key) DO UPDATE SET current_symbol=excluded.current_symbol,status=excluded.status,
                  controlled_values_json=excluded.controlled_values_json,payload_json=excluded.payload_json,updated_at=excluded.updated_at""",
-            (flow_id, canonical_flow_key, item["root_entry_id"], item.get("parent_flow_id"), item["branch_key"],
-             item["controlled_property"], item["current_symbol"], item["status"], canonical_json(item["controlled_values"]),
-             canonical_json(item_payload), stamp, stamp),
+            (flow_id, identity_key, item["root_entry_id"], item.get("parent_flow_id"), task["task_id"],
+             item["branch_key"], item["controlled_property"], item["current_symbol"], item["status"],
+             canonical_json(item["controlled_values"]), canonical_json(item_payload), stamp, stamp),
         )
         fact_ids = {}
         for fact in item["facts"]:
-            fact_id = stable_id("FACT", [flow_id, fact["fact_key"]])
+            canonical_fact_key = fact_identity_key(fact)
+            fact_id = stable_id("FACT", [flow_id, canonical_fact_key])
             fact_ids[fact["fact_key"]] = fact_id
-            fact_payload = {**fact, "evidence_refs": _evidence_refs(fact["evidence_refs"], evidence_ids)}
+            fact_ids[canonical_fact_key] = fact_id
+            fact_payload = {**fact, "source_fact_key": fact["fact_key"],
+                            "evidence_refs": _evidence_refs(fact["evidence_refs"], evidence_ids)}
             conn.execute(
-                """INSERT OR IGNORE INTO facts(fact_id,fact_key,flow_id,fact_type,body,location,evidence_json,payload_json,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (fact_id, fact["fact_key"], flow_id, fact["type"], fact["body"], fact.get("location"),
+                """INSERT INTO facts(fact_id,fact_key,flow_id,fact_type,body,location,evidence_json,payload_json,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(flow_id,fact_key) DO UPDATE SET fact_type=excluded.fact_type,
+                     body=excluded.body,location=excluded.location,evidence_json=excluded.evidence_json,
+                     payload_json=excluded.payload_json""",
+                (fact_id, canonical_fact_key, flow_id, fact["type"], fact["body"], fact.get("location"),
                  canonical_json(fact_payload["evidence_refs"]), canonical_json(fact_payload), now()),
             )
-        for row in conn.execute("SELECT fact_key,fact_id FROM facts WHERE flow_id=?", (flow_id,)):
-            fact_ids[row["fact_key"]] = row["fact_id"]
         parent_id = item.get("parent_flow_id")
         seen_parents = set()
         while parent_id and parent_id not in seen_parents:
@@ -402,137 +283,192 @@ def _merge_flows(conn, task, result):
             parent = conn.execute("SELECT parent_flow_id FROM flows WHERE flow_id=?", (parent_id,)).fetchone()
             parent_id = parent["parent_flow_id"] if parent else None
         for edge in item["edges"]:
-            edge_id = stable_id("EDGE", [flow_id, edge["from"], edge["to"], edge["kind"]])
+            edge_id = stable_id("EDGE", [flow_id, fact_ids[edge["from"]], fact_ids[edge["to"]], edge["kind"]])
             conn.execute(
-                "INSERT OR IGNORE INTO edges VALUES (?,?,?,?,?,?,?)",
+                """INSERT INTO edges VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(flow_id,from_fact_id,to_fact_id,kind) DO UPDATE SET evidence_json=excluded.evidence_json""",
                 (edge_id, flow_id, fact_ids[edge["from"]], fact_ids[edge["to"]], edge["kind"],
                  canonical_json(_evidence_refs(edge["evidence_refs"], evidence_ids)), now()),
             )
         for continuation in item["continuations"]:
-            continuation_payload = {**continuation, "evidence_refs": _evidence_refs(continuation["evidence_refs"], evidence_ids)}
             continuation_id = stable_id("CONT", [flow_id, continuation["semantic_key"]])
-            if continuation["kind"] == "shared_handler":
-                semantic = "shared:" + normalize_text(continuation["target"])
-                kind = "shared_handler"
-            else:
-                semantic = "chain:" + continuation_id
-                kind = "chain_correlation"
-            existing_task = conn.execute("SELECT * FROM tasks WHERE semantic_key=?", (semantic,)).fetchone()
-            if kind == "shared_handler" and existing_task and existing_task["status"] != "queued":
-                semantic = "shared-join:" + continuation_id
-                kind = "chain_correlation"
-            next_task = enqueue_task(conn, semantic, kind, flow_id, {
-                "parent_flow_id": flow_id, "continuation": continuation_payload,
-            }, [task["task_id"]])
+            target_known = continuation["kind"] != "unknown_target"
+            handler_key = handler_identity(continuation["target"]) if target_known else None
+            base_semantic = "continuation:" + (handler_key if target_known else continuation_id)
+            existing_task = conn.execute("SELECT * FROM tasks WHERE semantic_key=?", (base_semantic,)).fetchone()
+            dependencies = [task["task_id"]]
+            reuse_task_ids = []
+            continuation_status = "open"
+            if existing_task and existing_task["status"] != "queued":
+                if existing_task["task_id"] == task["task_id"]:
+                    continuation_status = "gap"
+                    next_task = None
+                else:
+                    base_semantic = "continuation-join:" + continuation_id
+                    reuse_task_ids.append(existing_task["task_id"])
+                    if existing_task["status"] == "running":
+                        dependencies.append(existing_task["task_id"])
+            if continuation_status == "open":
+                next_task = enqueue_task(conn, base_semantic, "continuation_resolution", flow_id, {
+                    "handler_key": handler_key, "target_known": target_known,
+                    "reuse_task_ids": reuse_task_ids,
+                }, dependencies)
             conn.execute(
-                """INSERT OR IGNORE INTO continuations(continuation_id,semantic_key,flow_id,kind,target,status,task_id,evidence_json,created_at,updated_at)
-                   VALUES (?,?,?,?,?,'open',?,?,?,?)""",
+                """INSERT INTO continuations(continuation_id,semantic_key,flow_id,kind,target,status,task_id,child_flow_ids_json,evidence_json,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(flow_id,semantic_key) DO UPDATE SET kind=excluded.kind,target=excluded.target,
+                     status=excluded.status,task_id=excluded.task_id,child_flow_ids_json=excluded.child_flow_ids_json,
+                     evidence_json=excluded.evidence_json,updated_at=excluded.updated_at""",
                 (continuation_id, continuation["semantic_key"], flow_id, continuation["kind"], continuation["target"],
-                 next_task, canonical_json(_evidence_refs(continuation["evidence_refs"], evidence_ids)), now(), now()),
+                 continuation_status, next_task, "[]",
+                 canonical_json(_evidence_refs(continuation["evidence_refs"], evidence_ids)), now(), now()),
             )
+            if continuation_status == "gap":
+                path_id, followup = _create_path(conn, flow_id, "gap", task["task_id"], continuation_id)
+                paths_created.append(path_id)
+                if followup: followup_count += 1
         if item["status"] in TERMINAL_FLOW_STATES:
-            enqueue_task(conn, f"pattern:{flow_id}", "pattern_evaluation", flow_id, {
-                "flow_id": flow_id, "flow_key": canonical_flow_key}, [task["task_id"]])
+            path_id, followup = _create_path(conn, flow_id, item["status"], task["task_id"])
+            paths_created.append(path_id)
+            if followup: followup_count += 1
         produced.append(flow_id)
-    return {"flows_merged": len(produced), "flow_ids": produced}
+
+    if task["kind"] == "continuation_resolution":
+        by_parent = {}
+        for item, flow_id in zip(result["flows"], produced):
+            by_parent.setdefault(item.get("parent_flow_id"), []).append(flow_id)
+        for row in conn.execute("SELECT continuation_id,flow_id FROM continuations WHERE task_id=?", (task["task_id"],)):
+            children = sorted(by_parent.get(row["flow_id"], []))
+            conn.execute(
+                "UPDATE continuations SET status='resolved',child_flow_ids_json=?,updated_at=? WHERE continuation_id=?",
+                (canonical_json(children), now(), row["continuation_id"]),
+            )
+    return {
+        "flows_merged": len(produced), "flow_ids": produced,
+        "paths_created": len(paths_created), "path_ids": paths_created,
+        "security_assessment_tasks_created": followup_count,
+    }
 
 
-def _merge_patterns(conn, task, result):
-    for row in result["assessments"]:
-        hypothesis_id = stable_id("HYP", [result["flow_id"], row["capability_id"], row["pattern_id"]])
-        conn.execute(
-            "INSERT INTO hypotheses VALUES (?,?,?,?,?,?,?,?,?)",
-            (hypothesis_id, result["flow_id"], row["capability_id"], row["pattern_id"], row["verdict"],
-             row["boundary"], row["reason"], canonical_json(row["evidence_refs"]), now()),
-        )
-    enqueue_task(conn, f"validate:{result['flow_id']}", "flow_validation", result["flow_id"], {
-        "flow_id": result["flow_id"], "assessments": result["assessments"]}, [task["task_id"]])
-    return {"hypotheses_created": len(result["assessments"])}
-
-
-def _merge_validation(conn, task, result):
-    root = result["root_cause"]
+def _merge_finding(conn, assessment, assessment_id):
+    root = assessment["root_cause"]
     root_key = canonical_json({
         "operation": normalize_location(root["operation_location"]), "branch": normalize_text(root["branch"]),
         "boundary": normalize_text(root["boundary"]), "controlled_property": normalize_text(root["controlled_property"]),
     })
     finding_id = stable_id("FIND", root_key)
-    payload = {**result, "reason": result["reason"], "guards": result["guards"]}
+    payload = {**assessment, "assessment_ids": [assessment_id]}
     existing = conn.execute("SELECT * FROM findings WHERE root_cause_key=?", (root_key,)).fetchone()
     if existing:
-        merged = sorted(set(row_json(existing, "evidence_json", [])) | set(result["evidence_refs"]))
+        merged = sorted(set(row_json(existing, "evidence_json", [])) | set(assessment["evidence_refs"]))
         old_payload = row_json(existing, "payload_json", {})
-        related = sorted(set(old_payload.get("related_flow_ids", [existing["flow_id"]])) | {result["flow_id"]})
+        related = sorted(set(old_payload.get("related_path_ids", [existing["path_id"]])) | {assessment["path_id"]})
+        assessment_ids = sorted(set(old_payload.get("assessment_ids", [])) | {assessment_id})
         validations = old_payload.get("validations", [{
-            "flow_id": existing["flow_id"], "classification": existing["classification"],
-            "reason": old_payload.get("reason", ""),
+            "path_id": existing["path_id"], "classification": existing["classification"],
+            "conclusion": old_payload.get("conclusion", ""),
         }])
-        validations.append({"flow_id": result["flow_id"], "classification": result["classification"], "reason": result["reason"]})
-        payload["related_flow_ids"] = related
-        payload["validations"] = sorted(validations, key=lambda row: (row["flow_id"], row["classification"], row["reason"]))
-        rank = {"benign_business_flow": 1, "insufficient_evidence": 2, "protected_exposure": 3,
-                "residual_risk": 4, "confirmed_vulnerability": 5}
-        if rank[result["classification"]] > rank[existing["classification"]]:
+        validations.append({"path_id": assessment["path_id"], "classification": assessment["classification"], "conclusion": assessment["conclusion"]})
+        payload["related_path_ids"] = related
+        payload["assessment_ids"] = assessment_ids
+        payload["validations"] = sorted(validations, key=lambda row: (row["path_id"], row["classification"], row["conclusion"]))
+        rank = {"residual_risk": 1, "confirmed_vulnerability": 2}
+        if rank[assessment["classification"]] > rank[existing["classification"]]:
             conn.execute(
-                """UPDATE findings SET flow_id=?,classification=?,title=?,severity=?,cwe=?,impact=?,poc=?,
+                """UPDATE findings SET path_id=?,classification=?,title=?,severity=?,cwe=?,impact=?,poc=?,
                    boundary=?,controlled_property=?,operation_location=?,evidence_json=?,payload_json=? WHERE finding_id=?""",
-                (result["flow_id"], result["classification"], result["title"], result["severity"], result["cwe"],
-                 result["impact"], result["poc"], result["boundary"], root["controlled_property"],
+                (assessment["path_id"], assessment["classification"], assessment["title"], assessment["severity"], assessment["cwe"],
+                 assessment["impact"], assessment["poc"], root["boundary"], root["controlled_property"],
                  root["operation_location"], canonical_json(merged), canonical_json(payload), existing["finding_id"]),
             )
         else:
-            old_payload["related_flow_ids"] = related
+            old_payload["related_path_ids"] = related
+            old_payload["assessment_ids"] = assessment_ids
             old_payload["validations"] = payload["validations"]
             conn.execute("UPDATE findings SET evidence_json=?,payload_json=? WHERE finding_id=?",
                          (canonical_json(merged), canonical_json(old_payload), existing["finding_id"]))
         finding_id = existing["finding_id"]
         merged_root = True
     else:
-        payload["related_flow_ids"] = [result["flow_id"]]
+        payload["related_path_ids"] = [assessment["path_id"]]
         conn.execute(
             "INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (finding_id, root_key, result["flow_id"], result["classification"], result["title"], result["severity"],
-             result["cwe"], result["impact"], result["poc"], result["boundary"], root["controlled_property"],
-             root["operation_location"], canonical_json(result["evidence_refs"]), canonical_json(payload), now()),
+            (finding_id, root_key, assessment["path_id"], assessment["classification"], assessment["title"], assessment["severity"],
+             assessment["cwe"], assessment["impact"], assessment["poc"], root["boundary"], root["controlled_property"],
+             root["operation_location"], canonical_json(assessment["evidence_refs"]), canonical_json(payload), now()),
         )
         merged_root = False
-    return {"finding_id": finding_id, "root_cause_merged": merged_root}
+    return finding_id, merged_root
 
 
-def fail_task(run_dir, task_id, error, retryable=False, max_attempts=2):
-    paths = run_paths(run_dir)
-    with database(paths["db"]) as conn, transaction(conn):
-        task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        if task is None or task["status"] != "running":
-            raise ValueError("task_not_running")
-        status = "queued" if retryable and task["attempts"] < max_attempts else "failed"
-        conn.execute("UPDATE tasks SET status=?,error=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE task_id=?",
-                     (status, error, now(), task_id))
-        append_event(conn, "task_retry" if status == "queued" else "task_failed", task_id, {"error": error})
-    return {"ok": True, "task_id": task_id, "status": status}
-
-
-def readiness(run_dir):
-    paths = run_paths(run_dir)
-    with database(paths["db"]) as conn:
-        run = _run_row(conn)
-        counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
-        open_continuations = conn.execute("SELECT COUNT(*) n FROM continuations WHERE status='open'").fetchone()["n"]
-        candidates = len(_project_candidate_ids(paths, conn))
-        dispositions = conn.execute("SELECT COUNT(*) n FROM entry_dispositions").fetchone()["n"]
-        reasons = []
-        if counts.get("queued", 0) or counts.get("running", 0): reasons.append("unfinished_tasks")
-        if counts.get("failed", 0): reasons.append("failed_tasks")
-        if open_continuations: reasons.append("open_continuations")
-        if candidates != dispositions: reasons.append("entry_coverage_incomplete")
-        if run["status"] == "created": reasons.append("run_not_initialized")
-        return {"ok": not reasons, "ready": not reasons, "reasons": reasons, "task_counts": counts,
-                "open_continuations": open_continuations, "candidate_coverage": {"total": candidates, "disposed": dispositions}}
+def _merge_security_assessment(conn, task, result):
+    evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
+    finding_ids = []
+    merged_roots = 0
+    for row in result["assessments"]:
+        business_intent = dict(row.get("business_intent") or {})
+        if business_intent:
+            business_intent["evidence_refs"] = _evidence_refs(business_intent["evidence_refs"], evidence_ids)
+        security_boundary = dict(row.get("security_boundary") or {})
+        if security_boundary:
+            security_boundary["evidence_refs"] = _evidence_refs(security_boundary["evidence_refs"], evidence_ids)
+        guards = [
+            {**guard, "evidence_refs": _evidence_refs(guard["evidence_refs"], evidence_ids)}
+            for guard in row["guards"]
+        ]
+        counter_evidence = [
+            {**counter, "evidence_refs": _evidence_refs(counter["evidence_refs"], evidence_ids)}
+            for counter in row["counter_evidence"]
+        ]
+        assessment = {
+            **row, "path_id": result["path_id"], "business_intent": business_intent,
+            "security_boundary": security_boundary, "guards": guards,
+            "counter_evidence": counter_evidence,
+            "evidence_refs": _evidence_refs(row["evidence_refs"], evidence_ids),
+        }
+        assessment["conclusion"] = assessment.get("impact") or assessment.get("demotion_reason") or ""
+        root = assessment["root_cause"]
+        assessment_id = stable_id("ASSESS", [
+            result["path_id"], assessment.get("pattern_id"), assessment["category"],
+            assessment.get("operation_fact_id"), root["boundary"],
+        ])
+        conn.execute(
+            """INSERT INTO security_assessments
+               (assessment_id,path_id,capability_id,pattern_id,category,operation_fact_id,classification,title,
+                severity,cwe,impact,poc,boundary,controlled_property,operation_location,exploitability_json,
+                business_intent_json,security_boundary_json,guards_json,counter_evidence_json,demotion_reason,
+                evidence_gap,evidence_json,payload_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (assessment_id, result["path_id"], assessment.get("capability_id"), assessment.get("pattern_id"),
+             assessment["category"], assessment.get("operation_fact_id"), assessment["classification"],
+             assessment["title"], assessment.get("severity"), assessment.get("cwe"), assessment.get("impact"),
+             assessment.get("poc"), root["boundary"], root["controlled_property"], root["operation_location"],
+             canonical_json(assessment["exploitability"]), canonical_json(business_intent),
+             canonical_json(security_boundary), canonical_json(guards), canonical_json(counter_evidence),
+             assessment.get("demotion_reason"), assessment.get("evidence_gap"),
+             canonical_json(assessment["evidence_refs"]), canonical_json(assessment), now()),
+        )
+        if assessment["classification"] in {"confirmed_vulnerability", "residual_risk"}:
+            finding_id, merged = _merge_finding(conn, assessment, assessment_id)
+            finding_ids.append(finding_id)
+            merged_roots += int(merged)
+    return {
+        "assessments_created": len(result["assessments"]),
+        "findings_affected": len(set(finding_ids)), "root_causes_merged": merged_roots,
+    }
 
 
 def export_state(run_dir):
     from .reporting import export_state as _export
     return _export(run_dir)
+
+
+def build_report_ready(run_dir):
+    from .reporting import build_report
+    ready = readiness(run_dir)
+    if not ready["ready"]:
+        raise ValueError("run_not_ready:" + ",".join(ready["reasons"]))
+    return {"ok": True, **build_report(run_dir)}
 
 
 def finalize_run(run_dir):
@@ -543,28 +479,28 @@ def finalize_run(run_dir):
     result = build_report(run_dir)
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn, transaction(conn):
-        run = _run_row(conn)
+        run = run_row(conn)
         stamp = now()
         conn.execute("UPDATE runs SET status='complete',updated_at=?,finalized_at=? WHERE run_id=?", (stamp, stamp, run["run_id"]))
         append_event(conn, "run_finalized", run["run_id"], result)
-    _update_session(paths, "complete")
+    update_session(paths, "complete")
     return {"ok": True, **result}
-
-
-def _update_session(paths, status):
-    session = read_json(paths["session"], {})
-    session["status"] = status
-    session["updated_at"] = now()
-    write_json(paths["session"], session)
 
 
 def status(run_dir):
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn:
-        run = dict(_run_row(conn))
+        run = dict(run_row(conn))
         run["capability_filter"] = json.loads(run.pop("capability_filter_json"))
         run["component_filter"] = json.loads(run.pop("component_filter_json"))
         task_counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
         counts = {table: conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"]
-                  for table in ("entries", "flows", "facts", "continuations", "hypotheses", "findings")}
-    return {"ok": True, "run": run, "tasks": task_counts, "objects": counts, "readiness": readiness(run_dir)}
+                  for table in ("entries", "flows", "paths", "facts", "continuations", "security_assessments", "findings")}
+        retry_categories = {}
+        for row in conn.execute("SELECT payload_json FROM events WHERE event_type='task_retry'"):
+            payload = json.loads(row["payload_json"])
+            category = payload.get("category") or str(payload.get("error") or "unknown").split(":", 1)[0]
+            retry_categories[category] = retry_categories.get(category, 0) + 1
+    return {"ok": True, "run": run, "tasks": task_counts, "objects": counts,
+            "retries": {"total": sum(retry_categories.values()), "by_category": retry_categories},
+            "readiness": readiness(run_dir)}

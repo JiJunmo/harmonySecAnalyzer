@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS runs(
   audit_mode TEXT NOT NULL CHECK(audit_mode IN ('full','capability')),
   capability_filter_json TEXT NOT NULL,
   component_filter_json TEXT NOT NULL,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('created','running','complete','failed')),
+  error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   finalized_at TEXT
@@ -49,13 +50,11 @@ CREATE TABLE IF NOT EXISTS tasks(
   semantic_key TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL,
   subject_id TEXT,
-  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed')),
+  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled')),
   agent TEXT NOT NULL,
   input_json TEXT NOT NULL,
   result_ref TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
-  lease_owner TEXT,
-  lease_expires_at TEXT,
   error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -78,13 +77,14 @@ CREATE TABLE IF NOT EXISTS evidence(
 );
 CREATE TABLE IF NOT EXISTS flows(
   flow_id TEXT PRIMARY KEY,
-  flow_key TEXT NOT NULL UNIQUE,
+  identity_key TEXT NOT NULL UNIQUE,
   root_entry_id TEXT NOT NULL REFERENCES entries(entry_id),
   parent_flow_id TEXT REFERENCES flows(flow_id),
+  producer_task_id TEXT NOT NULL REFERENCES tasks(task_id),
   branch_key TEXT NOT NULL,
   controlled_property TEXT NOT NULL,
   current_symbol TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('open','connected','blocked','benign','gap')),
+  status TEXT NOT NULL CHECK(status IN ('open','reached','stopped','gap')),
   controlled_values_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -121,27 +121,54 @@ CREATE TABLE IF NOT EXISTS continuations(
   target TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('open','resolved','gap')),
   task_id TEXT REFERENCES tasks(task_id),
+  child_flow_ids_json TEXT NOT NULL DEFAULT '[]',
   evidence_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(flow_id, semantic_key)
 );
-CREATE TABLE IF NOT EXISTS hypotheses(
-  hypothesis_id TEXT PRIMARY KEY,
-  flow_id TEXT NOT NULL REFERENCES flows(flow_id),
-  capability_id TEXT NOT NULL,
-  pattern_id TEXT NOT NULL,
-  verdict TEXT NOT NULL CHECK(verdict IN ('supported','refuted','not_applicable','evidence_gap')),
-  boundary TEXT NOT NULL,
-  reason TEXT NOT NULL,
-  evidence_json TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS paths(
+  path_id TEXT PRIMARY KEY,
+  root_entry_id TEXT NOT NULL REFERENCES entries(entry_id),
+  terminal_flow_id TEXT NOT NULL REFERENCES flows(flow_id),
+  gap_continuation_id TEXT REFERENCES continuations(continuation_id),
+  status TEXT NOT NULL CHECK(status IN ('reached','stopped','gap')),
+  flow_ids_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  UNIQUE(flow_id, capability_id, pattern_id)
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS security_assessments(
+  assessment_id TEXT PRIMARY KEY,
+  path_id TEXT NOT NULL REFERENCES paths(path_id),
+  capability_id TEXT,
+  pattern_id TEXT,
+  category TEXT NOT NULL,
+  operation_fact_id TEXT REFERENCES facts(fact_id),
+  classification TEXT NOT NULL CHECK(classification IN ('confirmed_vulnerability','protected_exposure','benign_business_flow','insufficient_evidence','residual_risk')),
+  title TEXT NOT NULL,
+  severity TEXT,
+  cwe TEXT,
+  impact TEXT,
+  poc TEXT,
+  boundary TEXT NOT NULL,
+  controlled_property TEXT NOT NULL,
+  operation_location TEXT NOT NULL,
+  exploitability_json TEXT NOT NULL,
+  business_intent_json TEXT NOT NULL,
+  security_boundary_json TEXT NOT NULL,
+  guards_json TEXT NOT NULL,
+  counter_evidence_json TEXT NOT NULL,
+  demotion_reason TEXT,
+  evidence_gap TEXT,
+  evidence_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(path_id, pattern_id, category, operation_fact_id, boundary)
 );
 CREATE TABLE IF NOT EXISTS findings(
   finding_id TEXT PRIMARY KEY,
   root_cause_key TEXT NOT NULL UNIQUE,
-  flow_id TEXT NOT NULL REFERENCES flows(flow_id),
+  path_id TEXT NOT NULL REFERENCES paths(path_id),
   classification TEXT NOT NULL,
   title TEXT NOT NULL,
   severity TEXT,
@@ -164,7 +191,9 @@ CREATE TABLE IF NOT EXISTS events(
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_flows_status ON flows(status);
+CREATE INDEX IF NOT EXISTS idx_paths_status ON paths(status);
 CREATE INDEX IF NOT EXISTS idx_facts_flow_type ON facts(flow_id, fact_type);
+CREATE INDEX IF NOT EXISTS idx_assessments_path_classification ON security_assessments(path_id, classification);
 """
 
 

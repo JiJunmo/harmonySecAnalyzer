@@ -1,9 +1,9 @@
 ---
 name: project-modeling
-description: 确定性解析 HarmonyOS JSON5 工程配置，为 Entry Planning 提供项目事实与入口候选。
+description: 确定性解析 HarmonyOS JSON5 工程配置，为 Entry Resolution 提供项目事实与入口候选。
 ---
 
-`project_profiler.py` 使用 `json5` 解析 app/module/package/build-profile 配置，输出 module、component、权限、依赖及 `entry_candidates`。`entry_candidates` 是 Entry Planner 的完整输入与覆盖账本。
+`project_profiler.py` 使用 `json5` 解析 app/module/package/build-profile 配置，输出 module、component、权限、依赖及 `entry_candidates`。`entry_candidates` 是 Entry Resolver 的完整输入与覆盖账本。
 
 ```bash
 python3 .opencode/skills/project-modeling/scripts/project_profiler.py \

@@ -34,7 +34,8 @@ ATLAS_INDEXER_REL = ".opencode/skills/project-modeling/scripts/atlas_indexer.py"
 ORCHESTRATION_RUNTIME_FILES = [
     f".opencode/skills/audit-orchestration/scripts/audit_runtime/{name}"
     for name in (
-        "__init__.py", "common.py", "store.py", "contracts.py", "reporting.py", "commands.py", "cli.py",
+        "__init__.py", "common.py", "store.py", "contracts.py", "reporting.py",
+        "commands.py", "initialization.py", "lifecycle.py", "scheduler.py", "task_context.py", "cli.py",
     )
 ]
 
@@ -45,10 +46,9 @@ REQUIRED = [
     ATLAS_INDEXER_REL,
     *ORCHESTRATION_RUNTIME_FILES,
     ".opencode/agents/harmony-auditor.md",
-    ".opencode/agents/entry-planner.md",
+    ".opencode/agents/entry-resolver.md",
     ".opencode/agents/flow-analyzer.md",
-    ".opencode/agents/flow-pattern-evaluator.md",
-    ".opencode/agents/flow-validator.md",
+    ".opencode/agents/security-assessor.md",
     ".opencode/commands/audit.md",
     ".opencode/skills/audit-workflow/SKILL.md",
     ".opencode/skills/attack-patterns/SKILL.md",
@@ -56,10 +56,9 @@ REQUIRED = [
     ".opencode/skills/audit-orchestration/config/audit_capabilities.json",
     ".opencode/skills/audit-orchestration/config/schemas/audit-capabilities.schema.json",
     ".opencode/skills/audit-orchestration/config/schemas/project-model.schema.json",
-    ".opencode/skills/audit-orchestration/config/schemas/entry-plan-result.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/entry-resolution-result.schema.json",
     ".opencode/skills/audit-orchestration/config/schemas/flow-task-result.schema.json",
-    ".opencode/skills/audit-orchestration/config/schemas/pattern-evaluation-result.schema.json",
-    ".opencode/skills/audit-orchestration/config/schemas/flow-validation-result.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/security-assessment-result.schema.json",
     ".opencode/skills/project-modeling/SKILL.md",
 ]
 
@@ -74,8 +73,8 @@ if _capabilities_path.is_file():
     )
 
 # 全局安装/卸载的项目资源白名单(不动第三方)
-OWNED_AGENTS = ["harmony-auditor.md", "entry-planner.md", "flow-analyzer.md",
-                "flow-pattern-evaluator.md", "flow-validator.md"]
+OWNED_AGENTS = ["harmony-auditor.md", "entry-resolver.md", "flow-analyzer.md", "security-assessor.md"]
+LEGACY_AGENTS = ["entry-planner.md", "flow-pattern-evaluator.md", "flow-validator.md"]
 OWNED_COMMANDS = ["audit.md"]
 OWNED_SKILLS = ["audit-workflow", "attack-patterns", "audit-orchestration", "project-modeling"]
 
@@ -249,16 +248,36 @@ else:
 
 
 def smoke_flow_runtime(orch, python):
-    """Exercise isolated allocation, SQLite initialization and entry planning."""
+    """Exercise deterministic preparation, isolated allocation and entry resolution."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         target = root / "target"
-        target.mkdir()
-        model = root / "model.json"
-        model.write_text(json.dumps({
-            "schema_version": 1, "status": "complete", "target_repo": str(target),
-            "entry_candidates": [{"candidate_id": "PE-SMOKE", "type": "exported_component"}],
-        }), encoding="utf-8")
+        module = target / "entry/src/main"
+        module.mkdir(parents=True)
+        (module / "module.json5").write_text(
+            "{module:{name:'entry',abilities:[{name:'EntryAbility',exported:true}]}}",
+            encoding="utf-8",
+        )
+        atlas = root / "atlas"
+        atlas.write_text(
+            """#!/usr/bin/env python3
+import sys
+from pathlib import Path
+command = sys.argv[1]
+project = Path(sys.argv[sys.argv.index('--project') + 1])
+database = project / '.atlas' / 'atlas.db'
+if command in ('index', 'sync'):
+    database.parent.mkdir(parents=True, exist_ok=True)
+    database.write_bytes(b'smoke')
+    print(command + ' complete')
+elif command == 'status':
+    print('Files indexed:   3')
+else:
+    sys.exit(2)
+""",
+            encoding="utf-8",
+        )
+        atlas.chmod(0o755)
 
         def invoke(*args):
             result = subprocess.run([python, str(orch), *map(str, args)], capture_output=True, text=True, timeout=20)
@@ -271,20 +290,21 @@ def smoke_flow_runtime(orch, python):
             return payload
 
         try:
-            first = invoke("new-run", root / "reports", "--target-repo", target, "--mode", "full")
-            second = invoke("new-run", root / "reports", "--target-repo", target, "--mode", "full")
+            first = invoke("prepare", "--target-repo", target, "--mode", "full", "--atlas", atlas)
+            second = invoke("prepare", "--target-repo", target, "--mode", "full", "--atlas", atlas)
             if first["run_dir"] == second["run_dir"]:
-                return False, "new-run 未隔离重复审计"
-            invoke("init", first["run_dir"], "--project-model", model)
-            claim = invoke("claim", first["run_dir"], "--limit", "5")
-            if claim.get("count") != 1 or claim["tasks"][0].get("kind") != "entry_planning":
-                return False, "入口规划任务未正确生成"
+                return False, "prepare 未隔离重复审计"
+            claimed = invoke("next", first["run_dir"])
+            if not claimed.get("task") or claimed["task"].get("kind") != "entry_resolution":
+                return False, "入口确认任务未正确生成"
+            if not claimed["task"].get("worker_prompt"):
+                return False, "任务句柄缺少并发派发 prompt"
             status_payload = invoke("status", first["run_dir"])
             if status_payload["tasks"].get("running") != 1 or not (Path(first["run_dir"]) / "run.db").is_file():
                 return False, "SQLite 任务状态不正确"
         except Exception as exc:
             return False, str(exc)
-        return True, "隔离 run + SQLite 初始化 + Entry Planner claim 通过"
+        return True, "确定性 prepare + 隔离 run + Entry Resolver next 通过"
 
 
 def smoke_project_model(profiler, python):
@@ -312,6 +332,11 @@ def install_global(root, atlas, target):
     h = harmony_sec_home(g)
     info(f"全局目录: {g}")
     g.mkdir(parents=True, exist_ok=True)
+    for name in LEGACY_AGENTS:
+        legacy = g / "agents" / name
+        if legacy.exists():
+            legacy.unlink()
+            ok(f"清理旧 agents/{name}")
     orch_abs = (g / "skills" / "audit-orchestration" / "scripts" / "audit_orchestrator.py").as_posix()
     profiler_abs = (g / "skills" / "project-modeling" / "scripts" / "project_profiler.py").as_posix()
     indexer_abs = (g / "skills" / "project-modeling" / "scripts" / "atlas_indexer.py").as_posix()
@@ -397,7 +422,7 @@ def uninstall_global(target):
     g = global_dir(target)
     h = harmony_sec_home(g)
     removed = []
-    for name in OWNED_AGENTS:
+    for name in OWNED_AGENTS + LEGACY_AGENTS:
         f = g / "agents" / name
         if f.exists():
             f.unlink()

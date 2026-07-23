@@ -1,1 +1,1 @@
-# 审计产出目录（run 目录由 harmony-auditor 创建：findings.json + report.md + trace.jsonl）
+# 审计产出目录（每次运行使用独立 run 目录，状态与报告均可从 run.db 重建）

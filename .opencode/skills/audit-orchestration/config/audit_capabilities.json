@@ -2,7 +2,7 @@
   "schema_version": 1,
   "baseline_date": "2026-07-21",
   "status_definitions": {
-    "implemented": "Entry profile, flow semantics, pattern evaluation, exploitability validation and regression coverage are complete.",
+    "implemented": "Entry profile, flow semantics, direct security assessment, six-dimensional validity validation and regression coverage are complete.",
     "partial": "The capability is enabled in the evidence-flow pipeline but still lacks semantic or regression closure.",
     "planned": "The target behavior is defined but cannot yet produce reliable conclusions.",
     "deferred": "Intentionally outside the current delivery stage."

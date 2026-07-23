@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Entry Resolution Result",
   "type": "object",
   "required": ["task_id", "entries", "excluded_candidates", "gaps"],
   "properties": {

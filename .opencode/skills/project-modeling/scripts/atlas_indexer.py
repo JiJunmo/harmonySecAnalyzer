@@ -26,22 +26,26 @@ def write_json_atomic(path, value):
 
 
 def run_streaming(command):
-    lines = []
+    timeout_seconds = int(os.environ.get("ATLAS_INDEX_TIMEOUT_SECONDS", "900"))
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        bufsize=1,
     )
-    if process.stdout:
-        for line in process.stdout:
-            sys.stderr.write(line)
-            sys.stderr.flush()
-            lines.append(line.rstrip())
-            if len(lines) > 200:
-                lines.pop(0)
-    return process.wait(), lines
+    try:
+        output, _ = process.communicate(timeout=timeout_seconds)
+        returncode = process.returncode
+    except subprocess.TimeoutExpired:
+        process.kill()
+        output, _ = process.communicate()
+        returncode = 124
+        output = (output or "") + f"\nAtlas index timed out after {timeout_seconds}s"
+    lines = (output or "").splitlines()
+    for line in lines:
+        sys.stderr.write(line + "\n")
+    sys.stderr.flush()
+    return returncode, lines[-200:]
 
 
 def indexed_file_count(status_output):
@@ -76,11 +80,18 @@ def prepare_index(target_repo, output, atlas=None, force_index=False):
     ]
     returncode, output_tail = run_streaming(command)
 
-    status = subprocess.run(
-        [str(executable), "status", "--project", str(root)],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        status = subprocess.run(
+            [str(executable), "status", "--project", str(root)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as exc:
+        status = subprocess.CompletedProcess(
+            args=exc.cmd, returncode=124,
+            stdout=exc.stdout or "", stderr="Atlas status timed out after 60s",
+        )
     status_text = "\n".join(part for part in (status.stdout, status.stderr) if part)
     status_summary = status_text.split("Indexed files:", 1)[0].strip()
     files_indexed = indexed_file_count(status_text)
