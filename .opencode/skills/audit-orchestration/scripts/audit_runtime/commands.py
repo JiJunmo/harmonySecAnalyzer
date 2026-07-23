@@ -233,6 +233,52 @@ def _create_path(conn, terminal_flow_id, status, source_task_id, gap_continuatio
     return path_id, "security_assessment"
 
 
+def _plan_continuation_task(conn, producer_task, flow_id, continuation_id, handler_key, target_known):
+    dependencies = [producer_task["task_id"]]
+    if not target_known:
+        task_id = enqueue_task(
+            conn, "continuation:" + continuation_id, "continuation_resolution", flow_id,
+            {"handler_key": None, "target_known": False, "reuse_task_ids": []}, dependencies,
+        )
+        return task_id, "open"
+
+    producer_payload = row_json(producer_task, "input_json", {})
+    if producer_task["kind"] == "continuation_resolution" and producer_payload.get("handler_key") == handler_key:
+        return None, "gap"
+
+    base_semantic = "continuation:" + handler_key
+    base_task = conn.execute("SELECT * FROM tasks WHERE semantic_key=?", (base_semantic,)).fetchone()
+    if base_task is None or base_task["status"] == "queued":
+        task_id = enqueue_task(
+            conn, base_semantic, "continuation_resolution", flow_id,
+            {"handler_key": handler_key, "target_known": True, "reuse_task_ids": []}, dependencies,
+        )
+        return task_id, "open"
+    if base_task["task_id"] == producer_task["task_id"]:
+        return None, "gap"
+
+    prefix = f"continuation-join:{handler_key}:"
+    join_tasks = [
+        row for row in conn.execute(
+            "SELECT * FROM tasks WHERE kind='continuation_resolution' ORDER BY created_at,task_id"
+        )
+        if row["semantic_key"].startswith(prefix)
+    ]
+    queued_join = next((row for row in reversed(join_tasks) if row["status"] == "queued"), None)
+    if queued_join:
+        semantic_key = queued_join["semantic_key"]
+    else:
+        semantic_key = prefix + str(len(join_tasks) + 1)
+    if base_task["status"] == "running":
+        dependencies.append(base_task["task_id"])
+    task_id = enqueue_task(
+        conn, semantic_key, "continuation_resolution", flow_id,
+        {"handler_key": handler_key, "target_known": True, "reuse_task_ids": [base_task["task_id"]]},
+        dependencies,
+    )
+    return task_id, "open"
+
+
 def _merge_flows(conn, task, result):
     evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
     produced = []
@@ -294,25 +340,9 @@ def _merge_flows(conn, task, result):
             continuation_id = stable_id("CONT", [flow_id, continuation["semantic_key"]])
             target_known = continuation["kind"] != "unknown_target"
             handler_key = handler_identity(continuation["target"]) if target_known else None
-            base_semantic = "continuation:" + (handler_key if target_known else continuation_id)
-            existing_task = conn.execute("SELECT * FROM tasks WHERE semantic_key=?", (base_semantic,)).fetchone()
-            dependencies = [task["task_id"]]
-            reuse_task_ids = []
-            continuation_status = "open"
-            if existing_task and existing_task["status"] != "queued":
-                if existing_task["task_id"] == task["task_id"]:
-                    continuation_status = "gap"
-                    next_task = None
-                else:
-                    base_semantic = "continuation-join:" + continuation_id
-                    reuse_task_ids.append(existing_task["task_id"])
-                    if existing_task["status"] == "running":
-                        dependencies.append(existing_task["task_id"])
-            if continuation_status == "open":
-                next_task = enqueue_task(conn, base_semantic, "continuation_resolution", flow_id, {
-                    "handler_key": handler_key, "target_known": target_known,
-                    "reuse_task_ids": reuse_task_ids,
-                }, dependencies)
+            next_task, continuation_status = _plan_continuation_task(
+                conn, task, flow_id, continuation_id, handler_key, target_known,
+            )
             conn.execute(
                 """INSERT INTO continuations(continuation_id,semantic_key,flow_id,kind,target,status,task_id,child_flow_ids_json,evidence_json,created_at,updated_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?)

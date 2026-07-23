@@ -12,7 +12,7 @@ SCRIPTS = ROOT / ".opencode/skills/audit-orchestration/scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from audit_runtime.commands import (
-    build_report_ready, claim_tasks, finalize_run, initialize_run, new_run,
+    _plan_continuation_task, build_report_ready, claim_tasks, finalize_run, initialize_run, new_run,
     readiness, status, submit_result,
 )
 from audit_runtime.cli import parser as runtime_parser
@@ -182,6 +182,9 @@ class FlowRuntimeTest(unittest.TestCase):
 
         assessor = self.claim_one("security_assessment")
         path_id = assessor["subject_id"]
+        self.assertNotIn("payload", assessor["input"]["entry"])
+        self.assertNotIn("payload", assessor["input"]["path"]["facts"][0])
+        self.assertNotIn("facts", assessor["input"]["path"]["segments"][0])
         self.assertEqual(
             [row["pattern_id"] for row in assessor["input"]["pattern_cards"]],
             ["deeplink-injection"],
@@ -649,6 +652,26 @@ class FlowRuntimeTest(unittest.TestCase):
             handler_identity("AutomationEventManager.importDocument"),
             handler_identity("AutomationEventManager.deleteSnapshot"),
         )
+
+    def test_completed_handler_reuse_batches_late_parents_into_one_queued_task(self):
+        with database(self.run / "run.db") as conn, transaction(conn):
+            base_id = enqueue_task(conn, "continuation:shared.run", "continuation_resolution")
+            conn.execute("UPDATE tasks SET status='completed' WHERE task_id=?", (base_id,))
+            producer_id = enqueue_task(conn, "late-parent-producer", "entry_path_discovery")
+            producer = conn.execute("SELECT * FROM tasks WHERE task_id=?", (producer_id,)).fetchone()
+            first, first_status = _plan_continuation_task(
+                conn, producer, "FLOW-PARENT-1", "CONT-LATE-1", "shared.run", True,
+            )
+            second, second_status = _plan_continuation_task(
+                conn, producer, "FLOW-PARENT-2", "CONT-LATE-2", "shared.run", True,
+            )
+            joins = conn.execute(
+                "SELECT task_id,input_json FROM tasks WHERE semantic_key LIKE 'continuation-join:shared.run:%'"
+            ).fetchall()
+        self.assertEqual((first_status, second_status), ("open", "open"))
+        self.assertEqual(first, second)
+        self.assertEqual(len(joins), 1)
+        self.assertEqual(json.loads(joins[0]["input_json"])["reuse_task_ids"], [base_id])
 
     def test_duplicate_runs_are_isolated(self):
         other = new_run(self.root / "reports", self.target)

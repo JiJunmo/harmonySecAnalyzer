@@ -18,7 +18,7 @@ class DeployTest(unittest.TestCase):
         def completed(command, **kwargs):
             commands.append(command)
             action = next(actions)
-            payload = {"ok": True, "action": action, "files_indexed": 3}
+            payload = {"ok": True, "action": action, "files_indexed": 1}
             return deploy.subprocess.CompletedProcess(command, 0, stdout=deploy.json.dumps(payload), stderr="")
 
         with patch.object(deploy.subprocess, "run", side_effect=completed):

@@ -7,34 +7,66 @@ from .common import handler_identity, load_capabilities, load_pattern_cards
 from .store import row_json
 
 
+def _payload_extras(payload, excluded):
+    return {
+        key: value for key, value in (payload or {}).items()
+        if key not in excluded
+    }
+
+
 def flow_context(conn, flow_id):
     flow = conn.execute("SELECT * FROM flows WHERE flow_id=?", (flow_id,)).fetchone()
     if flow is None:
         return None
-    doc = dict(flow)
-    for source, target in (("controlled_values_json", "controlled_values"), ("payload_json", "payload")):
-        doc[target] = json.loads(doc.pop(source))
+    payload = row_json(flow, "payload_json", {})
+    doc = {
+        **_payload_extras(payload, {
+            "root_entry_id", "parent_flow_id", "branch_key", "controlled_property",
+            "current_symbol", "status", "controlled_values", "facts", "edges", "continuations",
+        }),
+        "flow_id": flow["flow_id"], "root_entry_id": flow["root_entry_id"],
+        "parent_flow_id": flow["parent_flow_id"], "branch_key": flow["branch_key"],
+        "controlled_property": flow["controlled_property"], "current_symbol": flow["current_symbol"],
+        "status": flow["status"], "controlled_values": row_json(flow, "controlled_values_json", []),
+    }
     doc["facts"] = []
     for row in conn.execute("SELECT * FROM facts WHERE flow_id=? ORDER BY created_at,fact_id", (flow_id,)):
-        fact = dict(row)
-        fact["evidence_refs"] = json.loads(fact.pop("evidence_json"))
-        fact["payload"] = json.loads(fact.pop("payload_json"))
+        fact_payload = row_json(row, "payload_json", {})
+        fact = {
+            **_payload_extras(fact_payload, {"fact_key", "type", "body", "location", "evidence_refs"}),
+            "fact_id": row["fact_id"], "fact_key": row["fact_key"], "flow_id": row["flow_id"],
+            "fact_type": row["fact_type"], "body": row["body"], "location": row["location"],
+            "evidence_refs": row_json(row, "evidence_json", []),
+        }
         doc["facts"].append(fact)
     doc["edges"] = []
     for row in conn.execute("SELECT * FROM edges WHERE flow_id=? ORDER BY created_at,edge_id", (flow_id,)):
-        edge = dict(row)
-        edge["evidence_refs"] = json.loads(edge.pop("evidence_json"))
+        edge = {
+            "edge_id": row["edge_id"], "flow_id": row["flow_id"],
+            "from_fact_id": row["from_fact_id"], "to_fact_id": row["to_fact_id"],
+            "kind": row["kind"], "evidence_refs": row_json(row, "evidence_json", []),
+        }
         doc["edges"].append(edge)
+    continuation_payloads = {
+        item.get("semantic_key"): item
+        for item in payload.get("continuations", [])
+        if isinstance(item, dict) and item.get("semantic_key")
+    }
     doc["continuations"] = []
     for row in conn.execute("SELECT * FROM continuations WHERE flow_id=? ORDER BY created_at,continuation_id", (flow_id,)):
-        continuation = dict(row)
-        continuation["evidence_refs"] = json.loads(continuation.pop("evidence_json"))
-        continuation["child_flow_ids"] = json.loads(continuation.pop("child_flow_ids_json"))
+        original = continuation_payloads.get(row["semantic_key"], {})
+        continuation = {
+            **_payload_extras(original, {"semantic_key", "kind", "target", "evidence_refs"}),
+            "continuation_id": row["continuation_id"], "semantic_key": row["semantic_key"],
+            "kind": row["kind"], "target": row["target"], "status": row["status"],
+            "evidence_refs": row_json(row, "evidence_json", []),
+            "child_flow_ids": row_json(row, "child_flow_ids_json", []),
+        }
         doc["continuations"].append(continuation)
     return doc
 
 
-def path_context(conn, path_id):
+def path_context(conn, path_id, compact_segments=False):
     row = conn.execute("SELECT * FROM paths WHERE path_id=?", (path_id,)).fetchone()
     if not row:
         return None
@@ -50,6 +82,17 @@ def path_context(conn, path_id):
     path["branch_key"] = terminal.get("branch_key") if terminal else None
     path["controlled_property"] = terminal.get("controlled_property") if terminal else None
     path["current_symbol"] = terminal.get("current_symbol") if terminal else None
+    if compact_segments:
+        path["segments"] = [{
+            key: segment.get(key) for key in (
+                "flow_id", "root_entry_id", "parent_flow_id", "branch_key",
+                "controlled_property", "current_symbol", "status", "controlled_values",
+            )
+        } | {
+            "fact_ids": [fact["fact_id"] for fact in segment["facts"]],
+            "edge_ids": [edge["edge_id"] for edge in segment["edges"]],
+            "continuation_ids": [row["continuation_id"] for row in segment["continuations"]],
+        } for segment in path["segments"]]
     return path
 
 
@@ -97,15 +140,24 @@ def task_context(conn, task):
                     })
         return {**payload, "continuations": continuations, "reusable_handler_flows": reusable}
     if task["kind"] == "security_assessment":
-        path = path_context(conn, task["subject_id"])
+        path = path_context(conn, task["subject_id"], compact_segments=True)
         entry = None
         if path:
             row = conn.execute("SELECT * FROM entries WHERE entry_id=?", (path["root_entry_id"],)).fetchone()
             if row:
-                entry = dict(row)
-                entry["profiles"] = json.loads(entry.pop("profiles_json"))
-                entry["discriminator"] = json.loads(entry.pop("discriminator_json"))
-                entry["payload"] = json.loads(entry.pop("payload_json"))
+                payload = row_json(row, "payload_json", {})
+                entry = {
+                    **_payload_extras(payload, {
+                        "entry_key", "entry_type", "component", "symbol", "discriminator",
+                        "transport", "external_reachability", "evidence_refs",
+                    }),
+                    "entry_id": row["entry_id"], "entry_key": row["entry_key"],
+                    "entry_type": row["entry_type"], "component": row["component"],
+                    "symbol": row["symbol"], "discriminator": row_json(row, "discriminator_json", {}),
+                    "transport": row["transport"], "external_reachability": row["reachability"],
+                    "profiles": row_json(row, "profiles_json", []),
+                    "evidence_refs": payload.get("evidence_refs", []),
+                }
         profile_ids = set(entry.get("profiles", [])) if entry else set()
         capability_profiles = [
             profile for profile in load_capabilities()

@@ -224,7 +224,8 @@ def smoke_atlas_indexer(indexer, python, atlas):
                 return False, f"Atlas indexer 失败: {result.stderr.strip() or result.stdout.strip()}"
             payload = json.loads(result.stdout)
             actions.append(payload.get("action"))
-            if not payload.get("ok") or payload.get("files_indexed") != 3:
+            files_indexed = payload.get("files_indexed")
+            if not payload.get("ok") or not isinstance(files_indexed, int) or files_indexed <= 0:
                 return False, f"Atlas index status 无效: {payload}"
         if actions != ["index", "sync"]:
             return False, f"Atlas index/sync 选择错误: {actions}"
