@@ -10,6 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeployTest(unittest.TestCase):
+    def test_runtime_smoke_uses_batch_scheduler_command(self):
+        source = (ROOT / "deploy.py").read_text(encoding="utf-8")
+        self.assertIn('invoke("claim-batch", first["run_dir"])', source)
+        self.assertNotIn('invoke("next", first["run_dir"])', source)
+        self.assertIn('status_payload["tasks"].get("running") != len(tasks)', source)
+
     def test_atlas_smoke_uses_resolved_executable_instead_of_temporary_stub(self):
         atlas = Path("C:/Tools/atlas.exe")
         actions = iter(("index", "sync"))
@@ -40,9 +46,13 @@ class DeployTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "opencode"
             legacy = target / "agents/entry-planner.md"
+            legacy_entry_resolver = target / "agents/entry-resolver.md"
+            legacy_component_analyzer = target / "agents/component-security-analyzer.md"
             legacy_pattern = target / "agents/flow-pattern-evaluator.md"
             legacy.parent.mkdir(parents=True)
             legacy.write_text("legacy", encoding="utf-8")
+            legacy_entry_resolver.write_text("legacy", encoding="utf-8")
+            legacy_component_analyzer.write_text("legacy", encoding="utf-8")
             legacy_pattern.write_text("legacy", encoding="utf-8")
             deploy.install_global(ROOT, Path("/bin/echo"), target)
             skill = (target / "skills/audit-orchestration/SKILL.md").read_text(encoding="utf-8")
@@ -54,9 +64,14 @@ class DeployTest(unittest.TestCase):
             self.assertIn('"*": deny', agent)
             self.assertIn("grep: allow", agent)
             self.assertIn("glob: allow", agent)
-            self.assertTrue((target / "agents/entry-resolver.md").is_file())
-            self.assertTrue((target / "agents/security-assessor.md").is_file())
+            self.assertIn("无论回复内容是什么，都只调用一次 `reconcile-batch", agent)
+            self.assertTrue((target / "agents/component-semantic-analyzer.md").is_file())
+            self.assertTrue((target / "agents/exploitability-validator.md").is_file())
+            self.assertFalse((target / "agents/component-security-analyzer.md").exists())
+            self.assertFalse((target / "agents/entry-resolver.md").exists())
             self.assertFalse(legacy.exists())
+            self.assertFalse(legacy_entry_resolver.exists())
+            self.assertFalse(legacy_component_analyzer.exists())
             self.assertFalse(legacy_pattern.exists())
 
 

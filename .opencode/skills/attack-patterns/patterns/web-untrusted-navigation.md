@@ -29,4 +29,4 @@
 - 只分析初始 URL,或把 substring/无边界 suffix/解码前字符串校验自动视为有效 allowlist。
 
 ## 证据要求
-Flow 必须记录导航操作、控制模式、受控组件、导航阶段、最终目标状态和上下文证据；Validator 必须复核 Guard 覆盖、最终目标、上下文能力和边界结果。依赖隐藏这些事实时终态为 gap/insufficient evidence。
+Operation Group 必须记录导航操作、控制模式、受控组件、导航阶段、最终目标状态和上下文证据；组件分析必须复核 Guard 覆盖、最终目标、上下文能力和边界结果。依赖隐藏这些事实时记录 gap/insufficient evidence。

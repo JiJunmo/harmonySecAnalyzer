@@ -1,4 +1,4 @@
-"""Shared primitives for the flow-driven audit runtime."""
+"""Shared primitives for the component-driven audit runtime."""
 from __future__ import annotations
 
 import hashlib
@@ -15,18 +15,14 @@ SKILL_DIR = SCRIPTS_DIR.parent
 CONFIG_DIR = SKILL_DIR / "config"
 SCHEMAS_DIR = CONFIG_DIR / "schemas"
 CAPABILITIES_PATH = CONFIG_DIR / "audit_capabilities.json"
-PATTERNS_DIR = SKILL_DIR.parent / "attack-patterns" / "patterns"
 
 TASK_AGENTS = {
-    "entry_resolution": "entry-resolver",
-    "entry_path_discovery": "flow-analyzer",
-    "continuation_resolution": "flow-analyzer",
-    "security_assessment": "security-assessor",
+    "component_semantic_analysis": "component-semantic-analyzer",
+    "exploitability_validation": "exploitability-validator",
 }
-TERMINAL_TASK_STATES = {"completed", "failed", "cancelled"}
+TERMINAL_TASK_STATES = {"completed", "exhausted"}
 MAX_TASK_ATTEMPTS = 3
 MAX_CONCURRENT_TASKS = 5
-TERMINAL_FLOW_STATES = {"reached", "stopped", "gap"}
 FINAL_CLASSIFICATIONS = {
     "confirmed_vulnerability", "protected_exposure", "benign_business_flow",
     "insufficient_evidence", "residual_risk",
@@ -59,35 +55,14 @@ def normalize_location(value):
     return re.sub(r":0+(\d+)$", r":\1", text)
 
 
-def handler_identity(target):
-    text = normalize_text(target)
-    return re.sub(r"\s*\(via\b.*\)\s*$", "", text).strip()
-
-
-def flow_identity_key(flow):
-    operations = sorted({
-        canonical_json([normalize_location(fact.get("location"))])
-        if normalize_location(fact.get("location"))
-        else canonical_json([normalize_text(fact.get("body"))])
-        for fact in flow.get("facts", [])
-        if fact.get("type") == "operation"
-    })
-    terminal = operations or [normalize_text(flow.get("current_symbol"))]
-    continuations = sorted(
-        canonical_json([row.get("kind"), handler_identity(row.get("target"))])
-        for row in flow.get("continuations", [])
-    )
+def operation_group_identity(entry_id, group):
+    """Semantic identity excludes later security judgments and ordinary branches."""
+    operation = group["operation"]
     return canonical_json([
-        flow.get("root_entry_id"), flow.get("parent_flow_id"),
-        normalize_text(flow.get("branch_key")), normalize_text(flow.get("controlled_property")),
-        terminal, continuations,
+        entry_id,
+        normalize_location(operation.get("location")) or normalize_text(operation.get("body")),
+        sorted(normalize_text(value) for value in group.get("controlled_properties", [])),
     ])
-
-
-def fact_identity_key(fact):
-    location = normalize_location(fact.get("location"))
-    identity = location or normalize_text(fact.get("body"))
-    return canonical_json([fact.get("type"), identity])
 
 
 def read_json(path, default=None):
@@ -146,26 +121,9 @@ def load_capabilities(capability_filter=None):
     return rows
 
 
-def load_pattern_cards(capability_profiles):
-    pattern_ids = sorted({
-        pattern_id
-        for capability in capability_profiles
-        for pattern_id in capability.get("pattern_ids", [])
-    })
-    cards = []
-    for pattern_id in pattern_ids:
-        path = PATTERNS_DIR / f"{pattern_id}.md"
-        if not path.is_file():
-            raise ValueError(f"missing_pattern_card:{pattern_id}")
-        cards.append({
-            "pattern_id": pattern_id,
-            "content": path.read_text(encoding="utf-8"),
-        })
-    return cards
-
-
-def profiles_for_entry(entry_type, capabilities):
+def profiles_for_entry(entry_types, capabilities):
+    entry_types = set(entry_types)
     return sorted(
         row["capability_id"] for row in capabilities
-        if entry_type in row.get("entry_types", [])
+        if entry_types.intersection(row.get("entry_types", []))
     )

@@ -7,7 +7,7 @@ import sys
 
 from .commands import *
 from .initialization import prepare_run
-from .scheduler import next_task, recover_tasks
+from .scheduler import claim_batch, reconcile_batch
 
 
 def parser():
@@ -19,21 +19,11 @@ def parser():
     cmd.add_argument("--capability", action="append", default=[])
     cmd.add_argument("--component", action="append", default=[])
     cmd.add_argument("--atlas")
-    cmd = sub.add_parser("next")
+    cmd = sub.add_parser("claim-batch")
     cmd.add_argument("run_dir")
     cmd.add_argument("--worker", default="harmony-auditor")
-    cmd = sub.add_parser("submit")
-    cmd.add_argument("run_dir")
-    cmd.add_argument("--task", required=True)
-    cmd.add_argument("--input", required=True)
-    cmd.add_argument("--attempt", required=True, type=int)
-    cmd = sub.add_parser("fail")
-    cmd.add_argument("run_dir")
-    cmd.add_argument("--task", required=True)
-    cmd.add_argument("--error", required=True)
-    cmd.add_argument("--attempt", required=True, type=int)
-    cmd.add_argument("--retryable", action="store_true")
-    for name in ("recover", "validate-ready", "export", "build-report", "finalize", "status"):
+    cmd.add_argument("--limit", type=int, default=5)
+    for name in ("reconcile-batch", "export", "build-report", "finalize", "status"):
         sub.add_parser(name).add_argument("run_dir")
     return root
 
@@ -41,11 +31,8 @@ def parser():
 def dispatch(args):
     if args.command == "prepare":
         return prepare_run(args.target_repo, args.mode, args.capability, args.component, args.atlas)
-    if args.command == "next": return next_task(args.run_dir, args.worker)
-    if args.command == "submit": return submit_result(args.run_dir, args.task, args.input, args.attempt)
-    if args.command == "fail": return fail_task(args.run_dir, args.task, args.error, args.retryable, args.attempt)
-    if args.command == "recover": return recover_tasks(args.run_dir)
-    if args.command == "validate-ready": return readiness(args.run_dir)
+    if args.command == "claim-batch": return claim_batch(args.run_dir, args.limit, args.worker)
+    if args.command == "reconcile-batch": return reconcile_batch(args.run_dir)
     if args.command == "export": return export_state(args.run_dir)
     if args.command == "build-report": return build_report_ready(args.run_dir)
     if args.command == "finalize": return finalize_run(args.run_dir)

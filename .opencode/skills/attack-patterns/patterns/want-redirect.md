@@ -28,4 +28,4 @@
 - 未解析实际目标和目标操作时猜测私有能力或具体影响。
 
 ## 证据要求
-Flow 必须记录调度 API、目标控制模式、解析目标、转发模式、受控字段和目标操作；Validator 必须复核目标事实、参数流、Guard 维度、保护依据、边界与 impact。目标或 wrapper 无法解析时终态为 gap/insufficient evidence。
+Operation Group 必须记录调度 API、目标控制模式、解析目标、转发模式、受控字段和目标操作；组件分析必须复核目标事实、参数流、Guard、保护依据、边界与 impact。目标或 wrapper 无法解析时记录 gap/insufficient evidence。

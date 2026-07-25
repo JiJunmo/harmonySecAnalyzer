@@ -46,9 +46,8 @@ REQUIRED = [
     ATLAS_INDEXER_REL,
     *ORCHESTRATION_RUNTIME_FILES,
     ".opencode/agents/harmony-auditor.md",
-    ".opencode/agents/entry-resolver.md",
-    ".opencode/agents/flow-analyzer.md",
-    ".opencode/agents/security-assessor.md",
+    ".opencode/agents/component-semantic-analyzer.md",
+    ".opencode/agents/exploitability-validator.md",
     ".opencode/commands/audit.md",
     ".opencode/skills/audit-workflow/SKILL.md",
     ".opencode/skills/attack-patterns/SKILL.md",
@@ -56,9 +55,8 @@ REQUIRED = [
     ".opencode/skills/audit-orchestration/config/audit_capabilities.json",
     ".opencode/skills/audit-orchestration/config/schemas/audit-capabilities.schema.json",
     ".opencode/skills/audit-orchestration/config/schemas/project-model.schema.json",
-    ".opencode/skills/audit-orchestration/config/schemas/entry-resolution-result.schema.json",
-    ".opencode/skills/audit-orchestration/config/schemas/flow-task-result.schema.json",
-    ".opencode/skills/audit-orchestration/config/schemas/security-assessment-result.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/component-semantic-result.schema.json",
+    ".opencode/skills/audit-orchestration/config/schemas/exploitability-validation-result.schema.json",
     ".opencode/skills/project-modeling/SKILL.md",
 ]
 
@@ -73,8 +71,8 @@ if _capabilities_path.is_file():
     )
 
 # 全局安装/卸载的项目资源白名单(不动第三方)
-OWNED_AGENTS = ["harmony-auditor.md", "entry-resolver.md", "flow-analyzer.md", "security-assessor.md"]
-LEGACY_AGENTS = ["entry-planner.md", "flow-pattern-evaluator.md", "flow-validator.md"]
+OWNED_AGENTS = ["harmony-auditor.md", "component-semantic-analyzer.md", "exploitability-validator.md"]
+LEGACY_AGENTS = ["entry-planner.md", "entry-resolver.md", "component-security-analyzer.md", "flow-pattern-evaluator.md", "flow-validator.md", "flow-analyzer.md", "security-assessor.md"]
 OWNED_COMMANDS = ["audit.md"]
 OWNED_SKILLS = ["audit-workflow", "attack-patterns", "audit-orchestration", "project-modeling"]
 
@@ -236,7 +234,7 @@ def smoke_atlas_indexer(indexer, python, atlas):
 
 
 def smoke_flow_runtime(orch, python, atlas):
-    """Exercise deterministic preparation, isolated allocation and entry resolution."""
+    """Exercise deterministic preparation, isolated allocation and batch claiming."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         target = root / "target"
@@ -258,7 +256,9 @@ def smoke_flow_runtime(orch, python, atlas):
             try:
                 payload = json.loads(result.stdout)
             except Exception as exc:
-                raise RuntimeError(f"{args[0]} 非 JSON: {exc}: {result.stdout}")
+                raise RuntimeError(
+                    f"{args[0]} 非 JSON: {exc}: stdout={result.stdout!r}, stderr={result.stderr!r}"
+                )
             if result.returncode != 0 or not payload.get("ok"):
                 raise RuntimeError(f"{args[0]} 失败: {result.stderr or result.stdout}")
             return payload
@@ -268,17 +268,19 @@ def smoke_flow_runtime(orch, python, atlas):
             second = invoke("prepare", "--target-repo", target, "--mode", "full", "--atlas", atlas)
             if first["run_dir"] == second["run_dir"]:
                 return False, "prepare 未隔离重复审计"
-            claimed = invoke("next", first["run_dir"])
-            if not claimed.get("task") or claimed["task"].get("kind") != "entry_resolution":
-                return False, "入口确认任务未正确生成"
-            if not claimed["task"].get("worker_prompt"):
+            claimed = invoke("claim-batch", first["run_dir"])
+            tasks = claimed.get("tasks") or []
+            if not tasks or any(task.get("kind") != "component_semantic_analysis" for task in tasks):
+                return False, "组件语义任务未正确生成"
+            if any(not task.get("worker_prompt") for task in tasks):
                 return False, "任务句柄缺少并发派发 prompt"
             status_payload = invoke("status", first["run_dir"])
-            if status_payload["tasks"].get("running") != 1 or not (Path(first["run_dir"]) / "run.db").is_file():
+            if (status_payload["tasks"].get("running") != len(tasks)
+                    or not (Path(first["run_dir"]) / "run.db").is_file()):
                 return False, "SQLite 任务状态不正确"
         except Exception as exc:
             return False, str(exc)
-        return True, "确定性 prepare + 隔离 run + Entry Resolver next 通过"
+        return True, "确定性 prepare + 隔离 run + Component Semantics 批量领取通过"
 
 
 def smoke_project_model(profiler, python):

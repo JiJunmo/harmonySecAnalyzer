@@ -1,33 +1,24 @@
 ---
 name: audit-workflow
-description: 入口驱动证据 Path 的分析语义、闭合与验证规则。
+description: 以外部组件为任务单位、以实际敏感操作组为判断单位的审计语义。
 ---
 
 ## 工作流
 
-`项目事实 -> Canonical Entry -> 局部 Flow/Continuation -> 完整 Path -> Security Assessment -> Root Cause Finding`
+`项目事实 -> 组件语义分析 -> 语义事实落盘 -> 六维验证 -> Root Cause Finding`
 
-Canonical Entry 包含会改变安全语义的 dispatcher discriminator。Flow 是单次分析产生的局部证据段，使用带 Evidence 的 Fact 和 Edge 证明可达性、控制传播、Guard、目标操作和影响。运行时沿 continuation 连接 Flow 并组装完整 Path；Security Assessment 只消费闭合 Path 中已经建立的事实，模式卡是知识和判断尺度，不是逐张填写的检查表。
+一个 Ability/ExtensionAbility 先派发一个语义任务。Agent 使用 Atlas 确认真实入口并追踪实际可达的安全相关操作，不做漏洞判断。多个普通分支到达同一操作且关键受控参数相同时合并为一个 Operation Group；防护代码只作为客观事实记录。
 
-Fact 类型：`entrypoint/reachability/control/transform/guard/operation/effect/dead_end/gap`。
-
-Continuation 类型：`component_dispatch/callback_dispatch/shared_handler/async_resume/unknown_target`。它是必须闭合的结构化边，不是备注。
-
-Flow 结构状态：
-
-- `reached`：本段到达 operation 或 effect。
-- `stopped`：代码路径在本段明确终止。
-- `gap`：完成有界查询后仍缺关键证据。
-- `open`：存在后续 continuation，必须继续追踪。
-
-探索层不能判断 Guard 是否有效、业务是否正常或是否存在漏洞。`reached/stopped/gap` Flow 会被运行时组装为 Path，安全判定和报告只处理 Path。
+每组按调用顺序使用必要的 `entrypoint/reachability/control/transform/guard/operation/effect/dead_end/gap` Fact 保存最短证据链；类型按实际证据选用，不要求每种都存在。Edge 由运行时根据 Fact 顺序确定性生成。
 
 ## 可利用性
 
-每个安全场景先执行反证审查，结构化记录业务意图、安全边界、Guard 和反证，再逐一验证六维：外部可达、关键参数可控、到达敏感操作、Guard 缺失或可绕过、安全边界违反、具体安全影响。`confirmed_vulnerability` 要求六项全部为 true 且没有有效反证；有效 Guard 为 `protected_exposure`；正常公开业务且未越界为 `benign_business_flow`；可疑但缺少关键成立证据为 `residual_risk`，无法判断为 `insufficient_evidence`。
+语义结果落盘后，一个独立验证任务以这些结果为范围，对每个操作组检查反证并记录业务意图、安全边界、Guard 结论和六维判断。它可以读取语义证据引用的源码并使用 Atlas 定点核实，但不能全仓搜索、新增操作组或改写已落盘语义事实。
 
-根因身份只由归一化 operation location、branch、boundary、controlled property 组成。入口别名、能力 ID、模式 ID 和相邻调用点不参与根因身份。
+只有 `confirmed_vulnerability` 要求六项全部为 true。有效 Guard 为 `protected_exposure`；正常公开业务且未越界为 `benign_business_flow`；可疑但缺关键证据为 `residual_risk`；无法判断为 `insufficient_evidence`。
+
+根因身份由操作位置、关键受控参数和安全边界组成。普通分支、入口别名、能力 ID、模式 ID 不参与根因身份。路径只为 confirmed vulnerability 和 residual risk 生成，作为报告证据，不作为调度对象。
 
 ## Atlas 使用
 
-从分配的 Entry 或 continuation 出发，优先 `search/symbol/explore/calls/path/trace`。查询应围绕具体符号和受控属性有界扩展。Atlas 无法证明的框架边界应记录 gap，不得用逐文件扫描补造证据。NAPI/native 不在当前范围。
+从分配的 Entry 出发，使用 `search/symbol/explore/calls/path/trace/impact` 有界追踪。允许在同一任务内穿过公共 handler、异步回调和跨组件调用。Atlas 无法证明的目标记录到 `coverage.unresolved_targets`，不得用逐文件扫描补造证据。NAPI/native 不在当前范围。

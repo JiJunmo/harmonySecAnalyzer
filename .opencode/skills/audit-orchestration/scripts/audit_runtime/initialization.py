@@ -62,6 +62,7 @@ def prepare_run(target_repo, mode="full", capabilities=None, components=None, at
         "stage": "ready",
         "project_summary": model.get("summary", {}),
         "atlas": read_json(paths["root"] / "atlas" / "index_status.json", {}),
-        "initial_task_id": initialized["task_id"],
+        "initial_task_ids": initialized["task_ids"],
         "entry_candidates": initialized["entry_candidates"],
+        "analysis_units": initialized["analysis_units"],
     }

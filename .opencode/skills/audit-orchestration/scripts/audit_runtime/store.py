@@ -1,4 +1,4 @@
-"""SQLite-backed canonical state for entry-driven evidence flows."""
+"""SQLite-backed canonical state for semantic evidence and security validation."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 13
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -25,21 +25,12 @@ CREATE TABLE IF NOT EXISTS runs(
   updated_at TEXT NOT NULL,
   finalized_at TEXT
 );
-CREATE TABLE IF NOT EXISTS entry_dispositions(
-  project_candidate_id TEXT PRIMARY KEY,
-  disposition TEXT NOT NULL CHECK(disposition IN ('resolved_entry','excluded','gap')),
-  entry_id TEXT,
-  reason TEXT,
-  evidence_json TEXT NOT NULL DEFAULT '[]'
-);
 CREATE TABLE IF NOT EXISTS entries(
   entry_id TEXT PRIMARY KEY,
   entry_key TEXT NOT NULL UNIQUE,
-  entry_type TEXT NOT NULL,
   component TEXT,
   symbol TEXT NOT NULL,
-  discriminator_json TEXT NOT NULL,
-  transport TEXT NOT NULL,
+  facets_json TEXT NOT NULL,
   reachability TEXT NOT NULL,
   profiles_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
@@ -50,7 +41,7 @@ CREATE TABLE IF NOT EXISTS tasks(
   semantic_key TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL,
   subject_id TEXT,
-  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled')),
+  status TEXT NOT NULL CHECK(status IN ('queued','running','completed','exhausted')),
   agent TEXT NOT NULL,
   input_json TEXT NOT NULL,
   result_ref TEXT,
@@ -58,11 +49,6 @@ CREATE TABLE IF NOT EXISTS tasks(
   error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS task_dependencies(
-  task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-  depends_on TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-  PRIMARY KEY(task_id, depends_on)
 );
 CREATE TABLE IF NOT EXISTS evidence(
   evidence_id TEXT PRIMARY KEY,
@@ -75,100 +61,80 @@ CREATE TABLE IF NOT EXISTS evidence(
   sha256 TEXT,
   created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS flows(
-  flow_id TEXT PRIMARY KEY,
-  identity_key TEXT NOT NULL UNIQUE,
-  root_entry_id TEXT NOT NULL REFERENCES entries(entry_id),
-  parent_flow_id TEXT REFERENCES flows(flow_id),
-  producer_task_id TEXT NOT NULL REFERENCES tasks(task_id),
-  branch_key TEXT NOT NULL,
-  controlled_property TEXT NOT NULL,
-  current_symbol TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('open','reached','stopped','gap')),
-  controlled_values_json TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS semantic_analyses(
+  entry_id TEXT PRIMARY KEY REFERENCES entries(entry_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+  summary TEXT NOT NULL,
+  coverage_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS facts(
+CREATE TABLE IF NOT EXISTS operation_groups(
+  group_id TEXT PRIMARY KEY,
+  identity_key TEXT NOT NULL UNIQUE,
+  entry_id TEXT NOT NULL REFERENCES entries(entry_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  capability_id TEXT,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  operation_body TEXT NOT NULL,
+  operation_location TEXT NOT NULL,
+  controlled_properties_json TEXT NOT NULL,
+  context_json TEXT NOT NULL,
+  guards_json TEXT NOT NULL,
+  branches_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS validation_results(
+  group_id TEXT PRIMARY KEY REFERENCES operation_groups(group_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  capability_id TEXT,
+  pattern_id TEXT,
+  classification TEXT NOT NULL CHECK(classification IN ('confirmed_vulnerability','protected_exposure','benign_business_flow','insufficient_evidence','residual_risk')),
+  title TEXT NOT NULL,
+  guard_outcome TEXT NOT NULL CHECK(guard_outcome IN ('absent','bypassable','effective','unknown')),
+  boundary TEXT NOT NULL,
+  exploitability_json TEXT NOT NULL,
+  business_intent_json TEXT NOT NULL,
+  security_boundary_json TEXT NOT NULL,
+  counter_evidence_json TEXT NOT NULL,
+  severity TEXT,
+  cwe TEXT,
+  impact TEXT,
+  poc TEXT,
+  demotion_reason TEXT,
+  evidence_gap TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_facts(
   fact_id TEXT PRIMARY KEY,
   fact_key TEXT NOT NULL,
-  flow_id TEXT NOT NULL REFERENCES flows(flow_id) ON DELETE CASCADE,
+  group_id TEXT NOT NULL REFERENCES operation_groups(group_id) ON DELETE CASCADE,
   fact_type TEXT NOT NULL CHECK(fact_type IN ('entrypoint','reachability','control','transform','guard','operation','effect','dead_end','gap')),
   body TEXT NOT NULL,
   location TEXT,
   evidence_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  UNIQUE(flow_id, fact_key)
+  UNIQUE(group_id, fact_key)
 );
-CREATE TABLE IF NOT EXISTS edges(
+CREATE TABLE IF NOT EXISTS group_edges(
   edge_id TEXT PRIMARY KEY,
-  flow_id TEXT NOT NULL REFERENCES flows(flow_id) ON DELETE CASCADE,
-  from_fact_id TEXT NOT NULL REFERENCES facts(fact_id),
-  to_fact_id TEXT NOT NULL REFERENCES facts(fact_id),
+  group_id TEXT NOT NULL REFERENCES operation_groups(group_id) ON DELETE CASCADE,
+  from_fact_id TEXT NOT NULL REFERENCES group_facts(fact_id),
+  to_fact_id TEXT NOT NULL REFERENCES group_facts(fact_id),
   kind TEXT NOT NULL,
   evidence_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  UNIQUE(flow_id, from_fact_id, to_fact_id, kind),
+  UNIQUE(group_id, from_fact_id, to_fact_id, kind),
   CHECK(from_fact_id <> to_fact_id)
-);
-CREATE TABLE IF NOT EXISTS continuations(
-  continuation_id TEXT PRIMARY KEY,
-  semantic_key TEXT NOT NULL,
-  flow_id TEXT NOT NULL REFERENCES flows(flow_id),
-  kind TEXT NOT NULL CHECK(kind IN ('component_dispatch','callback_dispatch','shared_handler','async_resume','unknown_target')),
-  target TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('open','resolved','gap')),
-  task_id TEXT REFERENCES tasks(task_id),
-  child_flow_ids_json TEXT NOT NULL DEFAULT '[]',
-  evidence_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(flow_id, semantic_key)
-);
-CREATE TABLE IF NOT EXISTS paths(
-  path_id TEXT PRIMARY KEY,
-  root_entry_id TEXT NOT NULL REFERENCES entries(entry_id),
-  terminal_flow_id TEXT NOT NULL REFERENCES flows(flow_id),
-  gap_continuation_id TEXT REFERENCES continuations(continuation_id),
-  status TEXT NOT NULL CHECK(status IN ('reached','stopped','gap')),
-  flow_ids_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS security_assessments(
-  assessment_id TEXT PRIMARY KEY,
-  path_id TEXT NOT NULL REFERENCES paths(path_id),
-  capability_id TEXT,
-  pattern_id TEXT,
-  category TEXT NOT NULL,
-  operation_fact_id TEXT REFERENCES facts(fact_id),
-  classification TEXT NOT NULL CHECK(classification IN ('confirmed_vulnerability','protected_exposure','benign_business_flow','insufficient_evidence','residual_risk')),
-  title TEXT NOT NULL,
-  severity TEXT,
-  cwe TEXT,
-  impact TEXT,
-  poc TEXT,
-  boundary TEXT NOT NULL,
-  controlled_property TEXT NOT NULL,
-  operation_location TEXT NOT NULL,
-  exploitability_json TEXT NOT NULL,
-  business_intent_json TEXT NOT NULL,
-  security_boundary_json TEXT NOT NULL,
-  guards_json TEXT NOT NULL,
-  counter_evidence_json TEXT NOT NULL,
-  demotion_reason TEXT,
-  evidence_gap TEXT,
-  evidence_json TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(path_id, pattern_id, category, operation_fact_id, boundary)
 );
 CREATE TABLE IF NOT EXISTS findings(
   finding_id TEXT PRIMARY KEY,
   root_cause_key TEXT NOT NULL UNIQUE,
-  path_id TEXT NOT NULL REFERENCES paths(path_id),
+  group_id TEXT NOT NULL REFERENCES operation_groups(group_id),
   classification TEXT NOT NULL,
   title TEXT NOT NULL,
   severity TEXT,
@@ -176,7 +142,7 @@ CREATE TABLE IF NOT EXISTS findings(
   impact TEXT,
   poc TEXT,
   boundary TEXT NOT NULL,
-  controlled_property TEXT NOT NULL,
+  controlled_properties_json TEXT NOT NULL,
   operation_location TEXT NOT NULL,
   evidence_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
@@ -190,10 +156,9 @@ CREATE TABLE IF NOT EXISTS events(
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_flows_status ON flows(status);
-CREATE INDEX IF NOT EXISTS idx_paths_status ON paths(status);
-CREATE INDEX IF NOT EXISTS idx_facts_flow_type ON facts(flow_id, fact_type);
-CREATE INDEX IF NOT EXISTS idx_assessments_path_classification ON security_assessments(path_id, classification);
+CREATE INDEX IF NOT EXISTS idx_groups_entry ON operation_groups(entry_id, category);
+CREATE INDEX IF NOT EXISTS idx_validations_class ON validation_results(classification);
+CREATE INDEX IF NOT EXISTS idx_group_facts_type ON group_facts(group_id, fact_type);
 """
 
 
@@ -210,6 +175,13 @@ def connect(db_path):
 def database(db_path):
     conn = connect(db_path)
     try:
+        try:
+            row = conn.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+        except sqlite3.OperationalError as error:
+            raise ValueError("missing_runtime_schema") from error
+        if row is None or row["version"] != SCHEMA_VERSION:
+            actual = row["version"] if row else "missing"
+            raise ValueError(f"unsupported_schema_version:{actual}:expected:{SCHEMA_VERSION}")
         yield conn
     finally:
         conn.close()
@@ -247,7 +219,7 @@ def append_event(conn, event_type, subject_id=None, payload=None):
     )
 
 
-def enqueue_task(conn, semantic_key, kind, subject_id=None, payload=None, dependencies=None):
+def enqueue_task(conn, semantic_key, kind, subject_id=None, payload=None):
     task_id = stable_id("TASK", semantic_key)
     stamp = now()
     cursor = conn.execute(
@@ -256,13 +228,6 @@ def enqueue_task(conn, semantic_key, kind, subject_id=None, payload=None, depend
            VALUES (?,?,?,?,?,?,?,?,?)""",
         (task_id, semantic_key, kind, subject_id, "queued", TASK_AGENTS[kind], canonical_json(payload or {}), stamp, stamp),
     )
-    task = conn.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-    if task["status"] == "queued":
-        for dependency in dependencies or []:
-            conn.execute(
-                "INSERT OR IGNORE INTO task_dependencies(task_id,depends_on) VALUES (?,?)",
-                (task_id, dependency),
-            )
     if cursor.rowcount:
         append_event(conn, "task_planned", task_id, {"semantic_key": semantic_key, "kind": kind})
     return task_id

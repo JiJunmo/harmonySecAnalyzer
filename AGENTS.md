@@ -16,6 +16,6 @@
 - `run.db` 是可变状态唯一事实源；Agent 不直接修改中央状态或报告。
 - 源码事实查询使用 Atlas MCP；项目配置由 `project_profiler.py` 确定性解析。
 - 模式卡属于 `attack-patterns` Skill，能力画像属于 `audit-orchestration` Skill。
-- `exports/attack_matrix.json` 是 Path、Assessment 和 Finding 的确定性覆盖视图。
+- `exports/attack_matrix.json` 是 Entry、Operation Group 和 Finding 的确定性覆盖视图。
 - 审计目标源码只读；运行时只允许生成 `.atlas/` 和 `reports/`。
 - ArkTS 使用 Atlas `search/symbol/explore/calls/path/trace/impact/file_dependencies`；Native/NAPI 当前不接入。

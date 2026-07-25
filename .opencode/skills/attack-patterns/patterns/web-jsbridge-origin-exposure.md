@@ -28,4 +28,4 @@
 - 因有 method allowlist 就忽略参数、对象所有权和独立 Native 授权;也不得为只读公开方法编造影响。
 
 ## 证据要求
-Flow 必须记录 object/method、注册范围、最终 origin、生命周期、调用可达性、Native capability、参数控制和操作；Validator 必须复核 origin/lifecycle/method Guard、保护依据、边界与 impact。关键绑定无法解析时终态为 gap/insufficient evidence。
+Operation Group 必须记录 object/method、注册范围、最终 origin、生命周期、调用可达性、Native capability、参数控制和操作；组件分析必须复核 origin/lifecycle/method Guard、保护依据、边界与 impact。关键绑定无法解析时记录 gap/insufficient evidence。

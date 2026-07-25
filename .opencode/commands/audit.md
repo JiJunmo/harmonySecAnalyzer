@@ -12,6 +12,6 @@ agent: harmony-auditor
 - `/audit --component <AbilityName> <repo-path>`：只审计指定 Ability 或 ExtensionAbility。
 - `/audit --component <module/AbilityName> <repo-path>`：使用模块限定名消除同名组件歧义。
 
-`--component` 与 `--capability` 均可重复并可组合。组件过滤在 Entry Resolution 前确定性执行；能力过滤在 Entry Resolution 确认入口类型后执行。不在目标范围内的入口不创建路径发现任务。
+`--component` 与 `--capability` 均可重复并可组合。组件和能力过滤都在脚本生成分析单元时确定性执行。不在目标范围内的组件不创建语义分析任务。
 
-为本次审计创建隔离 run，先完成“审计准备与入口建模”：解析项目配置、建立 Atlas 索引并执行 Entry Resolution；随后发现局部 Flow、组装完整 Path，并对每条 Path 执行一次包含强制六维有效性验证的 Security Assessment，确定性根因归并和准入通过后生成 Markdown 与 HTML 报告。
+为本次审计创建隔离 run，解析项目配置、建立 Atlas 索引并确定性生成组件分析单元。每个组件先执行语义分析并落盘源码事实；存在安全相关操作时，再创建只读取语义结果的六维验证任务。确定性根因归并和准入通过后生成 Markdown 与 HTML 报告。
