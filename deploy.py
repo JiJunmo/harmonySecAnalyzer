@@ -35,7 +35,7 @@ ORCHESTRATION_RUNTIME_FILES = [
     f".opencode/skills/audit-orchestration/scripts/audit_runtime/{name}"
     for name in (
         "__init__.py", "common.py", "store.py", "contracts.py", "reporting.py",
-        "commands.py", "initialization.py", "lifecycle.py", "scheduler.py", "task_context.py", "cli.py",
+        "commands.py", "initialization.py", "lifecycle.py", "correlation.py", "scheduler.py", "task_context.py", "cli.py",
     )
 ]
 
@@ -50,7 +50,6 @@ REQUIRED = [
     ".opencode/agents/exploitability-validator.md",
     ".opencode/commands/audit.md",
     ".opencode/skills/audit-workflow/SKILL.md",
-    ".opencode/skills/attack-patterns/SKILL.md",
     ".opencode/skills/audit-orchestration/SKILL.md",
     ".opencode/skills/audit-orchestration/config/audit_capabilities.json",
     ".opencode/skills/audit-orchestration/config/schemas/audit-capabilities.schema.json",
@@ -60,21 +59,12 @@ REQUIRED = [
     ".opencode/skills/project-modeling/SKILL.md",
 ]
 
-_capabilities_path = Path(__file__).resolve().parent / ".opencode/skills/audit-orchestration/config/audit_capabilities.json"
-if _capabilities_path.is_file():
-    _capabilities = json.loads(_capabilities_path.read_text(encoding="utf-8"))
-    REQUIRED.extend(
-        f".opencode/skills/attack-patterns/patterns/{pattern_id}.md"
-        for capability in _capabilities.get("capabilities", [])
-        if capability.get("status") in {"partial", "implemented"}
-        for pattern_id in capability.get("pattern_ids", [])
-    )
-
 # 全局安装/卸载的项目资源白名单(不动第三方)
 OWNED_AGENTS = ["harmony-auditor.md", "component-semantic-analyzer.md", "exploitability-validator.md"]
 LEGACY_AGENTS = ["entry-planner.md", "entry-resolver.md", "component-security-analyzer.md", "flow-pattern-evaluator.md", "flow-validator.md", "flow-analyzer.md", "security-assessor.md"]
 OWNED_COMMANDS = ["audit.md"]
-OWNED_SKILLS = ["audit-workflow", "attack-patterns", "audit-orchestration", "project-modeling"]
+OWNED_SKILLS = ["audit-workflow", "audit-orchestration", "project-modeling"]
+LEGACY_SKILLS = ["attack-patterns"]
 
 
 # ---------------- 输出 ----------------
@@ -289,14 +279,17 @@ def smoke_project_model(profiler, python):
         root = Path(td) / "target"
         module = root / "entry" / "src" / "main"
         module.mkdir(parents=True)
-        (module / "module.json5").write_text("{module:{name:'entry',abilities:[{name:'EntryAbility',exported:true}]}}", encoding="utf-8")
+        (module / "module.json5").write_text("{module:{name:'entry',type:'entry',abilities:[{name:'EntryAbility',exported:true}]}}", encoding="utf-8")
         output = Path(td) / "project_model.json"
         result = subprocess.run([python, str(profiler), str(root), "--output", str(output)], capture_output=True, text=True, timeout=20)
         if result.returncode != 0:
             return False, result.stderr or result.stdout
         payload = json.loads(result.stdout)
         model = json.loads(output.read_text(encoding="utf-8"))
-        if not payload.get("ok") or not model.get("entry_candidates"):
+        modules = model.get("modules", [])
+        if (not payload.get("ok") or model.get("schema_version") != 2
+                or not model.get("entry_candidates") or len(modules) != 1
+                or not modules[0].get("module_id") or modules[0].get("output_kind") != "hap"):
             return False, "project model 未生成入口候选"
         return True, "JSON5 project model 生成通过"
 
@@ -313,6 +306,11 @@ def install_global(root, atlas, target):
         if legacy.exists():
             legacy.unlink()
             ok(f"清理旧 agents/{name}")
+    for name in LEGACY_SKILLS:
+        legacy = g / "skills" / name
+        if legacy.exists():
+            shutil.rmtree(legacy)
+            ok(f"清理旧 skills/{name}")
     orch_abs = (g / "skills" / "audit-orchestration" / "scripts" / "audit_orchestrator.py").as_posix()
     profiler_abs = (g / "skills" / "project-modeling" / "scripts" / "project_profiler.py").as_posix()
     indexer_abs = (g / "skills" / "project-modeling" / "scripts" / "atlas_indexer.py").as_posix()
@@ -408,7 +406,7 @@ def uninstall_global(target):
         if f.exists():
             f.unlink()
             removed.append(str(f))
-    for name in OWNED_SKILLS:
+    for name in OWNED_SKILLS + LEGACY_SKILLS:
         d = g / "skills" / name
         if d.exists():
             shutil.rmtree(d)
@@ -542,11 +540,11 @@ def main():
         print("✗ 部署校验失败，请修复上方错误后重试。")
     elif args.global_install:
         print("✓ 全局安装完成。任何目录启动 opencode 即可用 /audit。")
-        print(f"    cd <某鸿蒙仓> && opencode && /audit full <该仓路径>")
+        print(f"    cd <某鸿蒙仓> && opencode && /audit <该仓路径>")
         print(f"  卸载: python deploy.py --uninstall")
     else:
         print("✓ 本地配置完成。在本项目目录启动 opencode:")
-        print(f"    cd {root} && opencode && /audit full <目标鸿蒙仓路径>")
+        print(f"    cd {root} && opencode && /audit <目标鸿蒙仓路径>")
     print("=" * 60)
     if not validation_ok:
         sys.exit(4)

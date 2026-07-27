@@ -1,34 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schema_version", "baseline_date", "status_definitions", "capabilities"],
+  "required": ["schema_version", "capabilities"],
   "properties": {
     "schema_version": {"const": 1},
-    "baseline_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-    "status_definitions": {"type": "object"},
     "capabilities": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": [
-          "capability_id", "title", "domain", "pattern_ids", "entry_types",
-          "attacker_controlled_properties", "security_boundaries", "expected_guards",
-          "atlas_strategy", "status", "priority", "next_action"
-        ],
+        "required": ["capability_id", "title", "domain", "entry_types", "status"],
         "properties": {
           "capability_id": {"type": "string", "pattern": "^CAP-[A-Z0-9-]+$"},
           "title": {"type": "string", "minLength": 1},
           "domain": {"type": "string", "minLength": 1},
-          "pattern_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
           "entry_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "attacker_controlled_properties": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "security_boundaries": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "expected_guards": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "atlas_strategy": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "status": {"enum": ["implemented", "partial", "planned", "deferred"]},
-          "priority": {"enum": ["P0", "P1", "P2", "P3"]},
-          "next_action": {"type": "string", "minLength": 1}
+          "status": {"enum": ["implemented", "partial", "planned", "deferred"]}
         },
         "additionalProperties": false
       }

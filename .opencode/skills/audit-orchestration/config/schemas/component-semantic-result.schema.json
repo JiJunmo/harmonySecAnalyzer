@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["task_id", "entry_id", "summary", "coverage", "operation_groups", "evidence"],
+  "required": ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_handoffs", "evidence"],
   "properties": {
     "task_id": {"type": "string", "minLength": 1},
     "entry_id": {"type": "string", "minLength": 1},
@@ -19,6 +19,7 @@
       "additionalProperties": false
     },
     "operation_groups": {"type": "array", "items": {"$ref": "#/$defs/group"}},
+    "component_handoffs": {"type": "array", "items": {"$ref": "#/$defs/handoff"}},
     "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
   },
   "$defs": {
@@ -63,6 +64,36 @@
         "protects": {"type": "string", "minLength": 1}, "validated_property": {"type": "string", "minLength": 1},
         "behavior": {"type": "string", "minLength": 1}, "evidence_refs": {"$ref": "#/$defs/refs"}
       }, "additionalProperties": false
+    },
+    "parameterMapping": {
+      "type": "object",
+      "required": ["source_property", "target_property", "control_state", "transform"],
+      "properties": {
+        "source_property": {"type": "string", "minLength": 1},
+        "target_property": {"type": "string", "minLength": 1},
+        "control_state": {"enum": ["preserved", "constrained", "constant", "unknown"]},
+        "transform": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "handoff": {
+      "type": "object",
+      "required": [
+        "handoff_key", "target_component_id", "target_symbol", "transport",
+        "call_location", "condition", "parameter_mappings", "guards", "evidence_refs"
+      ],
+      "properties": {
+        "handoff_key": {"type": "string", "minLength": 1},
+        "target_component_id": {"type": "string", "minLength": 1},
+        "target_symbol": {"type": "string", "minLength": 1},
+        "transport": {"type": "string", "minLength": 1},
+        "call_location": {"type": "string", "minLength": 1},
+        "condition": {"type": "string", "minLength": 1},
+        "parameter_mappings": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/parameterMapping"}},
+        "guards": {"type": "array", "items": {"$ref": "#/$defs/guard"}},
+        "evidence_refs": {"$ref": "#/$defs/refs"}
+      },
+      "additionalProperties": false
     },
     "context": {
       "type": "object", "required": ["external_actor", "intended_behavior", "protected_assets", "observed_effect", "evidence_refs"],

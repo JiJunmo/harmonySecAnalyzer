@@ -121,9 +121,6 @@ def load_capabilities(capability_filter=None):
     return rows
 
 
-def profiles_for_entry(entry_types, capabilities):
-    entry_types = set(entry_types)
-    return sorted(
-        row["capability_id"] for row in capabilities
-        if entry_types.intersection(row.get("entry_types", []))
-    )
+def capability_scope(capabilities):
+    """Capabilities constrain operations, not which downstream components may run."""
+    return sorted(row["capability_id"] for row in capabilities)

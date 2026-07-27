@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from .common import MAX_CONCURRENT_TASKS, MAX_TASK_ATTEMPTS, SCHEMAS_DIR, now, read_json, run_paths, write_json
+from .correlation import correlate_components, enqueue_handoff_targets
 from .contracts import SCHEMA_BY_TASK
 from .lifecycle import run_row
-from .store import append_event, database, task_document, transaction
+from .store import append_event, database, row_json, task_document, transaction
 from .task_context import task_context
 
 
@@ -54,6 +55,13 @@ def claim_batch(run_dir, limit=MAX_CONCURRENT_TASKS, worker="harmony-auditor"):
         running = conn.execute("SELECT COUNT(*) n FROM tasks WHERE status='running'").fetchone()["n"]
         if running:
             return {"ok": True, "tasks": [], "count": 0, "reason": "batch_in_progress", "running": running}
+        semantic_queued = conn.execute(
+            "SELECT COUNT(*) n FROM tasks WHERE kind='component_semantic_analysis' AND status='queued'"
+        ).fetchone()["n"]
+        if run["correlation_status"] == "pending" and not semantic_queued:
+            expanded = enqueue_handoff_targets(conn, paths["project_model"])
+            if not expanded:
+                correlate_components(conn, run["run_id"])
         rows = conn.execute(
             """SELECT * FROM tasks WHERE status='queued'
                ORDER BY created_at,task_id LIMIT ?""", (requested,),
@@ -140,12 +148,13 @@ def readiness(run_dir):
         groups_without_validation = conn.execute(
             """SELECT COUNT(*) n FROM operation_groups g WHERE NOT EXISTS (
                  SELECT 1 FROM validation_results v WHERE v.group_id=g.group_id
-               )"""
+               ) AND g.validation_required=1"""
         ).fetchone()["n"]
         reasons = []
         if run["status"] == "failed": reasons.append("run_failed")
         if counts.get("queued", 0) or counts.get("running", 0): reasons.append("unfinished_tasks")
         if run["status"] == "created": reasons.append("run_not_initialized")
+        if run["correlation_status"] != "complete": reasons.append("component_correlation_pending")
         ready = run["status"] == "running" and not reasons
         return {
             "ok": run["status"] != "failed", "ready": ready,
@@ -155,5 +164,6 @@ def readiness(run_dir):
                 "exhausted_tasks": counts.get("exhausted", 0),
                 "entries_without_semantics": entries_without_semantics,
                 "groups_without_validation": groups_without_validation,
+                "component_correlation": row_json(run, "correlation_json", {}),
             },
         }

@@ -16,6 +16,11 @@ class DeployTest(unittest.TestCase):
         self.assertNotIn('invoke("next", first["run_dir"])', source)
         self.assertIn('status_payload["tasks"].get("running") != len(tasks)', source)
 
+    def test_usage_hint_uses_current_audit_syntax(self):
+        source = (ROOT / "deploy.py").read_text(encoding="utf-8")
+        self.assertNotIn("/audit full <", source)
+        self.assertIn("/audit <目标鸿蒙仓路径>", source)
+
     def test_atlas_smoke_uses_resolved_executable_instead_of_temporary_stub(self):
         atlas = Path("C:/Tools/atlas.exe")
         actions = iter(("index", "sync"))

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 15
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS runs(
   audit_mode TEXT NOT NULL CHECK(audit_mode IN ('full','capability')),
   capability_filter_json TEXT NOT NULL,
   component_filter_json TEXT NOT NULL,
+  correlation_status TEXT NOT NULL DEFAULT 'pending' CHECK(correlation_status IN ('pending','complete')),
+  correlation_json TEXT NOT NULL DEFAULT '{}',
+  correlated_at TEXT,
   status TEXT NOT NULL CHECK(status IN ('created','running','complete','failed')),
   error TEXT,
   created_at TEXT NOT NULL,
@@ -68,11 +71,30 @@ CREATE TABLE IF NOT EXISTS semantic_analyses(
   coverage_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS component_handoffs(
+  handoff_id TEXT PRIMARY KEY,
+  identity_key TEXT NOT NULL UNIQUE,
+  source_entry_id TEXT NOT NULL REFERENCES entries(entry_id) ON DELETE CASCADE,
+  source_component_id TEXT NOT NULL,
+  target_component_id TEXT NOT NULL,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  transport TEXT NOT NULL,
+  call_location TEXT NOT NULL,
+  condition TEXT NOT NULL,
+  parameter_mappings_json TEXT NOT NULL,
+  guards_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS operation_groups(
   group_id TEXT PRIMARY KEY,
   identity_key TEXT NOT NULL UNIQUE,
   entry_id TEXT NOT NULL REFERENCES entries(entry_id) ON DELETE CASCADE,
   task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  scope TEXT NOT NULL CHECK(scope IN ('local','cross_component')),
+  validation_required INTEGER NOT NULL DEFAULT 0 CHECK(validation_required IN (0,1)),
+  source_group_id TEXT,
   capability_id TEXT,
   category TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -90,7 +112,6 @@ CREATE TABLE IF NOT EXISTS validation_results(
   group_id TEXT PRIMARY KEY REFERENCES operation_groups(group_id) ON DELETE CASCADE,
   task_id TEXT NOT NULL REFERENCES tasks(task_id),
   capability_id TEXT,
-  pattern_id TEXT,
   classification TEXT NOT NULL CHECK(classification IN ('confirmed_vulnerability','protected_exposure','benign_business_flow','insufficient_evidence','residual_risk')),
   title TEXT NOT NULL,
   guard_outcome TEXT NOT NULL CHECK(guard_outcome IN ('absent','bypassable','effective','unknown')),
@@ -157,6 +178,8 @@ CREATE TABLE IF NOT EXISTS events(
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_groups_entry ON operation_groups(entry_id, category);
+CREATE INDEX IF NOT EXISTS idx_handoffs_source ON component_handoffs(source_entry_id, target_component_id);
+CREATE INDEX IF NOT EXISTS idx_groups_validation ON operation_groups(validation_required, entry_id);
 CREATE INDEX IF NOT EXISTS idx_validations_class ON validation_results(classification);
 CREATE INDEX IF NOT EXISTS idx_group_facts_type ON group_facts(group_id, fact_type);
 """

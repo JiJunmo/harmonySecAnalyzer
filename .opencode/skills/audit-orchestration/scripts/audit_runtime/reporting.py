@@ -48,6 +48,14 @@ def _finding_row(raw):
     return row
 
 
+def _entry_row(raw):
+    row = _decode(raw, "facets", "profiles", "payload")
+    payload = row.get("payload", {})
+    for key in ("module", "module_id", "module_root", "component_id"):
+        row[key] = payload.get(key)
+    return row
+
+
 def _evidence_path(group, entry, finding_ids):
     """Paths are report-only evidence chains for actionable groups."""
     branches = group.get("branches", [])
@@ -65,8 +73,11 @@ def _evidence_path(group, entry, finding_ids):
 def export_state(run_dir):
     run_paths = ensure_run_dirs(run_dir)
     with database(run_paths["db"]) as conn:
-        entries = [_decode(row, "facets", "profiles", "payload") for row in _rows(conn, "SELECT * FROM entries ORDER BY entry_key")]
+        entries = [_entry_row(row) for row in _rows(conn, "SELECT * FROM entries ORDER BY entry_key")]
         analyses = [_decode(row, "coverage") for row in _rows(conn, "SELECT * FROM semantic_analyses ORDER BY entry_id")]
+        handoffs = [_decode(row, "parameter_mappings", "guards", "evidence", "payload") for row in _rows(
+            conn, "SELECT * FROM component_handoffs ORDER BY source_entry_id,handoff_id"
+        )]
         group_ids = [row["group_id"] for row in _rows(conn, "SELECT group_id FROM operation_groups ORDER BY entry_id,group_id")]
         semantic_groups = [semantic_group_context(conn, group_id) for group_id in group_ids]
         validations = [value for group_id in group_ids if (value := validation_context(conn, group_id))]
@@ -88,7 +99,21 @@ def export_state(run_dir):
         "boundary": group["boundary"], "classification": group["classification"],
         "finding_ids": finding_by_group.get(group["group_id"], []),
     } for group in groups]
+    component_graph = {
+        "nodes": [{
+            key: entry.get(key) for key in (
+                "entry_id", "component_id", "component", "module", "module_id", "module_root",
+            )
+        } for entry in entries],
+        "edges": [{
+            "handoff_id": row["handoff_id"], "source_entry_id": row["source_entry_id"],
+            "source_component_id": row["source_component_id"],
+            "target_component_id": row["target_component_id"], "transport": row["transport"],
+            "call_location": row["call_location"], "parameter_mappings": row["parameter_mappings"],
+        } for row in handoffs],
+    }
     artifacts = {"entries.json": entries, "semantic_analyses.json": analyses,
+                 "component_handoffs.json": handoffs, "component_graph.json": component_graph,
                  "operation_groups.json": semantic_groups, "validation_results.json": validations,
                  "evidence_paths.json": evidence_paths,
                  "attack_matrix.json": attack_matrix, "tasks.json": tasks}
@@ -103,15 +128,19 @@ def build_report(run_dir):
     export_state(run_dir)
     with database(run_paths["db"]) as conn:
         run = dict(conn.execute("SELECT * FROM runs LIMIT 1").fetchone())
+        correlation = json.loads(run.get("correlation_json") or "{}")
         project = read_json(run_paths["project_model"], {})
-        entries = [_decode(row, "facets") for row in _rows(
-            conn, "SELECT entry_id,entry_key,component,symbol,facets_json,reachability FROM entries ORDER BY entry_key"
+        entries = [_entry_row(row) for row in _rows(
+            conn, "SELECT entry_id,entry_key,component,symbol,facets_json,profiles_json,payload_json,reachability FROM entries ORDER BY entry_key"
         )]
         fact_count = conn.execute("SELECT COUNT(*) n FROM group_facts").fetchone()["n"]
         group_ids = [row["group_id"] for row in _rows(conn, "SELECT group_id FROM operation_groups ORDER BY entry_id,group_id")]
         semantic_groups = [semantic_group_context(conn, group_id) for group_id in group_ids]
         groups = [group_context(conn, group_id) for group_id in group_ids if validation_context(conn, group_id)]
         analyses = [_decode(row, "coverage") for row in _rows(conn, "SELECT * FROM semantic_analyses ORDER BY entry_id")]
+        handoffs = [_decode(row, "parameter_mappings", "guards", "evidence", "payload") for row in _rows(
+            conn, "SELECT * FROM component_handoffs ORDER BY source_entry_id,handoff_id"
+        )]
         findings = [_finding_row(row) for row in _rows(conn, "SELECT * FROM findings")]
         tasks = _rows(conn, "SELECT task_id,kind,subject_id,status,attempts,error FROM tasks ORDER BY created_at,task_id")
         task_counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
@@ -144,9 +173,21 @@ def build_report(run_dir):
             gaps.append({"type": "未解析调用", "subject": analysis["entry_id"], "description": target})
     validated_group_ids = {row["group_id"] for row in groups}
     for group in semantic_groups:
-        if group["group_id"] not in validated_group_ids:
+        if group.get("validation_required") and group["group_id"] not in validated_group_ids:
             gaps.append({"type": "未完成验证", "subject": group["group_id"],
                          "description": "该敏感操作未完成六维有效性验证"})
+    for gap in correlation.get("gaps", []):
+        gap_type = gap.get("type")
+        descriptions = {
+            "target_component_not_in_analysis_scope": "目标组件不在本次分析范围内，跨组件链未继续连接",
+            "target_component_semantics_missing": "目标组件语义分析未完成，跨组件链未继续连接",
+            "state_limit": "组件连接状态达到上限，已停止继续展开",
+        }
+        gaps.append({
+            "type": "组件连接",
+            "subject": gap.get("handoff_id") or gap.get("target_entry_id") or gap.get("root_entry_id") or "component_graph",
+            "description": descriptions.get(gap_type, gap_type or str(gap)),
+        })
     for row in tasks:
         if row["status"] == "exhausted":
             gaps.append({"type": "任务未完成", "subject": row["task_id"],
@@ -159,18 +200,25 @@ def build_report(run_dir):
             "run_id": run["run_id"], "target_repo": run["target_repo"], "mode": run["audit_mode"],
             "capabilities": json.loads(run["capability_filter_json"]),
             "components": json.loads(run["component_filter_json"]),
+            "correlation": correlation,
         },
         "project": {
             "application": project.get("application") or {}, "summary": project.get("summary", {}),
+            "build": project.get("build", {}),
             "modules": project.get("modules", []), "components": project.get("components", []),
             "requested_permissions": project.get("requested_permissions", []),
             "defined_permissions": project.get("defined_permissions", []),
-            "dependencies": project.get("dependencies", []), "diagnostics": project.get("diagnostics", []),
+            "dependencies": project.get("dependencies", []),
+            "module_dependencies": project.get("module_dependencies", []),
+            "diagnostics": project.get("diagnostics", []),
         },
         "summary": {
             "entries": len(entries), "paths": len(evidence_paths), "evidence_facts": fact_count,
+            "analyzed_components": len(analyses),
             "findings": actionable_findings,
             "validation_results": len(groups), "operation_groups": len(semantic_groups),
+            "component_handoffs": len(handoffs),
+            "cross_component_groups": sum(group.get("scope") == "cross_component" for group in semantic_groups),
             "confirmed_vulnerabilities": finding_classification_counts.get("confirmed_vulnerability", 0),
             "residual_risks": finding_classification_counts.get("residual_risk", 0),
             "protected_exposures": classification_counts.get("protected_exposure", 0),
@@ -182,15 +230,18 @@ def build_report(run_dir):
         "coverage": {
             "status": coverage_status,
             "project_candidates": len(project.get("entry_candidates", [])),
-            "analysis_units": len(entries),
+            "component_catalog": len(entries),
+            "analysis_units": sum(row["kind"] == "component_semantic_analysis" for row in tasks),
             "semantic_analyses": len(analyses),
             "operation_groups": len(semantic_groups),
+            "component_handoffs": len(handoffs), "component_correlation": correlation,
             "entry_status": dict(sorted(entry_status_counts.items())),
             "task_status": task_counts,
             "assessment_status": dict(sorted(classification_counts.items())),
             "gaps": gaps,
         },
         "entries": entries, "semantic_analyses": analyses,
+        "component_handoffs": handoffs,
         "operation_groups": groups, "semantic_operation_groups": semantic_groups,
         "paths": evidence_paths, "assessments": groups, "findings": findings,
     }
@@ -215,7 +266,11 @@ def _render_markdown(model):
         f"- Run: `{model['run']['run_id']}`",
         f"- Components: `{', '.join(model['run']['components']) or 'all'}`",
         f"- Capabilities: `{', '.join(model['run']['capabilities']) or 'all'}`",
-        f"- Entries: {summary['entries']}", f"- Evidence paths: {summary['paths']}",
+        f"- Component catalog: {summary['entries']}",
+        f"- Analyzed components: {summary['analyzed_components']}",
+        f"- Evidence paths: {summary['paths']}",
+        f"- Component handoffs: {summary['component_handoffs']}",
+        f"- Cross-component operation groups: {summary['cross_component_groups']}",
         f"- Evidence facts: {summary['evidence_facts']}",
         f"- Actionable findings: {summary['findings']}",
         f"- Confirmed vulnerabilities: {summary['confirmed_vulnerabilities']}",
@@ -252,9 +307,12 @@ def _render_html(model):
                 "current_symbol", "status", "entry", "finding_ids",
             )
         } | {
-            "facts": [{key: fact.get(key) for key in ("fact_type", "body", "location", "evidence_refs")} for fact in path["facts"]],
+            "facts": [{
+                "type": fact.get("type") or fact.get("fact_type"),
+                **{key: fact.get(key) for key in ("body", "location", "evidence_refs")},
+            } for fact in path["facts"]],
             "assessments": [{key: row.get(key) for key in (
-                "assessment_id", "capability_id", "pattern_id", "category", "classification",
+                "assessment_id", "capability_id", "category", "classification",
                 "title", "severity", "boundary", "operation_location", "impact", "demotion_reason",
                 "evidence_gap", "exploitability", "business_intent", "security_boundary", "guards", "counter_evidence", "evidence_refs",
             )} for row in path["assessments"]],
@@ -286,18 +344,18 @@ const labels={{confirmed_vulnerability:'已确认漏洞',residual_risk:'残余�
 const findingById=Object.fromEntries(arr(D.findings).map(x=>[x.finding_id,x]));const resultRank={{confirmed_vulnerability:5,residual_risk:4,insufficient_evidence:3,protected_exposure:2,benign_business_flow:1}};const pathResult=p=>arr(p.finding_ids).map(id=>findingById[id]).filter(Boolean)[0]||arr(p.assessments).slice().sort((a,b)=>(resultRank[b.classification]||0)-(resultRank[a.classification]||0))[0]||{{}};const metric=(v,t)=>`<div class="metric"><strong>${{esc(v)}}</strong><span>${{esc(t)}}</span></div>`;const badge=v=>`<span class="badge ${{esc(v)}}">${{esc(label(v))}}</span>`;
 document.getElementById('runmeta').innerHTML=`<span>运行编号 <b>${{esc(D.run.run_id)}}</b></span><span>审计范围 <b>${{esc(arr(D.run.components).join(', ')||'全部组件')}}</b></span><span>覆盖状态 <b>${{esc(D.coverage.status)}}</b></span>`;
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===b.dataset.view));}});
-const S=D.summary;document.getElementById('overview-metrics').innerHTML=metric(S.confirmed_vulnerabilities,'已确认漏洞')+metric(S.residual_risks,'残余风险')+metric(S.protected_exposures,'有效防护')+metric(S.benign_business_flows,'正常业务')+metric(S.entries,'外部入口')+metric(S.paths,'攻击路径');
+const S=D.summary;document.getElementById('overview-metrics').innerHTML=metric(S.confirmed_vulnerabilities,'已确认漏洞')+metric(S.residual_risks,'残余风险')+metric(S.protected_exposures,'有效防护')+metric(S.benign_business_flows,'正常业务')+metric(S.analyzed_components,'已分析组件')+metric(S.paths,'攻击路径');
 const resultRows=[['confirmed_vulnerability',S.confirmed_vulnerabilities],['residual_risk',S.residual_risks],['protected_exposure',S.protected_exposures],['benign_business_flow',S.benign_business_flows],['insufficient_evidence',S.insufficient_evidence]];document.getElementById('result-summary').innerHTML=resultRows.map(([k,v])=>`<div class="summary-item"><h3>${{badge(k)}} ${{esc(v)}} 条</h3></div>`).join('');
 const key=arr(D.findings).filter(x=>['confirmed_vulnerability','residual_risk'].includes(x.classification)).slice(0,6);document.getElementById('key-findings').innerHTML=key.map(x=>`<div class="summary-item danger"><h3>${{esc(x.title)}}</h3><p>${{badge(x.classification)}} · ${{esc(x.severity||'未定级')}} · ${{esc(x.operation_location)}}</p></div>`).join('')||'<div class="empty">未发现需要处置的安全问题</div>';
 const entryTypes={{}};arr(D.entries).forEach(x=>arr(x.facets).forEach(f=>entryTypes[f.entry_type]=(entryTypes[f.entry_type]||0)+1));document.getElementById('entry-summary').innerHTML=`<div class="structure-list">${{Object.entries(entryTypes).map(([k,v])=>`<div class="structure-item"><strong>${{esc(k)}}</strong><div class="muted">${{v}} 个入口渠道</div></div>`).join('')}}</div>`;
 const resultSelect=document.getElementById('path-result');[...new Set(arr(D.paths).map(p=>pathResult(p).classification||p.status))].forEach(k=>resultSelect.insertAdjacentHTML('beforeend',`<option value="${{esc(k)}}">${{esc(label(k))}}</option>`));
-function renderPaths(){{const q=document.getElementById('search').value.toLowerCase(),r=resultSelect.value,s=document.getElementById('path-severity').value;const rows=arr(D.paths).filter(p=>{{const x=pathResult(p),state=x.classification||p.status,text=[p.path_id,p.branch_key,p.controlled_property,p.current_symbol,p.entry?.component,p.entry?.symbol,x.title].join(' ').toLowerCase();return(!q||text.includes(q))&&(!r||state===r)&&(!s||x.severity===s)}});document.getElementById('path-count').textContent=`显示 ${{rows.length}} / ${{arr(D.paths).length}} 条路径`;document.getElementById('path-body').innerHTML=rows.map(p=>{{const x=pathResult(p),state=x.classification||p.status;return`<tr class="path-row" data-path-id="${{esc(p.path_id)}}"><td>${{badge(state)}}</td><td>${{esc(x.severity||'-')}}</td><td><strong>${{esc(p.entry?.component||p.root_entry_id)}}</strong><br><code>${{esc(p.entry?.symbol||'')}}</code></td><td>${{esc(p.branch_key)}}</td><td><code>${{esc(p.controlled_property)}}</code></td><td>${{esc(x.operation_location||p.current_symbol)}}</td></tr>`}}).join('');document.querySelectorAll('.path-row').forEach(row=>row.onclick=()=>openPath(row.dataset.pathId));}}
+function renderPaths(){{const q=document.getElementById('search').value.toLowerCase(),r=resultSelect.value,s=document.getElementById('path-severity').value;const rows=arr(D.paths).filter(p=>{{const x=pathResult(p),state=x.classification||p.status,text=[p.path_id,p.branch_key,p.controlled_property,p.current_symbol,p.entry?.component,p.entry?.module,p.entry?.module_id,p.entry?.symbol,x.title].join(' ').toLowerCase();return(!q||text.includes(q))&&(!r||state===r)&&(!s||x.severity===s)}});document.getElementById('path-count').textContent=`显示 ${{rows.length}} / ${{arr(D.paths).length}} 条路径`;document.getElementById('path-body').innerHTML=rows.map(p=>{{const x=pathResult(p),state=x.classification||p.status;return`<tr class="path-row" data-path-id="${{esc(p.path_id)}}"><td>${{badge(state)}}</td><td>${{esc(x.severity||'-')}}</td><td><strong>${{esc(p.entry?.component||p.root_entry_id)}}</strong><br><span class="muted">${{esc(p.entry?.module||p.entry?.module_id||'')}}</span><br><code>${{esc(p.entry?.symbol||'')}}</code></td><td>${{esc(p.branch_key)}}</td><td><code>${{esc(p.controlled_property)}}</code></td><td>${{esc(x.operation_location||p.current_symbol)}}</td></tr>`}}).join('');document.querySelectorAll('.path-row').forEach(row=>row.onclick=()=>openPath(row.dataset.pathId));}}
 ['search','path-result','path-severity'].forEach(id=>document.getElementById(id).addEventListener(id==='search'?'input':'change',renderPaths));
-function openPath(id){{const p=arr(D.paths).find(x=>x.path_id===id),x=pathResult(p);document.getElementById('drawer-title').textContent=x.title||`${{p.entry?.component||p.root_entry_id}} · ${{p.branch_key}}`;const refs=v=>arr(v).map(r=>`<code>${{esc(r)}}</code>`).join(' · ');const facts=arr(p.facts).map(v=>`<li><b>${{esc(v.type||v.fact_type)}} · ${{esc(v.body)}}</b><code>${{esc(v.location||'')}}</code>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</li>`).join('');const decisions=arr(p.assessments).map(v=>`<div class="structure-item"><strong>${{esc(v.pattern_id||v.category)}} · ${{badge(v.classification)}}</strong><div>${{esc(v.impact||v.demotion_reason||'')}}</div>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</div>`).join('');const checkNames={{externally_reachable:'外部可达',attacker_controlled:'关键参数可控',sink_reached:'到达敏感操作',guard_bypassed_or_absent:'防护缺失或可绕过',boundary_violated:'突破安全边界',concrete_impact:'存在具体影响'}};const checks=Object.entries(obj(x.exploitability||x.payload?.exploitability)).map(([k,v])=>`<div class="structure-item"><strong>${{esc(checkNames[k]||k)}}</strong><div class="muted">${{v?'满足':'不满足'}}</div></div>`).join('');const conclusion=x.impact||x.demotion_reason||x.payload?.conclusion;const gap=x.evidence_gap||x.payload?.evidence_gap;const boundary=x.security_boundary||x.payload?.security_boundary;const intent=x.business_intent||x.payload?.business_intent;const guards=arr(x.guards||x.payload?.guards).map(v=>`<div class="structure-item"><strong>${{esc(v.type)}}</strong><div class="muted">${{esc(v.location||'')}} · 校验 ${{esc(v.validated_property)}}</div><div>${{esc(v.behavior||'')}}</div>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</div>`).join('');const counters=arr(x.counter_evidence||x.payload?.counter_evidence).map(v=>`<div class="structure-item"><strong>${{esc(v.kind)}}</strong><div>${{esc(v.reason)}}</div>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</div>`).join('');const evidence=refs(x.evidence_refs||x.evidence||x.payload?.evidence_refs);document.getElementById('drawer-body').innerHTML=`<dl class="kv"><dt>结果</dt><dd>${{badge(x.classification||p.status)}}</dd><dt>路径</dt><dd><code>${{esc(p.path_id)}}</code></dd><dt>入口</dt><dd>${{esc(p.entry?.symbol||p.root_entry_id)}}</dd><dt>分支</dt><dd>${{esc(p.branch_key)}}</dd><dt>受控参数</dt><dd><code>${{esc(p.controlled_property)}}</code></dd><dt>敏感操作</dt><dd><code>${{esc(x.operation_location||p.current_symbol)}}</code></dd><dt>安全边界</dt><dd>${{esc(boundary?.expected_boundary||x.boundary||'-')}}${{boundary?.reason?`<div class="muted">${{esc(boundary.reason)}}</div>`:''}}</dd></dl>${{conclusion?`<div class="panel"><h3>最终结论</h3><p>${{esc(conclusion)}}</p>${{gap?`<p><strong>证据缺口：</strong>${{esc(gap)}}</p>`:''}}${{evidence?`<p class="muted">判定证据：${{evidence}}</p>`:''}}</div>`:''}}${{intent?`<div class="panel"><h3>业务意图</h3><p>${{esc(intent.declared_or_inferred_purpose)}}</p></div>`:''}}${{checks?`<h3>六维有效性验证</h3><div class="structure-list">${{checks}}</div>`:''}}${{guards?`<h3>防护事实</h3><div class="structure-list">${{guards}}</div>`:''}}${{counters?`<h3>反证</h3><div class="structure-list">${{counters}}</div>`:''}}<h3>路径事实</h3><ol class="timeline">${{facts}}</ol><h3>安全判定</h3><div class="structure-list">${{decisions||'<div class="empty">未发现需要记录的安全场景</div>'}}</div>`;document.getElementById('drawer-backdrop').classList.add('open');}}
+function openPath(id){{const p=arr(D.paths).find(x=>x.path_id===id),x=pathResult(p);document.getElementById('drawer-title').textContent=x.title||`${{p.entry?.component||p.root_entry_id}} · ${{p.branch_key}}`;const refs=v=>arr(v).map(r=>`<code>${{esc(r)}}</code>`).join(' · ');const facts=arr(p.facts).map(v=>`<li><b>${{esc(v.type||v.fact_type)}} · ${{esc(v.body)}}</b><code>${{esc(v.location||'')}}</code>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</li>`).join('');const decisions=arr(p.assessments).map(v=>`<div class="structure-item"><strong>${{esc(v.category)}} · ${{badge(v.classification)}}</strong><div>${{esc(v.impact||v.demotion_reason||'')}}</div>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</div>`).join('');const checkNames={{externally_reachable:'外部可达',attacker_controlled:'关键参数可控',sink_reached:'到达敏感操作',guard_bypassed_or_absent:'防护缺失或可绕过',boundary_violated:'突破安全边界',concrete_impact:'存在具体影响'}};const checks=Object.entries(obj(x.exploitability||x.payload?.exploitability)).map(([k,v])=>`<div class="structure-item"><strong>${{esc(checkNames[k]||k)}}</strong><div class="muted">${{v?'满足':'不满足'}}</div></div>`).join('');const conclusion=x.impact||x.demotion_reason||x.payload?.conclusion;const gap=x.evidence_gap||x.payload?.evidence_gap;const boundary=x.security_boundary||x.payload?.security_boundary;const intent=x.business_intent||x.payload?.business_intent;const guards=arr(x.guards||x.payload?.guards).map(v=>`<div class="structure-item"><strong>${{esc(v.type)}}</strong><div class="muted">${{esc(v.location||'')}} · 校验 ${{esc(v.validated_property)}}</div><div>${{esc(v.behavior||'')}}</div>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</div>`).join('');const counters=arr(x.counter_evidence||x.payload?.counter_evidence).map(v=>`<div class="structure-item"><strong>${{esc(v.kind)}}</strong><div>${{esc(v.reason)}}</div>${{arr(v.evidence_refs).length?`<div class="muted">证据：${{refs(v.evidence_refs)}}</div>`:''}}</div>`).join('');const evidence=refs(x.evidence_refs||x.evidence||x.payload?.evidence_refs);document.getElementById('drawer-body').innerHTML=`<dl class="kv"><dt>结果</dt><dd>${{badge(x.classification||p.status)}}</dd><dt>路径</dt><dd><code>${{esc(p.path_id)}}</code></dd><dt>入口</dt><dd>${{esc(p.entry?.symbol||p.root_entry_id)}}</dd><dt>分支</dt><dd>${{esc(p.branch_key)}}</dd><dt>受控参数</dt><dd><code>${{esc(p.controlled_property)}}</code></dd><dt>敏感操作</dt><dd><code>${{esc(x.operation_location||p.current_symbol)}}</code></dd><dt>安全边界</dt><dd>${{esc(boundary?.expected_boundary||x.boundary||'-')}}${{boundary?.reason?`<div class="muted">${{esc(boundary.reason)}}</div>`:''}}</dd></dl>${{conclusion?`<div class="panel"><h3>最终结论</h3><p>${{esc(conclusion)}}</p>${{gap?`<p><strong>证据缺口：</strong>${{esc(gap)}}</p>`:''}}${{evidence?`<p class="muted">判定证据：${{evidence}}</p>`:''}}</div>`:''}}${{intent?`<div class="panel"><h3>业务意图</h3><p>${{esc(intent.declared_or_inferred_purpose)}}</p></div>`:''}}${{checks?`<h3>六维有效性验证</h3><div class="structure-list">${{checks}}</div>`:''}}${{guards?`<h3>防护事实</h3><div class="structure-list">${{guards}}</div>`:''}}${{counters?`<h3>反证</h3><div class="structure-list">${{counters}}</div>`:''}}<h3>路径事实</h3><ol class="timeline">${{facts}}</ol><h3>安全判定</h3><div class="structure-list">${{decisions||'<div class="empty">未发现需要记录的安全场景</div>'}}</div>`;document.getElementById('drawer-backdrop').classList.add('open');}}
 const closeDrawer=()=>document.getElementById('drawer-backdrop').classList.remove('open');document.getElementById('drawer-close').onclick=closeDrawer;document.getElementById('drawer-backdrop').onclick=e=>{{if(e.target.id==='drawer-backdrop')closeDrawer()}};
 const A=obj(D.project.application);document.getElementById('project-info').innerHTML=[['Bundle Name',A.bundle_name],['版本',`${{A.version_name||'-'}} (${{A.version_code??'-'}})`],['厂商',A.vendor],['目标仓库',D.run.target_repo],['模块',D.project.summary?.modules],['组件',D.project.summary?.components]].map(([k,v])=>`<dt>${{esc(k)}}</dt><dd>${{esc(v??'-')}}</dd>`).join('');
 const perms=[...arr(D.project.requested_permissions).map(x=>['申请权限',x]),...arr(D.project.defined_permissions).map(x=>['自定义权限',x])];const deps=arr(D.project.dependencies);document.getElementById('permission-list').innerHTML=perms.map(([k,x])=>`<div class="structure-item"><strong>${{esc(x.name)}}</strong><div class="muted">${{esc(k)}} · ${{esc(x.grant_mode||x.available_level||'')}}</div></div>`).join('')+deps.map(x=>`<div class="structure-item"><strong>${{esc(x.name)}} ${{esc(x.version||'')}}</strong><div class="muted">依赖 · ${{esc(x.group||'')}}</div></div>`).join('')||'<div class="empty">无权限与依赖信息</div>';
-document.getElementById('module-list').innerHTML=arr(D.project.modules).map(x=>`<div class="structure-item"><strong>${{esc(x.name)}} · ${{esc(x.type)}}</strong><div class="muted">${{esc(x.source_scope||x.file)}} · ${{esc(arr(x.device_types).join(', '))}}</div></div>`).join('')||'<div class="empty">无模块信息</div>';document.getElementById('component-body').innerHTML=arr(D.project.components).map(x=>`<tr><td><strong>${{esc(x.name)}}</strong></td><td>${{esc(x.extension_type||x.kind)}}</td><td>${{esc(x.module_name)}}</td><td>${{x.exported===true?'是':x.exported===false?'否':'-'}}</td><td>${{esc(arr(x.permissions).join(', ')||'-')}}</td><td><code>${{esc(x.source_file_hint||x.src_entry||'-')}}</code></td></tr>`).join('');
-const C=D.coverage,es=obj(C.entry_status),ac=obj(C.assessment_status),tc=obj(C.task_status);document.getElementById('coverage-metrics').innerHTML=metric(C.status,'覆盖状态')+metric(C.project_candidates,'项目候选入口')+metric(C.analysis_units||0,'分析单元')+metric(es.confirmed||0,'确认入口')+metric(es.excluded||0,'排除入口')+metric(es.uncertain||0,'不确定入口')+metric(arr(C.gaps).length,'缺口与注记');document.getElementById('coverage-summary').innerHTML=`<div class="structure-item"><strong>组件语义分析</strong><div class="muted">已完成 ${{C.semantic_analyses||0}} 个组件 · 归并 ${{C.operation_groups||0}} 个安全相关操作组</div></div><div class="structure-item"><strong>六维验证</strong><div class="muted">漏洞 ${{ac.confirmed_vulnerability||0}} · 风险 ${{ac.residual_risk||0}} · 防护 ${{ac.protected_exposure||0}} · 正常 ${{ac.benign_business_flow||0}} · 缺证据 ${{ac.insufficient_evidence||0}}</div></div>`;document.getElementById('task-summary').innerHTML=Object.entries(tc).map(([k,v])=>`<div class="structure-item"><strong>${{esc(label(k))}}</strong><div class="muted">${{v}} 个任务</div></div>`).join('')||'<div class="empty">无任务信息</div>';document.getElementById('gap-list').innerHTML=arr(C.gaps).map(x=>`<div class="gap-item"><strong>${{esc(x.type)}} · ${{esc(x.subject)}}</strong><div>${{esc(x.description)}}</div></div>`).join('')||'<div class="empty">未发现覆盖缺口</div>';
+document.getElementById('module-list').innerHTML=arr(D.project.modules).map(x=>`<div class="structure-item"><strong>${{esc(x.name)}} · ${{esc((x.output_kind||x.type||'unknown').toUpperCase())}}</strong><div class="muted">${{esc(x.root||x.source_scope||x.file)}} · ${{esc(arr(x.products).join(', ')||'all products')}} · <code>${{esc(x.module_id||'')}}</code></div></div>`).join('')||'<div class="empty">无模块信息</div>';document.getElementById('component-body').innerHTML=arr(D.project.components).map(x=>`<tr><td><strong>${{esc(x.name)}}</strong></td><td>${{esc(x.extension_type||x.kind)}}</td><td>${{esc(x.module_name)}}<br><code>${{esc(x.module_id||'')}}</code></td><td>${{x.exported===true?'是':x.exported===false?'否':'-'}}</td><td>${{esc(arr(x.permissions).join(', ')||'-')}}</td><td><code>${{esc(x.source_file_hint||x.src_entry||'-')}}</code></td></tr>`).join('');
+const C=D.coverage,es=obj(C.entry_status),ac=obj(C.assessment_status),tc=obj(C.task_status),cc=obj(C.component_correlation);document.getElementById('coverage-metrics').innerHTML=metric(C.status,'覆盖状态')+metric(C.component_catalog||0,'组件目录')+metric(C.analysis_units||0,'实际分析组件')+metric(es.confirmed||0,'已确认输入')+metric(es.excluded||0,'已排除输入')+metric(es.uncertain||0,'不确定输入')+metric(arr(C.gaps).length,'缺口与注记');document.getElementById('coverage-summary').innerHTML=`<div class="structure-item"><strong>组件语义分析</strong><div class="muted">已完成 ${{C.semantic_analyses||0}} 个组件 · 归并 ${{C.operation_groups||0}} 个安全相关操作组</div></div><div class="structure-item"><strong>组件连接</strong><div class="muted">记录 ${{C.component_handoffs||0}} 条组件传递 · 生成 ${{S.cross_component_groups||0}} 个跨组件操作组 · 检查 ${{cc.states_visited||0}} 个连接状态</div></div><div class="structure-item"><strong>六维验证</strong><div class="muted">漏洞 ${{ac.confirmed_vulnerability||0}} · 风险 ${{ac.residual_risk||0}} · 防护 ${{ac.protected_exposure||0}} · 正常 ${{ac.benign_business_flow||0}} · 缺证据 ${{ac.insufficient_evidence||0}}</div></div>`;document.getElementById('task-summary').innerHTML=Object.entries(tc).map(([k,v])=>`<div class="structure-item"><strong>${{esc(label(k))}}</strong><div class="muted">${{v}} 个任务</div></div>`).join('')||'<div class="empty">无任务信息</div>';document.getElementById('gap-list').innerHTML=arr(C.gaps).map(x=>`<div class="gap-item"><strong>${{esc(x.type)}} · ${{esc(x.subject)}}</strong><div>${{esc(x.description)}}</div></div>`).join('')||'<div class="empty">未发现覆盖缺口</div>';
 renderPaths();
 </script></body></html>'''

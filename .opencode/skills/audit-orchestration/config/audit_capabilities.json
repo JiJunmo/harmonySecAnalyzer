@@ -1,834 +1,192 @@
 {
   "schema_version": 1,
-  "baseline_date": "2026-07-21",
-  "status_definitions": {
-    "implemented": "Entry profile, flow semantics, direct security assessment, six-dimensional validity validation and regression coverage are complete.",
-    "partial": "The capability is enabled in the evidence-flow pipeline but still lacks semantic or regression closure.",
-    "planned": "The target behavior is defined but cannot yet produce reliable conclusions.",
-    "deferred": "Intentionally outside the current delivery stage."
-  },
   "capabilities": [
     {
       "capability_id": "CAP-INJ-001",
       "title": "Deeplink or Want input to SQL/command execution",
       "domain": "injection",
-      "pattern_ids": [
-        "deeplink-injection"
-      ],
       "entry_types": [
         "deeplink",
         "want"
       ],
-      "attacker_controlled_properties": [
-        "want.uri.query",
-        "want.uri.path",
-        "want.parameters",
-        "want.entity"
-      ],
-      "security_boundaries": [
-        "input_language",
-        "business_authorization",
-        "dynamic_execution"
-      ],
-      "expected_guards": [
-        "uri_allowlist",
-        "parameter_binding",
-        "input_enumeration",
-        "command_argument_separation",
-        "authorization_check"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Run executable repository cases and split SQL, command and dynamic-load sink parameter semantics."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-FS-001",
       "title": "Exported component input to file operation or path traversal",
       "domain": "filesystem",
-      "pattern_ids": [
-        "exported-ability-file"
-      ],
       "entry_types": [
         "exported_ability",
         "provider",
         "want"
       ],
-      "attacker_controlled_properties": [
-        "path",
-        "filename",
-        "uri",
-        "directory",
-        "archive_entry"
-      ],
-      "security_boundaries": [
-        "sandbox_path",
-        "data_owner",
-        "user_granted_uri",
-        "file_integrity"
-      ],
-      "expected_guards": [
-        "canonical_path",
-        "directory_allowlist",
-        "filename_allowlist",
-        "system_picker_grant",
-        "mime_size_validation"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Run executable repository cases and add operation-specific impact, URI grant and archive semantics."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-WEB-001",
       "title": "External input controls unsafe Web navigation",
       "domain": "web",
-      "pattern_ids": [
-        "web-untrusted-navigation"
-      ],
       "entry_types": [
         "deeplink",
         "exported_ability",
         "provider",
         "want"
       ],
-      "attacker_controlled_properties": [
-        "initial_url",
-        "final_url",
-        "scheme",
-        "username",
-        "password",
-        "host",
-        "port",
-        "path",
-        "query",
-        "fragment",
-        "redirect_target"
-      ],
-      "security_boundaries": [
-        "web_origin",
-        "domain",
-        "local_resource",
-        "navigation_policy",
-        "application_web_context"
-      ],
-      "expected_guards": [
-        "structured_url_parse",
-        "scheme_allowlist",
-        "exact_or_label_bounded_host_check",
-        "effective_port_check",
-        "decode_before_validation",
-        "redirect_revalidation_or_block",
-        "dangerous_scheme_block",
-        "navigation_callback_policy",
-        "privileged_context_isolation"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Run /audit capability CAP-WEB-001 against the executable Web navigation cases and record stable certification results."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-WEB-002",
       "title": "Untrusted Web origin reaches sensitive JSBridge method",
       "domain": "web",
-      "pattern_ids": [
-        "web-jsbridge-origin-exposure"
-      ],
       "entry_types": [
         "deeplink",
         "exported_ability",
         "provider",
         "want"
       ],
-      "attacker_controlled_properties": [
-        "final_origin",
-        "bridge_object",
-        "bridge_method_invocation",
-        "bridge_arguments",
-        "native_target_object"
-      ],
-      "security_boundaries": [
-        "web_origin",
-        "bridge_lifecycle",
-        "native_capability",
-        "data_owner",
-        "business_authorization"
-      ],
-      "expected_guards": [
-        "final_origin_validation",
-        "redirect_revalidation",
-        "origin_bound_registration",
-        "bridge_revocation_on_navigation",
-        "bridge_method_allowlist",
-        "bridge_argument_validation",
-        "permission_check",
-        "object_authorization",
-        "independent_native_authorization"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "impact",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Run /audit capability CAP-WEB-002 against executable origin, lifecycle and Native authorization cases and record stable certification results."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-ICC-001",
       "title": "Attacker-controlled Want redirect to private component",
       "domain": "icc",
-      "pattern_ids": [
-        "want-redirect"
-      ],
       "entry_types": [
         "exported_ability",
         "want"
       ],
-      "attacker_controlled_properties": [
-        "bundleName",
-        "moduleName",
-        "abilityName",
-        "uri",
-        "action",
-        "entities",
-        "parameters"
-      ],
-      "security_boundaries": [
-        "component_export",
-        "caller_identity",
-        "permission",
-        "operation_authorization",
-        "object_scope",
-        "business_authorization"
-      ],
-      "expected_guards": [
-        "target_allowlist",
-        "caller_check",
-        "permission_check",
-        "want_reconstruction",
-        "parameter_allowlist",
-        "explicit_internal_mapping",
-        "target_reauthorization",
-        "object_authorization"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "impact",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Run /audit capability CAP-ICC-001 against executable target-selection, parameter-forwarding and target-authorization cases and record stable certification results."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-PROVIDER-001",
       "title": "DataShare caller input alters query language structure",
       "domain": "provider",
-      "pattern_ids": [
-        "datashare-query-injection"
-      ],
       "entry_types": [
         "exported_ability",
         "provider"
       ],
-      "attacker_controlled_properties": [
-        "uri",
-        "predicates",
-        "selection",
-        "selection_args",
-        "where_clause",
-        "order",
-        "limit"
-      ],
-      "security_boundaries": [
-        "provider_permission",
-        "uri_scope",
-        "query_language"
-      ],
-      "expected_guards": [
-        "permission_check",
-        "uri_match",
-        "parameter_binding",
-        "structured_predicates",
-        "query_field_allowlist"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Run executable cases for raw SQL, structured DataSharePredicates and URI-scoped query routing."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-PROVIDER-002",
       "title": "DataShare file URI or path escapes authorized scope",
       "domain": "provider",
-      "pattern_ids": [
-        "datashare-file-access"
-      ],
       "entry_types": [
         "exported_ability",
         "provider"
       ],
-      "attacker_controlled_properties": [
-        "uri",
-        "path",
-        "filename",
-        "file_mode",
-        "resource_id"
-      ],
-      "security_boundaries": [
-        "provider_permission",
-        "uri_scope",
-        "sandbox_path",
-        "file_mode",
-        "data_owner"
-      ],
-      "expected_guards": [
-        "permission_check",
-        "uri_match",
-        "canonical_path",
-        "fixed_base_directory",
-        "mode_allowlist",
-        "owner_check"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Run executable cases for openFile URI parsing, canonical containment, file modes and owner checks."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-PROVIDER-003",
       "title": "DataShare query crosses caller data ownership boundary",
       "domain": "provider",
-      "pattern_ids": [
-        "datashare-owner-authorization"
-      ],
       "entry_types": [
         "exported_ability",
         "provider"
       ],
-      "attacker_controlled_properties": [
-        "uri",
-        "resource_id",
-        "owner_id",
-        "account_id",
-        "projection"
-      ],
-      "security_boundaries": [
-        "provider_permission",
-        "caller_identity",
-        "data_owner",
-        "field_authorization"
-      ],
-      "expected_guards": [
-        "permission_check",
-        "caller_check",
-        "owner_check",
-        "row_scope",
-        "projection_allowlist"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "impact",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "planned",
-      "priority": "P1",
-      "next_action": "Define stable caller and row-owner identity before enabling cross-owner access analysis."
+      "status": "planned"
     },
     {
       "capability_id": "CAP-ICC-002",
       "title": "Unauthorized custom CommonEvent triggers protected operation",
       "domain": "icc",
-      "pattern_ids": [
-        "common-event-unauthorized-trigger"
-      ],
       "entry_types": [
         "common_event"
       ],
-      "attacker_controlled_properties": [
-        "event_occurrence",
-        "event_name",
-        "fixed_protected_operation"
-      ],
-      "security_boundaries": [
-        "publisher_identity",
-        "publisher_permission",
-        "business_authorization",
-        "data_owner"
-      ],
-      "expected_guards": [
-        "publisher_bundle_name",
-        "publisher_permission",
-        "authorization_check",
-        "operation_scope"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P1",
-      "next_action": "Validate dynamic registration, publisher permission strength and protected-operation semantics on real repositories."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-ICC-003",
       "title": "Untrusted custom CommonEvent data reaches sensitive operation",
       "domain": "icc",
-      "pattern_ids": [
-        "common-event-untrusted-data"
-      ],
       "entry_types": [
         "common_event"
       ],
-      "attacker_controlled_properties": [
-        "event",
-        "code",
-        "data",
-        "parameters",
-        "selected_operation",
-        "sink_argument"
-      ],
-      "security_boundaries": [
-        "publisher_identity",
-        "message_schema",
-        "sandbox_path",
-        "dynamic_execution",
-        "component_authorization"
-      ],
-      "expected_guards": [
-        "publisher_bundle_name",
-        "publisher_permission",
-        "type_validation",
-        "length_limit",
-        "range_check",
-        "parameter_allowlist",
-        "authorization_check"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "impact",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P1",
-      "next_action": "Validate field-level CommonEventData traces and domain guards on real repositories."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-IPC-001",
       "title": "Unauthorized IPC/RPC server transaction",
       "domain": "ipc_rpc",
-      "pattern_ids": [
-        "ipc-unauthorized-transaction"
-      ],
       "entry_types": [
         "ipc_transaction"
       ],
-      "attacker_controlled_properties": [
-        "transaction_code",
-        "caller_token_id",
-        "caller_uid",
-        "caller_device_id",
-        "message_fields"
-      ],
-      "security_boundaries": [
-        "ipc_interface",
-        "caller_identity",
-        "permission",
-        "device_identity",
-        "business_authorization"
-      ],
-      "expected_guards": [
-        "interface_token",
-        "transaction_allowlist",
-        "token_id_check",
-        "uid_check",
-        "permission_check",
-        "device_trust_check",
-        "authorization_check"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "impact",
-        "path",
-        "search",
-        "symbol"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Validate ServiceExtension and SAMgr publication plus per-transaction caller and object authorization on real repositories."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-IPC-002",
       "title": "Untrusted IPC/RPC MessageSequence reaches sensitive server operation",
       "domain": "ipc_rpc",
-      "pattern_ids": [
-        "ipc-untrusted-message-to-sensitive-sink"
-      ],
       "entry_types": [
         "ipc_transaction"
       ],
-      "attacker_controlled_properties": [
-        "transaction_code",
-        "message_string",
-        "message_number",
-        "message_array",
-        "message_buffer",
-        "remote_object"
-      ],
-      "security_boundaries": [
-        "message_schema",
-        "resource_limit",
-        "sandbox_path",
-        "dynamic_execution",
-        "component_authorization"
-      ],
-      "expected_guards": [
-        "interface_token",
-        "read_result_check",
-        "type_validation",
-        "length_limit",
-        "range_check",
-        "parameter_allowlist",
-        "authorization_check"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "impact",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "partial",
-      "priority": "P0",
-      "next_action": "Validate field-level MessageSequence traces, read failures and domain guards on real repositories."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-IPC-003",
       "title": "IPC/RPC confused deputy through calling identity reset",
       "domain": "ipc_rpc",
-      "pattern_ids": [
-        "ipc-confused-deputy-identity"
-      ],
       "entry_types": [
         "ipc_transaction"
       ],
-      "attacker_controlled_properties": [
-        "caller_identity",
-        "message_fields",
-        "privileged_operation_target"
-      ],
-      "security_boundaries": [
-        "caller_identity",
-        "service_identity",
-        "permission",
-        "delegation_scope"
-      ],
-      "expected_guards": [
-        "authorize_before_identity_reset",
-        "narrow_delegation",
-        "restore_identity_finally",
-        "parameter_allowlist",
-        "audit_binding"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "impact",
-        "path",
-        "search",
-        "symbol"
-      ],
-      "status": "partial",
-      "priority": "P1",
-      "next_action": "Validate authorization ordering, target binding and reset/restore pairing across synchronous and asynchronous real paths."
+      "status": "partial"
     },
     {
       "capability_id": "CAP-IPC-004",
       "title": "Sensitive IPC/RPC reply disclosure",
       "domain": "ipc_rpc",
-      "pattern_ids": [
-        "ipc-sensitive-reply-disclosure"
-      ],
       "entry_types": [
         "ipc_transaction"
       ],
-      "attacker_controlled_properties": [
-        "transaction_code",
-        "caller_identity",
-        "requested_object_id"
-      ],
-      "security_boundaries": [
-        "data_owner",
-        "caller_identity",
-        "permission",
-        "device_identity",
-        "response_minimization"
-      ],
-      "expected_guards": [
-        "token_id_check",
-        "permission_check",
-        "owner_check",
-        "field_redaction",
-        "response_minimization"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "planned",
-      "priority": "P1",
-      "next_action": "Add sensitive source and reply.write field evidence model with caller/data-owner authorization."
+      "status": "planned"
     },
     {
       "capability_id": "CAP-ARCHIVE-001",
       "title": "Untrusted archive extraction or dynamic load",
       "domain": "archive",
-      "pattern_ids": [
-        "archive-load"
-      ],
       "entry_types": [
         "exported_ability",
         "provider",
         "want"
       ],
-      "attacker_controlled_properties": [
-        "archive_path",
-        "archive_entry",
-        "destination",
-        "module_path"
-      ],
-      "security_boundaries": [
-        "sandbox_path",
-        "code_trust",
-        "file_integrity"
-      ],
-      "expected_guards": [
-        "canonical_path",
-        "entry_path_validation",
-        "signature_check",
-        "trusted_source",
-        "fixed_destination"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "planned",
-      "priority": "P1",
-      "next_action": "Separate zip-slip and dynamic code trust patterns."
+      "status": "planned"
     },
     {
       "capability_id": "CAP-PRIV-001",
       "title": "Sensitive data flows to network, log or Web sink",
       "domain": "privacy",
-      "pattern_ids": [],
       "entry_types": [],
-      "attacker_controlled_properties": [],
-      "security_boundaries": [
-        "user_consent",
-        "data_owner",
-        "network_destination",
-        "log_exposure",
-        "web_origin"
-      ],
-      "expected_guards": [
-        "consent_check",
-        "data_minimization",
-        "redaction",
-        "trusted_destination",
-        "origin_check"
-      ],
-      "atlas_strategy": [
-        "impact",
-        "path",
-        "search",
-        "symbol",
-        "trace"
-      ],
-      "status": "planned",
-      "priority": "P1",
-      "next_action": "Design sensitive-source facts, propagation edges and observable disclosure effects."
+      "status": "planned"
     },
     {
       "capability_id": "CAP-NET-001",
       "title": "Cleartext transport or unsafe TLS configuration",
       "domain": "network",
-      "pattern_ids": [],
       "entry_types": [],
-      "attacker_controlled_properties": [],
-      "security_boundaries": [
-        "transport_confidentiality",
-        "server_identity",
-        "domain_policy"
-      ],
-      "expected_guards": [
-        "https_only",
-        "certificate_validation",
-        "hostname_validation",
-        "domain_allowlist"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "search",
-        "symbol"
-      ],
-      "status": "planned",
-      "priority": "P1",
-      "next_action": "Design asset-rule plan and evidence contract; do not synthesize an external entry."
+      "status": "planned"
     },
     {
       "capability_id": "CAP-CRYPTO-001",
       "title": "Weak crypto, hardcoded secret or plaintext sensitive storage",
       "domain": "crypto",
-      "pattern_ids": [],
       "entry_types": [],
-      "attacker_controlled_properties": [],
-      "security_boundaries": [
-        "key_material",
-        "data_at_rest",
-        "credential_confidentiality"
-      ],
-      "expected_guards": [
-        "huks_key_storage",
-        "approved_algorithm",
-        "random_nonce",
-        "secret_externalization",
-        "encrypted_storage"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "explore",
-        "search",
-        "symbol"
-      ],
-      "status": "planned",
-      "priority": "P1",
-      "next_action": "Build crypto/secret asset catalog and deterministic value evidence model."
+      "status": "planned"
     },
     {
       "capability_id": "CAP-DIST-001",
       "title": "Distributed call crosses device trust boundary",
       "domain": "distributed",
-      "pattern_ids": [
-        "distributed-trust"
-      ],
       "entry_types": [
         "exported_ability"
       ],
-      "attacker_controlled_properties": [
-        "remote_device",
-        "distributed_parameters",
-        "caller_identity"
-      ],
-      "security_boundaries": [
-        "device_identity",
-        "distributed_permission",
-        "trusted_device",
-        "data_owner"
-      ],
-      "expected_guards": [
-        "device_trust_check",
-        "permission_check",
-        "caller_check",
-        "owner_check"
-      ],
-      "atlas_strategy": [
-        "calls",
-        "impact",
-        "path",
-        "search",
-        "symbol"
-      ],
-      "status": "deferred",
-      "priority": "P2",
-      "next_action": "Defer until distributed identity and permission semantics are available."
+      "status": "deferred"
     },
     {
       "capability_id": "CAP-NATIVE-DEP-001",
       "title": "Dependency vulnerability and NAPI native memory safety",
       "domain": "native_dependency",
-      "pattern_ids": [],
       "entry_types": [],
-      "attacker_controlled_properties": [],
-      "security_boundaries": [
-        "native_memory",
-        "package_trust",
-        "version_exposure"
-      ],
-      "expected_guards": [
-        "safe_lifecycle",
-        "version_patch",
-        "dependency_policy"
-      ],
-      "atlas_strategy": [
-        "branch_diff",
-        "domain_rules",
-        "fp_dispatches",
-        "lifecycle"
-      ],
-      "status": "deferred",
-      "priority": "P2",
-      "next_action": "Use separate dependency/native adapters after ArkTS P0 capabilities."
+      "status": "deferred"
     }
   ]
 }

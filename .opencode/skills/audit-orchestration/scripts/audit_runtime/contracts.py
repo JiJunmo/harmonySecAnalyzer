@@ -120,6 +120,22 @@ def normalize_submission(result, task, conn=None):
                 set(existing_context.get("evidence_refs", [])) | set(duplicate_context.get("evidence_refs", []))
             )
         result["operation_groups"] = list(merged_groups.values()) + unmergeable_groups
+        normalized_handoffs = {}
+        for handoff in result.get("component_handoffs", []):
+            if not isinstance(handoff, dict):
+                continue
+            mappings = handoff.get("parameter_mappings", [])
+            if isinstance(mappings, list) and all(isinstance(row, dict) for row in mappings):
+                handoff["parameter_mappings"] = sorted(
+                    {canonical_json(row): row for row in mappings}.values(),
+                    key=canonical_json,
+                )
+            identity = canonical_json([
+                handoff.get("target_component_id"), normalize_location(handoff.get("call_location")),
+                handoff.get("parameter_mappings", []),
+            ])
+            normalized_handoffs.setdefault(identity, handoff)
+        result["component_handoffs"] = list(normalized_handoffs.values())
         coverage["operation_sites_checked"] = sorted(checked_sites)
     elif task["kind"] == "exploitability_validation":
         for validation in result.get("validations", []):
@@ -158,6 +174,13 @@ def _semantic_refs(group):
     return refs
 
 
+def _handoff_refs(handoff):
+    refs = list(handoff.get("evidence_refs", []))
+    for guard in handoff.get("guards", []):
+        refs.extend(guard.get("evidence_refs", []))
+    return refs
+
+
 def validate_semantic_analysis(result, task, conn):
     errors = []
     if result.get("task_id") != task["task_id"]:
@@ -172,8 +195,8 @@ def validate_semantic_analysis(result, task, conn):
     entry_status = coverage.get("entry_status")
     if entry_status == "confirmed" and not coverage.get("entry_symbols_checked"):
         errors.append("confirmed_entry_requires_checked_symbol")
-    if entry_status == "excluded" and result.get("operation_groups"):
-        errors.append("excluded_entry_cannot_have_operation_groups")
+    if entry_status == "excluded" and (result.get("operation_groups") or result.get("component_handoffs")):
+        errors.append("excluded_entry_cannot_have_semantic_outputs")
 
     model_keys = []
     identities = []
@@ -188,6 +211,29 @@ def validate_semantic_analysis(result, task, conn):
         errors.append("duplicate_group_key")
     if len(identities) != len(set(identities)):
         errors.append("equivalent_operation_groups_must_merge")
+    payload = row_json(task, "input_json", {})
+    project = read_json(payload.get("project_model"), {})
+    known_components = {
+        row.get("component_id") for row in project.get("components", []) if row.get("component_id")
+    }
+    handoff_keys = []
+    handoff_identities = []
+    for index, handoff in enumerate(result.get("component_handoffs", [])):
+        label = f"component_handoffs[{index}]"
+        handoff_keys.append(handoff.get("handoff_key"))
+        handoff_identities.append(canonical_json([
+            handoff.get("target_component_id"), normalize_location(handoff.get("call_location")),
+            handoff.get("parameter_mappings", []),
+        ]))
+        if handoff.get("target_component_id") not in known_components:
+            errors.append(f"{label}:unknown_target_component")
+        missing = set(_handoff_refs(handoff)) - known_evidence
+        if missing:
+            errors.append(f"{label}:unknown_evidence:" + ",".join(sorted(missing)))
+    if len(handoff_keys) != len(set(handoff_keys)):
+        errors.append("duplicate_handoff_key")
+    if len(handoff_identities) != len(set(handoff_identities)):
+        errors.append("equivalent_component_handoffs_must_merge")
     return errors
 
 
@@ -198,7 +244,8 @@ def validate_exploitability(result, task, conn):
     if result.get("entry_id") != task["subject_id"]:
         errors.append("entry_id_mismatch")
     expected = {row["group_id"] for row in conn.execute(
-        "SELECT group_id FROM operation_groups WHERE entry_id=?", (task["subject_id"],)
+        "SELECT group_id FROM operation_groups WHERE entry_id=? AND validation_required=1",
+        (task["subject_id"],)
     )}
     group_ids = [row.get("group_id") for row in result.get("validations", [])]
     actual = set(group_ids)

@@ -1,17 +1,87 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://harmony-sec.local/schemas/project-model-v1.json",
+  "$id": "https://harmony-sec.local/schemas/project-model-v2.json",
   "type": "object",
-  "required": ["schema_version", "status", "entry_candidates"],
+  "required": [
+    "schema_version", "status", "summary", "build", "modules", "components",
+    "entry_candidates", "dependencies", "module_dependencies", "diagnostics"
+  ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "status": {"enum": ["complete", "partial", "failed"]},
+    "summary": {"type": "object"},
+    "build": {
+      "type": "object",
+      "required": ["scope", "product_scope", "products", "build_modes", "declared_module_roots"],
+      "properties": {
+        "scope": {"enum": ["declared_modules", "discovered_production_modules"]},
+        "product_scope": {"const": "union"},
+        "products": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "build_modes": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "declared_module_roots": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "module_id", "file", "root", "name", "type", "output_kind",
+          "included_in_build", "products", "targets", "component_ids", "dependency_ids"
+        ],
+        "properties": {
+          "module_id": {"type": "string", "pattern": "^MOD-[a-f0-9]{16}$"},
+          "file": {"type": "string", "minLength": 1},
+          "root": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1},
+          "type": {"type": ["string", "null"]},
+          "output_kind": {"enum": ["hap", "hsp", "har", "unknown"]},
+          "included_in_build": {"type": "boolean"},
+          "products": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "targets": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "component_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "dependency_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["component_id", "module_id", "module_name", "module_root", "kind"],
+        "properties": {
+          "component_id": {"type": "string", "pattern": "^CMP-[a-f0-9]{16}$"},
+          "module_id": {"type": "string", "pattern": "^MOD-[a-f0-9]{16}$"},
+          "module_name": {"type": "string", "minLength": 1},
+          "module_root": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["ability", "extension_ability"]}
+        }
+      }
+    },
     "entry_candidates": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["candidate_id"],
-        "properties": {"candidate_id": {"type": "string", "minLength": 1}}
+        "required": ["candidate_id", "module_id", "module_name", "module_root", "type"],
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^PE-[a-f0-9]{16}$"},
+          "module_id": {"type": "string", "pattern": "^MOD-[a-f0-9]{16}$"},
+          "module_name": {"type": "string", "minLength": 1},
+          "module_root": {"type": "string", "minLength": 1},
+          "type": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "dependencies": {"type": "array"},
+    "module_dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "dependency_id", "source_module_id", "target_module_id", "name",
+          "group", "reference", "declaration_file"
+        ]
       }
     },
     "diagnostics": {"type": "array"}

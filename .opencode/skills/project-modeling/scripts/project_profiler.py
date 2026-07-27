@@ -6,6 +6,7 @@ source contents; source semantics are resolved through Atlas MCP.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -16,7 +17,7 @@ from pathlib import Path
 import json5
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SKIP_DIRS = {
     ".git", ".atlas", ".idea", ".vscode", "node_modules", "oh_modules",
     "build", "outputs", "reports", "coverage", ".hvigor",
@@ -31,6 +32,11 @@ def parse_json5(path):
 
 def relpath(path, root):
     return path.relative_to(root).as_posix()
+
+
+def stable_id(prefix, *parts):
+    payload = json.dumps(parts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"{prefix}-{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
 
 
 def as_list(value):
@@ -92,7 +98,8 @@ def normalize_skill(skill, index):
     }
 
 
-def normalize_component(raw, kind, module_name, module_file, module_scope, component_id):
+def normalize_component(raw, kind, module_id, module_name, module_root, module_file,
+                        module_scope, component_id):
     raw = raw if isinstance(raw, dict) else {}
     skills = [normalize_skill(skill, i) for i, skill in enumerate(as_list(raw.get("skills")))]
     permissions = []
@@ -108,7 +115,9 @@ def normalize_component(raw, kind, module_name, module_file, module_scope, compo
         source_file_hint = (Path(module_scope) / src_entry_path).as_posix()
     return {
         "component_id": component_id,
+        "module_id": module_id,
         "module_name": module_name,
+        "module_root": module_root,
         "module_file": module_file,
         "kind": kind,
         "name": raw.get("name"),
@@ -130,19 +139,32 @@ def is_production_source_scope(scope):
     return not parts.intersection({"test", "ohostest", "mock", "unittest"})
 
 
+def module_root_for_manifest(path):
+    """Return the module root for the conventional <module>/src/<set>/module.json5 layout."""
+    if path.parent.parent.name == "src":
+        return path.parent.parent.parent
+    return path.parent
+
+
+def module_output_kind(module_type):
+    return {
+        "entry": "hap", "feature": "hap", "shared": "hsp", "har": "har",
+    }.get(str(module_type or "").lower(), "unknown")
+
+
 def make_entry_candidates(components, modules):
     candidates = []
-    next_id = 1
 
     def add(entry_type, component, location, trigger_facts):
-        nonlocal next_id
         candidates.append({
-            "candidate_id": f"PE-{next_id:03d}",
+            "candidate_id": stable_id("PE", component["component_id"], entry_type, location),
             "type": entry_type,
             "source": "manifest",
             "component_id": component["component_id"],
             "component_name": component.get("name"),
+            "module_id": component.get("module_id"),
             "module_name": component.get("module_name"),
+            "module_root": component.get("module_root"),
             "location": location,
             "exported": component.get("exported"),
             "permissions": component.get("permissions", []),
@@ -150,12 +172,15 @@ def make_entry_candidates(components, modules):
             "lifecycle_candidates": component.get("lifecycle_candidates", []),
             "trigger_facts": trigger_facts,
         })
-        next_id += 1
 
     for component in components:
         if not is_production_source_scope(component.get("source_scope")):
             continue
         base = f"{component['module_file']}#{component['kind']}:{component.get('name') or component['component_id']}"
+        add("component_scope", component, base, {
+            "component_scope": True,
+            "requires_upstream_reachability_evidence": component.get("exported") is not True,
+        })
         if component.get("exported") is True:
             add("exported_component", component, base, {"exported": True})
         for skill in component.get("skills", []):
@@ -182,13 +207,14 @@ def make_entry_candidates(components, modules):
         if not is_production_source_scope(module.get("source_scope")):
             continue
         candidates.append({
-            "candidate_id": f"PE-{next_id:03d}",
+            "candidate_id": stable_id("PE", module.get("module_id"), "common_event_candidate"),
             "type": "common_event_candidate",
             "source": "module_scope",
             "component_id": None,
             "component_name": None,
             "module_name": module.get("name"),
             "module_id": module.get("module_id"),
+            "module_root": module.get("root"),
             "location": module.get("file"),
             "exported": None,
             "permissions": [],
@@ -198,7 +224,6 @@ def make_entry_candidates(components, modules):
                 "requires_custom_event_subscription_evidence": True,
             },
         })
-        next_id += 1
 
     return candidates
 
@@ -251,13 +276,73 @@ def profile_project(target_repo):
                 "target_api_version": app.get("targetAPIVersion"),
             }
 
+    # Root build profiles define which local module roots participate in a product.
+    build_profiles = []
+    build_products = set()
+    build_modes = set()
+    declarations = {}
+    for path in sorted(by_name.get("build-profile.json5", [])):
+        data = load(path, "build_profile")
+        if not data:
+            continue
+        app = data.get("app", {}) if isinstance(data.get("app", {}), dict) else {}
+        products = app.get("products", data.get("products", []))
+        product_names = sorted({
+            str(row.get("name")) for row in as_list(products)
+            if isinstance(row, dict) and row.get("name")
+        })
+        build_products.update(product_names)
+        build_modes.update(
+            str(row.get("name")) for row in as_list(app.get("buildModeSet"))
+            if isinstance(row, dict) and row.get("name")
+        )
+        profile_modules = data.get("modules", app.get("modules", []))
+        profile_declarations = []
+        for row in as_list(profile_modules):
+            if not isinstance(row, dict) or not row.get("srcPath"):
+                continue
+            module_path = (path.parent / str(row["srcPath"])).resolve()
+            try:
+                module_root = relpath(module_path, root)
+            except ValueError:
+                diagnostics.append({
+                    "severity": "warning", "kind": "external_module_path",
+                    "file": relpath(path, root), "message": f"module srcPath is outside repository: {row['srcPath']}",
+                })
+                continue
+            targets = [target for target in as_list(row.get("targets")) if isinstance(target, dict)]
+            target_names = sorted({str(target.get("name")) for target in targets if target.get("name")})
+            applied_products = sorted({
+                str(product) for target in targets for product in as_list(target.get("applyToProducts"))
+                if product is not None
+            })
+            if not applied_products:
+                applied_products = product_names
+            declaration = {
+                "name": row.get("name"), "root": module_root, "src_path": str(row["srcPath"]),
+                "targets": target_names, "products": applied_products,
+                "build_profile": relpath(path, root),
+            }
+            profile_declarations.append(declaration)
+            existing = declarations.setdefault(module_root, declaration)
+            existing["targets"] = sorted(set(existing["targets"]) | set(target_names))
+            existing["products"] = sorted(set(existing["products"]) | set(applied_products))
+        build_profiles.append({
+            "file": relpath(path, root), "products": product_names,
+            "module_declarations": profile_declarations,
+        })
+
     modules = []
     components = []
     requested_permissions = []
     defined_permissions = []
-    module_files = sorted(by_name.get("module.json5", []))
+    module_files = sorted(
+        path for path in by_name.get("module.json5", [])
+        if is_production_source_scope(relpath(path.parent, root))
+    )
     if not module_files:
-        diagnostics.append({"severity": "error", "kind": "missing_config", "file": None, "message": "module.json5 not found"})
+        diagnostics.append({"severity": "error", "kind": "missing_config", "file": None, "message": "production module.json5 not found"})
+    discovered_roots = set()
     for path in module_files:
         data = load(path, "module")
         if not data:
@@ -266,80 +351,140 @@ def profile_project(target_repo):
         if not isinstance(module, dict):
             diagnostics.append({"severity": "error", "kind": "invalid_structure", "file": relpath(path, root), "message": "module must be an object"})
             continue
-        module_name = module.get("name") or path.parent.name
+        module_root_path = module_root_for_manifest(path)
+        module_root = relpath(module_root_path, root)
+        discovered_roots.add(module_root)
+        declaration = declarations.get(module_root)
+        included_in_build = not declarations or declaration is not None
+        module_name = module.get("name") or (declaration or {}).get("name") or module_root_path.name
+        module_id = stable_id("MOD", module_root, module_name)
         permission_rows = []
         for item in as_list(module.get("requestPermissions")):
             if isinstance(item, str):
                 permission_rows.append({"name": item})
             elif isinstance(item, dict):
                 permission_rows.append({
-                    "name": item.get("name"),
-                    "reason": item.get("reason"),
+                    "name": item.get("name"), "reason": item.get("reason"),
                     "used_scene": item.get("usedScene"),
                 })
-        requested_permissions.extend(row for row in permission_rows if row.get("name"))
+        requested_permissions.extend(row for row in permission_rows if row.get("name") and included_in_build)
         defined_permission_rows = []
         for item in as_list(module.get("definePermissions")):
             if not isinstance(item, dict) or not item.get("name"):
                 continue
             defined_permission_rows.append({
-                "name": item.get("name"),
-                "grant_mode": item.get("grantMode"),
+                "name": item.get("name"), "grant_mode": item.get("grantMode"),
                 "available_level": item.get("availableLevel"),
                 "provision_enable": item.get("provisionEnable"),
                 "distributed_scene_enable": item.get("distributedSceneEnable"),
             })
-        defined_permissions.extend(defined_permission_rows)
+        if included_in_build:
+            defined_permissions.extend(defined_permission_rows)
         module_file = relpath(path, root)
         module_scope = relpath(path.parent, root)
         module_components = []
         for key, kind in (("abilities", "ability"), ("extensionAbilities", "extension_ability")):
-            for raw in as_list(module.get(key)):
-                component_id = f"CMP-{len(components) + 1:03d}"
-                component = normalize_component(raw, kind, module_name, module_file, module_scope, component_id)
+            for index, raw in enumerate(as_list(module.get(key))):
+                raw_object = raw if isinstance(raw, dict) else {}
+                component_id = stable_id(
+                    "CMP", module_id, kind, raw_object.get("name"), raw_object.get("srcEntry"), index,
+                )
+                component = normalize_component(
+                    raw, kind, module_id, module_name, module_root, module_file,
+                    module_scope, component_id,
+                )
+                component["included_in_build"] = included_in_build
                 components.append(component)
                 module_components.append(component_id)
         modules.append({
-            "module_id": f"MOD-{len(modules) + 1:03d}",
-            "file": module_file,
-            "name": module_name,
-            "type": module.get("type"),
-            "src_entry": module.get("srcEntry"),
-            "source_scope": module_scope,
+            "module_id": module_id, "file": module_file, "root": module_root,
+            "name": module_name, "build_name": (declaration or {}).get("name"),
+            "type": module.get("type"), "output_kind": module_output_kind(module.get("type")),
+            "included_in_build": included_in_build,
+            "products": (declaration or {}).get("products", []),
+            "targets": (declaration or {}).get("targets", []),
+            "build_profile": (declaration or {}).get("build_profile"),
+            "src_entry": module.get("srcEntry"), "source_scope": module_scope,
             "device_types": strings(module.get("deviceTypes")),
             "delivery_with_install": module.get("deliveryWithInstall"),
             "installation_free": module.get("installationFree"),
             "virtual_machine": module.get("virtualMachine"),
-            "request_permissions": permission_rows,
-            "defined_permissions": defined_permission_rows,
-            "component_ids": module_components,
+            "request_permissions": permission_rows, "defined_permissions": defined_permission_rows,
+            "component_ids": module_components, "package_name": None, "dependency_ids": [],
         })
+        if not included_in_build:
+            diagnostics.append({
+                "severity": "warning", "kind": "module_not_in_build",
+                "file": module_file, "message": f"module root is not declared by a root build profile: {module_root}",
+            })
+    for module_root, declaration in sorted(declarations.items()):
+        if module_root not in discovered_roots:
+            diagnostics.append({
+                "severity": "error", "kind": "missing_module_manifest",
+                "file": declaration["build_profile"],
+                "message": f"declared module has no production module.json5: {module_root}",
+            })
 
-    dependencies = []
+    # Associate module-local package manifests, then resolve local file dependencies.
+    modules_by_root = {row["root"]: row for row in modules}
+    package_docs = []
+    packages_by_name = {}
     for path in sorted(by_name.get("oh-package.json5", [])):
         data = load(path, "oh_package")
         if not data:
             continue
+        package_docs.append((path, data))
+        source = modules_by_root.get(relpath(path.parent, root))
+        if source and data.get("name"):
+            source["package_name"] = data["name"]
+            packages_by_name[str(data["name"])] = source
+
+    dependencies = []
+    module_dependencies = []
+    seen_edges = set()
+    for path, data in package_docs:
+        source = modules_by_root.get(relpath(path.parent, root))
         for group in ("dependencies", "devDependencies", "dynamicDependencies"):
             values = data.get(group, {})
             if not isinstance(values, dict):
                 continue
             for name, version in sorted(values.items()):
-                dependencies.append({"name": name, "version": version, "group": group, "file": relpath(path, root)})
+                target = None
+                reference = str(version) if isinstance(version, str) else None
+                if reference and reference.startswith("file:"):
+                    local_path = (path.parent / reference.removeprefix("file:")).resolve()
+                    try:
+                        target = modules_by_root.get(relpath(local_path, root))
+                    except ValueError:
+                        target = None
+                if target is None:
+                    target = packages_by_name.get(str(name))
+                dependency = {
+                    "name": name, "version": version, "group": group,
+                    "file": relpath(path, root),
+                    "source_module_id": source.get("module_id") if source else None,
+                    "target_module_id": target.get("module_id") if target else None,
+                    "local": bool(source and target),
+                }
+                dependencies.append(dependency)
+                if not source or not target:
+                    continue
+                edge_key = (source["module_id"], target["module_id"], str(name), group)
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                edge_id = stable_id("DEP", *edge_key)
+                source["dependency_ids"].append(edge_id)
+                module_dependencies.append({
+                    "dependency_id": edge_id, "source_module_id": source["module_id"],
+                    "target_module_id": target["module_id"], "name": name,
+                    "group": group, "reference": version, "declaration_file": relpath(path, root),
+                })
 
-    build_profiles = []
-    for path in sorted(by_name.get("build-profile.json5", [])):
-        data = load(path, "build_profile")
-        if not data:
-            continue
-        app = data.get("app", {}) if isinstance(data.get("app", {}), dict) else {}
-        build_profiles.append({
-            "file": relpath(path, root),
-            "products": app.get("products", data.get("products", [])),
-            "modules": app.get("modules", data.get("modules", [])),
-        })
-
-    entry_candidates = make_entry_candidates(components, modules)
+    active_modules = [row for row in modules if row["included_in_build"]]
+    active_module_ids = {row["module_id"] for row in active_modules}
+    active_components = [row for row in components if row["module_id"] in active_module_ids]
+    entry_candidates = make_entry_candidates(active_components, active_modules)
     status = "partial" if any(d["severity"] == "error" for d in diagnostics) else "complete"
     return {
         "schema_version": SCHEMA_VERSION,
@@ -347,21 +492,31 @@ def profile_project(target_repo):
         "target_repo": str(root),
         "status": status,
         "summary": {
-            "modules": len(modules),
-            "components": len(components),
+            "modules": len(active_modules),
+            "discovered_modules": len(modules),
+            "components": len(active_components),
             "entry_candidates": len(entry_candidates),
             "requested_permissions": len({row["name"] for row in requested_permissions}),
             "defined_permissions": len({row["name"] for row in defined_permissions}),
             "dependencies": len(dependencies),
+            "module_dependencies": len(module_dependencies),
             "parse_errors": sum(1 for d in diagnostics if d["severity"] == "error"),
+        },
+        "build": {
+            "scope": "declared_modules" if declarations else "discovered_production_modules",
+            "product_scope": "union",
+            "products": sorted(build_products),
+            "build_modes": sorted(build_modes),
+            "declared_module_roots": sorted(declarations),
         },
         "application": application,
         "modules": modules,
-        "components": components,
+        "components": active_components,
         "entry_candidates": entry_candidates,
         "requested_permissions": requested_permissions,
         "defined_permissions": defined_permissions,
         "dependencies": dependencies,
+        "module_dependencies": module_dependencies,
         "build_profiles": build_profiles,
         "parsed_files": parsed_files,
         "diagnostics": diagnostics,

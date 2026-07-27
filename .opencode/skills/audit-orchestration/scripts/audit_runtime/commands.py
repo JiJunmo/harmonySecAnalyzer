@@ -86,6 +86,14 @@ def _remap_group_evidence(group, evidence_ids):
     return payload
 
 
+def _remap_handoff_evidence(handoff, evidence_ids):
+    payload = json.loads(json.dumps(handoff))
+    payload["evidence_refs"] = _refs(payload.get("evidence_refs", []), evidence_ids)
+    for guard in payload.get("guards", []):
+        guard["evidence_refs"] = _refs(guard.get("evidence_refs", []), evidence_ids)
+    return payload
+
+
 def _merge_finding(conn, group_id, group, validation):
     if validation["classification"] not in {"confirmed_vulnerability", "residual_risk"}:
         return None
@@ -100,16 +108,31 @@ def _merge_finding(conn, group_id, group, validation):
     evidence_refs = sorted(set(group["evidence_refs"]) | set(validation.get("evidence_refs", [])))
     if existing:
         old = row_json(existing, "payload_json", {})
-        payload["related_group_ids"] = sorted(set(old.get("related_group_ids", [existing["group_id"]])) | {group_id})
+        related_group_ids = sorted(set(old.get("related_group_ids", [existing["group_id"]])) | {group_id})
         evidence = sorted(set(row_json(existing, "evidence_json", [])) | set(evidence_refs))
         rank = {"residual_risk": 1, "confirmed_vulnerability": 2}
-        chosen = payload if rank[validation["classification"]] > rank[existing["classification"]] else old
+        chosen = dict(payload if rank[validation["classification"]] > rank[existing["classification"]] else old)
+        chosen["related_group_ids"] = related_group_ids
+        chosen_group_id = chosen.get("group_id", existing["group_id"])
+        chosen_boundary = chosen.get("security_boundary", {}).get(
+            "expected_boundary", existing["boundary"]
+        )
+        chosen_properties = chosen.get(
+            "controlled_properties", row_json(existing, "controlled_properties_json", [])
+        )
+        chosen_operation = chosen.get("operation", {}).get(
+            "location", existing["operation_location"]
+        )
         conn.execute(
-            "UPDATE findings SET classification=?,title=?,severity=?,cwe=?,impact=?,poc=?,evidence_json=?,payload_json=? WHERE finding_id=?",
-            (chosen.get("classification", existing["classification"]), chosen.get("title", existing["title"]),
+            """UPDATE findings SET group_id=?,classification=?,title=?,severity=?,cwe=?,impact=?,poc=?,
+               boundary=?,controlled_properties_json=?,operation_location=?,evidence_json=?,payload_json=?
+               WHERE finding_id=?""",
+            (chosen_group_id, chosen.get("classification", existing["classification"]),
+             chosen.get("title", existing["title"]),
              chosen.get("severity", existing["severity"]), chosen.get("cwe", existing["cwe"]),
              chosen.get("impact", existing["impact"]), chosen.get("poc", existing["poc"]),
-             canonical_json(evidence), canonical_json(payload), existing["finding_id"]),
+             chosen_boundary, canonical_json(chosen_properties), chosen_operation,
+             canonical_json(evidence), canonical_json(chosen), existing["finding_id"]),
         )
         return existing["finding_id"]
     conn.execute(
@@ -126,14 +149,44 @@ def _merge_semantic_analysis(conn, task, result):
     evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
     conn.execute("INSERT INTO semantic_analyses VALUES (?,?,?,?,?)",
                  (task["subject_id"], task["task_id"], result["summary"], canonical_json(result["coverage"]), now()))
+    entry = conn.execute("SELECT payload_json FROM entries WHERE entry_id=?", (task["subject_id"],)).fetchone()
+    entry_payload = row_json(entry, "payload_json", {})
+    handoff_ids = []
+    for source in result["component_handoffs"]:
+        handoff = _remap_handoff_evidence(source, evidence_ids)
+        identity = canonical_json([
+            task["subject_id"], handoff["target_component_id"],
+            normalize_location(handoff["call_location"]), handoff["parameter_mappings"],
+        ])
+        handoff_id = stable_id("HANDOFF", identity)
+        conn.execute(
+            """INSERT INTO component_handoffs
+               (handoff_id,identity_key,source_entry_id,source_component_id,target_component_id,
+                task_id,transport,call_location,condition,parameter_mappings_json,guards_json,
+                evidence_json,payload_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (handoff_id, identity, task["subject_id"],
+             entry_payload.get("component_id") or f"entry:{task['subject_id']}",
+             handoff["target_component_id"], task["task_id"], handoff["transport"],
+             handoff["call_location"], handoff["condition"],
+             canonical_json(handoff["parameter_mappings"]), canonical_json(handoff["guards"]),
+             canonical_json(handoff["evidence_refs"]), canonical_json(handoff), now()),
+        )
+        handoff_ids.append(handoff_id)
     group_ids = []
     for source in result["operation_groups"]:
         group = _remap_group_evidence(source, evidence_ids)
         identity = operation_group_identity(task["subject_id"], group)
         group_id = stable_id("GROUP", identity)
         conn.execute(
-            """INSERT INTO operation_groups VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (group_id, identity, task["subject_id"], task["task_id"], group.get("capability_id"),
+            """INSERT INTO operation_groups
+               (group_id,identity_key,entry_id,task_id,scope,validation_required,source_group_id,
+                capability_id,category,title,operation_body,operation_location,
+                controlled_properties_json,context_json,guards_json,branches_json,evidence_json,
+                payload_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (group_id, identity, task["subject_id"], task["task_id"], "local", 0, None,
+             group.get("capability_id"),
              group["category"], group["title"], group["operation"]["body"], group["operation"]["location"],
              canonical_json(group["controlled_properties"]), canonical_json(group["context"]),
              canonical_json(group["guards"]), canonical_json(group["branches"]),
@@ -152,15 +205,9 @@ def _merge_semantic_analysis(conn, task, result):
                 edge_id, group_id, fact_ids[edge["from"]], fact_ids[edge["to"]], edge["kind"],
                 canonical_json(edge["evidence_refs"]), now()))
         group_ids.append(group_id)
-    validation_task_id = None
-    if group_ids:
-        validation_task_id = enqueue_task(
-            conn, f"exploitability-validation:{task['subject_id']}",
-            "exploitability_validation", task["subject_id"],
-            {"semantic_group_ids": group_ids},
-        )
     return {"entry_id": task["subject_id"], "operation_groups_created": len(group_ids),
-            "group_ids": group_ids, "validation_task_id": validation_task_id}
+            "group_ids": group_ids, "component_handoffs_created": len(handoff_ids),
+            "handoff_ids": handoff_ids}
 
 
 def _merge_exploitability_validation(conn, task, result):
@@ -176,8 +223,8 @@ def _merge_exploitability_validation(conn, task, result):
         group_id = validation["group_id"]
         group = group_context(conn, group_id)
         conn.execute(
-            """INSERT INTO validation_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (group_id, task["task_id"], validation.get("capability_id"), validation.get("pattern_id"),
+            """INSERT INTO validation_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (group_id, task["task_id"], validation.get("capability_id"),
              validation["classification"], validation["title"], validation["guard_outcome"],
              validation["security_boundary"]["expected_boundary"], canonical_json(validation["exploitability"]),
              canonical_json(validation["business_intent"]), canonical_json(validation["security_boundary"]),
@@ -227,9 +274,10 @@ def status(run_dir):
         run = dict(run_row(conn))
         run["capability_filter"] = json.loads(run.pop("capability_filter_json"))
         run["component_filter"] = json.loads(run.pop("component_filter_json"))
+        run["correlation"] = json.loads(run.pop("correlation_json"))
         task_counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
         counts = {table: conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"]
-                  for table in ("entries", "semantic_analyses", "operation_groups", "validation_results", "group_facts", "findings")}
+                  for table in ("entries", "semantic_analyses", "component_handoffs", "operation_groups", "validation_results", "group_facts", "findings")}
         retry_categories = {}
         for row in conn.execute("SELECT payload_json FROM events WHERE event_type='task_retry'"):
             payload = json.loads(row["payload_json"])

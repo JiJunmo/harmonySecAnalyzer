@@ -32,6 +32,8 @@ def semantic_group_context(conn, group_id):
     group = row_json(row, "payload_json", {})
     group.update({
         "group_id": group_id, "entry_id": row["entry_id"],
+        "scope": row["scope"], "validation_required": bool(row["validation_required"]),
+        "source_group_id": row["source_group_id"],
         "operation_location": row["operation_location"],
         "controlled_properties": row_json(row, "controlled_properties_json", []),
         "evidence_refs": row_json(row, "evidence_json", []),
@@ -93,8 +95,9 @@ def task_context(conn, task):
             "audit_scope": profiles,
             "analysis_contract": {
                 "task_unit": "one deterministic component analysis unit",
-                "phases": ["confirm_entry", "trace_external_data", "collect_operations", "merge_equivalent_operations", "record_gaps"],
+                "phases": ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_handoffs", "merge_equivalent_operations", "record_gaps"],
                 "group_by": ["operation_location", "controlled_properties"],
+                "stop_at": "component_handoff",
                 "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
             },
         }
@@ -103,7 +106,8 @@ def task_context(conn, task):
             "SELECT * FROM semantic_analyses WHERE entry_id=?", (task["subject_id"],)
         ).fetchone()
         groups = [semantic_group_context(conn, row["group_id"]) for row in conn.execute(
-            "SELECT group_id FROM operation_groups WHERE entry_id=? ORDER BY group_id", (task["subject_id"],)
+            "SELECT group_id FROM operation_groups WHERE entry_id=? AND validation_required=1 ORDER BY group_id",
+            (task["subject_id"],)
         )]
         coverage = row_json(analysis, "coverage_json", {})
         locations = set(coverage.get("operation_sites_checked", []))
