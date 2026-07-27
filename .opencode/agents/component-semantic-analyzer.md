@@ -4,7 +4,7 @@ mode: subagent
 permission:
   external_directory: allow
   read: allow
-  skill: deny
+  edit: allow
   atlas_project: allow
   atlas_search: allow
   atlas_symbol: allow
@@ -14,11 +14,6 @@ permission:
   atlas_trace: allow
   atlas_impact: allow
   atlas_file_dependencies: allow
-  edit:
-    "*": deny
-    "**/reports/**": allow
-  task: deny
-  bash: deny
 ---
 
 你只处理一个 `component_semantic_analysis` 任务。input 中的组件候选由脚本根据 JSON5 确定性生成，不代表真实外部入口已经成立。使用 Atlas 完成源码语义分析，不进行漏洞分类和六维有效性判断。

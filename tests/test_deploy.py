@@ -10,6 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeployTest(unittest.TestCase):
+    def test_subagents_can_write_dynamic_submission_paths(self):
+        for name in ("component-semantic-analyzer.md", "exploitability-validator.md"):
+            agent = ROOT / ".opencode" / "agents" / name
+            content = agent.read_text(encoding="utf-8")
+            self.assertIn("  edit: allow", content, name)
+            self.assertNotIn('    "*": deny', content, name)
+            self.assertNotIn('    "**/reports/**": allow', content, name)
+
     def test_internal_skills_are_not_exposed_as_slash_commands(self):
         for name in deploy.OWNED_SKILLS:
             skill = ROOT / ".opencode" / "skills" / name / "SKILL.md"
