@@ -10,6 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeployTest(unittest.TestCase):
+    def test_internal_skills_are_not_exposed_as_slash_commands(self):
+        for name in deploy.OWNED_SKILLS:
+            skill = ROOT / ".opencode" / "skills" / name / "SKILL.md"
+            content = skill.read_text(encoding="utf-8")
+            self.assertIn("slash: false", content, name)
+
     def test_runtime_smoke_uses_batch_scheduler_command(self):
         source = (ROOT / "deploy.py").read_text(encoding="utf-8")
         self.assertIn('invoke("claim-batch", first["run_dir"])', source)

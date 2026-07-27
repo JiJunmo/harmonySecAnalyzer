@@ -1,6 +1,7 @@
 ---
 name: audit-workflow
 description: 以组件为任务单位、以实际敏感操作组为判断单位的审计语义。
+slash: false
 ---
 
 ## 工作流

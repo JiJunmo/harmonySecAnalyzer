@@ -1,6 +1,7 @@
 ---
 name: audit-orchestration
 description: 基于 SQLite 的组件级安全分析运行时调用协议。
+slash: false
 ---
 
 `.opencode/skills/audit-orchestration/scripts/audit_orchestrator.py` 是唯一控制面。`run.db` 是可变状态唯一事实源；Agent 结果先通过 Schema 和业务不变量校验，再在一个事务中落库。JSON、Markdown 和 HTML 都是可重建导出。

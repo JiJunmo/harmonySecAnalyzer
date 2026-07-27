@@ -1,6 +1,7 @@
 ---
 name: project-modeling
 description: 确定性解析 HarmonyOS JSON5 工程配置，为组件任务生成提供项目事实与入口候选。
+slash: false
 ---
 
 `project_profiler.py` 使用 `json5` 解析 app/module/package/build-profile 配置。根级 `build-profile.json5` 定义实际参与构建的生产模块；没有模块声明时，才回退到仓库中全部生产 `module.json5`。`test/ohosTest/mock` 配置不进入审计范围。
