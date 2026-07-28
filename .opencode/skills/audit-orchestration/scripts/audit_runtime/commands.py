@@ -257,7 +257,7 @@ def finalize_run(run_dir):
     ready = readiness(run_dir)
     if not ready["ready"]:
         raise ValueError("run_not_ready:" + ",".join(ready["reasons"]))
-    result = build_report(run_dir)
+    result = build_report(run_dir, report_status="complete")
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn, transaction(conn):
         run = run_row(conn)

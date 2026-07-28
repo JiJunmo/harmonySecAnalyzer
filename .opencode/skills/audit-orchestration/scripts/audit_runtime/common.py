@@ -80,6 +80,14 @@ def write_json(path, value):
     os.replace(temp, target)
 
 
+def write_text(path, value):
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(target.suffix + ".tmp")
+    temp.write_text(value, encoding="utf-8")
+    os.replace(temp, target)
+
+
 def run_paths(run_dir):
     root = Path(run_dir).expanduser().resolve()
     return {

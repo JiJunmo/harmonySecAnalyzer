@@ -88,9 +88,11 @@ def claim_batch(run_dir, limit=MAX_CONCURRENT_TASKS, worker="harmony-auditor"):
             append_event(conn, "task_claimed", row["task_id"], {
                 "worker": worker, "attempt": updated["attempts"],
             })
+    from .reporting import refresh_live_report
     return {
         "ok": True, "tasks": claimed, "count": len(claimed),
         "reason": "claimed" if claimed else "no_queued",
+        "live_report": refresh_live_report(run_dir),
     }
 
 
@@ -128,7 +130,11 @@ def reconcile_batch(run_dir):
 
     counts = {status: sum(row.get("status") == status for row in outcomes)
               for status in ("completed", "queued", "exhausted")}
-    return {"ok": True, "tasks": outcomes, "count": len(outcomes), **counts, "readiness": readiness(run_dir)}
+    from .reporting import refresh_live_report
+    return {
+        "ok": True, "tasks": outcomes, "count": len(outcomes), **counts,
+        "readiness": readiness(run_dir), "live_report": refresh_live_report(run_dir),
+    }
 
 
 def readiness(run_dir):

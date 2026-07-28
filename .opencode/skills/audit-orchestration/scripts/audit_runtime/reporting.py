@@ -123,9 +123,10 @@ def export_state(run_dir):
     return {"ok": True, "exports": {name: str(run_paths["exports"] / name) for name in artifacts}, "findings": str(run_paths["findings"])}
 
 
-def build_report(run_dir):
+def build_report(run_dir, live=False, report_status=None):
     run_paths = ensure_run_dirs(run_dir)
-    export_state(run_dir)
+    if not live:
+        export_state(run_dir)
     with database(run_paths["db"]) as conn:
         run = dict(conn.execute("SELECT * FROM runs LIMIT 1").fetchone())
         correlation = json.loads(run.get("correlation_json") or "{}")
@@ -198,6 +199,7 @@ def build_report(run_dir):
         "generated_at": now(),
         "run": {
             "run_id": run["run_id"], "target_repo": run["target_repo"], "mode": run["audit_mode"],
+            "status": report_status or run["status"], "live": live,
             "capabilities": json.loads(run["capability_filter_json"]),
             "components": json.loads(run["component_filter_json"]),
             "correlation": correlation,
@@ -246,8 +248,14 @@ def build_report(run_dir):
         "paths": evidence_paths, "assessments": groups, "findings": findings,
     }
     write_json(run_paths["report_model"], model)
-    run_paths["report_md"].write_text(_render_markdown(model), encoding="utf-8")
-    run_paths["report_html"].write_text(_render_html(model), encoding="utf-8")
+    write_text(run_paths["report_html"], _render_html(model))
+    if live:
+        return {
+            "report_html": str(run_paths["report_html"]),
+            "report_model": str(run_paths["report_model"]),
+            "summary": model["summary"],
+        }
+    write_text(run_paths["report_md"], _render_markdown(model))
     hashes = {}
     for key in ("report_model", "report_md", "report_html", "findings"):
         target = run_paths[key]
@@ -256,6 +264,13 @@ def build_report(run_dir):
     write_json(run_paths["snapshot"], snapshot)
     return {"report_markdown": str(run_paths["report_md"]), "report_html": str(run_paths["report_html"]),
             "report_model": str(run_paths["report_model"]), "snapshot": str(run_paths["snapshot"]), "summary": model["summary"]}
+
+
+def refresh_live_report(run_dir):
+    try:
+        return {"ok": True, **build_report(run_dir, live=True)}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
 
 
 def _render_markdown(model):
@@ -299,6 +314,7 @@ def _render_html(model):
     application = model.get("project", {}).get("application") or {}
     title = html.escape(application.get("bundle_name") or "HarmonyOS 安全审计")
     view_model = {
+        "generated_at": model["generated_at"],
         "run": model["run"], "project": model["project"], "summary": model["summary"],
         "coverage": model["coverage"], "entries": model["entries"],
         "paths": [{
@@ -340,9 +356,9 @@ def _render_html(model):
 <div class="drawer-backdrop" id="drawer-backdrop"><aside class="drawer" role="dialog" aria-modal="true"><div class="drawer-head"><div><div class="muted">路径详情</div><h2 id="drawer-title"></h2></div><button class="close" id="drawer-close" aria-label="关闭">×</button></div><div id="drawer-body"></div></aside></div>
 <script type="application/json" id="report-data">{report_data}</script><script>
 const D=JSON.parse(document.getElementById('report-data').textContent);const arr=v=>Array.isArray(v)?v:[];const obj=v=>v&&typeof v==='object'?v:{{}};const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
-const labels={{confirmed_vulnerability:'已确认漏洞',residual_risk:'残余风险',protected_exposure:'已有效防护',benign_business_flow:'正常业务',insufficient_evidence:'证据不足',component_semantic_analysis:'组件语义分析',exploitability_validation:'六维验证',reached:'已到达敏感操作',stopped:'路径已终止',open:'继续追踪',gap:'证据不足',completed:'已完成',exhausted:'未完成',queued:'等待中',running:'执行中'}};const label=v=>labels[v]||v||'-';
+const labels={{confirmed_vulnerability:'已确认漏洞',residual_risk:'残余风险',protected_exposure:'已有效防护',benign_business_flow:'正常业务',insufficient_evidence:'证据不足',component_semantic_analysis:'组件语义分析',exploitability_validation:'六维验证',reached:'已到达敏感操作',stopped:'路径已终止',open:'继续追踪',gap:'证据不足',complete:'已完成',completed:'已完成',exhausted:'未完成',queued:'等待中',running:'执行中'}};const label=v=>labels[v]||v||'-';
 const findingById=Object.fromEntries(arr(D.findings).map(x=>[x.finding_id,x]));const resultRank={{confirmed_vulnerability:5,residual_risk:4,insufficient_evidence:3,protected_exposure:2,benign_business_flow:1}};const pathResult=p=>arr(p.finding_ids).map(id=>findingById[id]).filter(Boolean)[0]||arr(p.assessments).slice().sort((a,b)=>(resultRank[b.classification]||0)-(resultRank[a.classification]||0))[0]||{{}};const metric=(v,t)=>`<div class="metric"><strong>${{esc(v)}}</strong><span>${{esc(t)}}</span></div>`;const badge=v=>`<span class="badge ${{esc(v)}}">${{esc(label(v))}}</span>`;
-document.getElementById('runmeta').innerHTML=`<span>运行编号 <b>${{esc(D.run.run_id)}}</b></span><span>审计范围 <b>${{esc(arr(D.run.components).join(', ')||'全部组件')}}</b></span><span>覆盖状态 <b>${{esc(D.coverage.status)}}</b></span>`;
+document.getElementById('runmeta').innerHTML=`<span>运行编号 <b>${{esc(D.run.run_id)}}</b></span><span>运行状态 <b>${{esc(label(D.run.status))}}</b></span><span>审计范围 <b>${{esc(arr(D.run.components).join(', ')||'全部组件')}}</b></span><span>覆盖状态 <b>${{esc(D.coverage.status)}}</b></span><span>更新时间 <b>${{esc(D.generated_at)}}</b></span>`;
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===b.dataset.view));}});
 const S=D.summary;document.getElementById('overview-metrics').innerHTML=metric(S.confirmed_vulnerabilities,'已确认漏洞')+metric(S.residual_risks,'残余风险')+metric(S.protected_exposures,'有效防护')+metric(S.benign_business_flows,'正常业务')+metric(S.analyzed_components,'已分析组件')+metric(S.paths,'攻击路径');
 const resultRows=[['confirmed_vulnerability',S.confirmed_vulnerabilities],['residual_risk',S.residual_risks],['protected_exposure',S.protected_exposures],['benign_business_flow',S.benign_business_flows],['insufficient_evidence',S.insufficient_evidence]];document.getElementById('result-summary').innerHTML=resultRows.map(([k,v])=>`<div class="summary-item"><h3>${{badge(k)}} ${{esc(v)}} 条</h3></div>`).join('');

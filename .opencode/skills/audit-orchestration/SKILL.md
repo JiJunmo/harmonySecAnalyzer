@@ -27,6 +27,8 @@ Operation Group 只按操作源码位置和关键受控参数集合拆分，普�
 
 编排者调用一次 `claim-batch` 领取最多 5 个任务，并在同一条 assistant 消息中一次派发全部句柄。整批返回后只调用一次 `reconcile-batch`；脚本检查每个任务约定的 submission 文件，接收有效结果，并将缺失或无效结果重新排队。第三次仍没有有效结果时只将该任务标记为 `exhausted`，不终止其他组件。会话中断后也使用同一个收敛命令，不存在独立恢复分支。
 
+`prepare` 完成后立即创建动态 `report.html`；`claim-batch` 和 `reconcile-batch` 会用当前 SQLite 状态原子更新文件，用户刷新浏览器即可查看最新进度。中间更新不生成 Markdown、导出文件或最终快照，`finalize` 才生成完整正式产物。
+
 `--component` 可重复，接受组件简单名、`module/Component` 或 `module:Component`；它与 `--capability` 正交。组件过滤选择明确的起始组件；能力过滤使用统一后的外部入口类型选择起始组件。后续任务只沿控制性仍为 `preserved` 或 `constrained` 的组件传递扩展。
 
 报告准入要求：run 仍为 running，且没有 queued/running 任务。`exhausted` 任务和缺少语义分析或六维验证的对象作为覆盖缺口进入报告，不阻止已有审计结果输出。`build-report` 与 `finalize` 使用同一准入。

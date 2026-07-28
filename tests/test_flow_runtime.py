@@ -566,10 +566,17 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
 
     def test_reconcile_accepts_submission_without_worker_text(self):
         task = self.claim("component_semantic_analysis")
+        initial_model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
+        self.assertEqual(initial_model["run"]["status"], "running")
+        self.assertEqual(initial_model["summary"]["tasks"], {"running": 1})
         self.write_submission(task, self.semantic_result(task, [], "excluded"))
         result = reconcile_batch(self.run)
         self.assertEqual(result["completed"], 1, result)
         self.assertTrue(result["tasks"][0]["accepted"])
+        self.assertTrue(result["live_report"]["ok"], result)
+        updated_model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
+        self.assertEqual(updated_model["summary"]["analyzed_components"], 1)
+        self.assertEqual(updated_model["summary"]["tasks"], {"completed": 1})
 
     def test_missing_submission_exhausts_only_task_and_report_is_generated(self):
         for attempt in range(3):
@@ -582,6 +589,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         report = finalize_run(self.run)
         self.assertTrue(Path(report["report_html"]).is_file())
         model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
+        self.assertEqual(model["run"]["status"], "complete")
         self.assertEqual(model["coverage"]["status"], "部分完成")
         self.assertEqual(model["summary"]["tasks"], {"exhausted": 1})
 

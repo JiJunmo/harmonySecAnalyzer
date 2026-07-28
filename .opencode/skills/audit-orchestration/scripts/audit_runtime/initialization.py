@@ -57,6 +57,8 @@ def prepare_run(target_repo, mode="full", capabilities=None, components=None, at
     write_json(paths["project_model"], model)
     write_json(paths["root"] / "atlas" / "index_status.json", index_status)
     initialized = initialize_run(allocated["run_dir"], paths["project_model"])
+    from .reporting import refresh_live_report
+    live_report = refresh_live_report(allocated["run_dir"])
     return {
         **allocated,
         "stage": "ready",
@@ -65,4 +67,5 @@ def prepare_run(target_repo, mode="full", capabilities=None, components=None, at
         "initial_task_ids": initialized["task_ids"],
         "entry_candidates": initialized["entry_candidates"],
         "analysis_units": initialized["analysis_units"],
+        "live_report": live_report,
     }
