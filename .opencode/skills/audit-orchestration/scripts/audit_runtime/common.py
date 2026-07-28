@@ -29,7 +29,7 @@ FINAL_CLASSIFICATIONS = {
 }
 SIX_EXPLOITABILITY_CHECKS = (
     "externally_reachable", "attacker_controlled", "sink_reached",
-    "guard_bypassed_or_absent", "boundary_violated", "concrete_impact",
+    "security_check_bypassed_or_absent", "boundary_violated", "concrete_impact",
 )
 
 

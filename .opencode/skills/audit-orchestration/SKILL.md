@@ -21,9 +21,9 @@ python3 .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py statu
 
 `prepare` 依次完成 JSON5 配置解析、Atlas 全量索引、隔离 run 创建、完整组件目录归组和起始组件任务初始化。Manifest 候选按 `component_id` 归组；无组件 ID 的动态入口候选按 module 和候选类型归组。上述工作全部由脚本完成，不调用 AI。
 
-AI 任务严格分成 `component_semantic_analysis` 和 `exploitability_validation`。语义任务使用 Atlas 完成组件输入确认、组件内数据追踪、实际操作归并和组件参数传递记录，不输出安全结论。全量模式初始化全部组件任务；能力模式和组件模式只初始化起始组件，之后按已证明的 `component_handoffs` 补充尚未分析的下游组件，每个组件最多一个语义任务。没有新的下游组件后，运行时确定性连接组件，只为起始外部入口可达的本地操作和跨组件操作创建验证任务。
+AI 任务严格分成 `component_semantic_analysis` 和 `exploitability_validation`。语义任务使用 Atlas 完成组件输入确认、组件内数据追踪、实际操作归并，以及组件间参数、身份和权限变化记录，不输出安全结论。全量模式初始化全部组件任务；能力模式和组件模式只初始化起始组件，之后按已证明的 `component_calls` 补充尚未分析的下游组件，每个组件最多一个语义任务。没有新的下游组件后，运行时确定性连接组件，只为起始外部入口可达的本地操作和跨组件操作创建验证任务。
 
-Operation Group 只按操作源码位置和关键受控参数集合拆分，普通分支、防护代码和业务上下文作为组内事实。运行时验证语义证据后再要求每个组有且只有一个六维结论；验证结果不能引用语义阶段不存在的证据。只有 confirmed vulnerability 和 residual risk 生成 Finding 及报告证据路径。
+Operation Group 只按操作源码位置和关键受控参数集合拆分，普通分支、防护代码和业务上下文作为组内事实。跨组件关联额外按身份是否保留、下游观察主体、实际权限和 安全检查 约束对象区分安全语义，避免把正常身份透传与代理借权路径合并。运行时验证语义证据后再要求每个组有且只有一个六维结论；验证结果不能引用语义阶段不存在的证据。只有 confirmed vulnerability 和 residual risk 生成 Finding 及报告证据路径。
 
 编排者调用一次 `claim-batch` 领取最多 5 个任务，并在同一条 assistant 消息中一次派发全部句柄。整批返回后只调用一次 `reconcile-batch`；脚本检查每个任务约定的 submission 文件，接收有效结果，并将缺失或无效结果重新排队。第三次仍没有有效结果时只将该任务标记为 `exhausted`，不终止其他组件。会话中断后也使用同一个收敛命令，不存在独立恢复分支。
 
@@ -40,7 +40,7 @@ run.db
 session.json
 project/project_model.json
 tasks/*.json + *.result.json
-exports/entries.json + semantic_analyses.json + component_handoffs.json + component_graph.json
+exports/entries.json + semantic_analyses.json + component_calls.json + component_graph.json
 exports/operation_groups.json + validation_results.json
 exports/evidence_paths.json + attack_matrix.json + tasks.json
 findings.json + report_model.json + report.md + report.html + report_snapshot.json

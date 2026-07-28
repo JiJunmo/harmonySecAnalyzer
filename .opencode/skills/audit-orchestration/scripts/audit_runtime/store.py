@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 17
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -71,8 +71,8 @@ CREATE TABLE IF NOT EXISTS semantic_analyses(
   coverage_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS component_handoffs(
-  handoff_id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS component_calls(
+  call_id TEXT PRIMARY KEY,
   identity_key TEXT NOT NULL UNIQUE,
   source_entry_id TEXT NOT NULL REFERENCES entries(entry_id) ON DELETE CASCADE,
   source_component_id TEXT NOT NULL,
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS component_handoffs(
   call_location TEXT NOT NULL,
   condition TEXT NOT NULL,
   parameter_mappings_json TEXT NOT NULL,
-  guards_json TEXT NOT NULL,
+  security_checks_json TEXT NOT NULL,
   evidence_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS operation_groups(
   operation_location TEXT NOT NULL,
   controlled_properties_json TEXT NOT NULL,
   context_json TEXT NOT NULL,
-  guards_json TEXT NOT NULL,
+  security_checks_json TEXT NOT NULL,
   branches_json TEXT NOT NULL,
   evidence_json TEXT NOT NULL,
   payload_json TEXT NOT NULL,
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS validation_results(
   capability_id TEXT,
   classification TEXT NOT NULL CHECK(classification IN ('confirmed_vulnerability','protected_exposure','benign_business_flow','insufficient_evidence','residual_risk')),
   title TEXT NOT NULL,
-  guard_outcome TEXT NOT NULL CHECK(guard_outcome IN ('absent','bypassable','effective','unknown')),
+  security_check_outcome TEXT NOT NULL CHECK(security_check_outcome IN ('absent','bypassable','effective','unknown')),
   boundary TEXT NOT NULL,
   exploitability_json TEXT NOT NULL,
   business_intent_json TEXT NOT NULL,
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS group_facts(
   fact_id TEXT PRIMARY KEY,
   fact_key TEXT NOT NULL,
   group_id TEXT NOT NULL REFERENCES operation_groups(group_id) ON DELETE CASCADE,
-  fact_type TEXT NOT NULL CHECK(fact_type IN ('entrypoint','reachability','control','transform','guard','operation','effect','dead_end','gap')),
+  fact_type TEXT NOT NULL CHECK(fact_type IN ('entrypoint','reachability','control','transform','security_check','operation','effect','dead_end','gap')),
   body TEXT NOT NULL,
   location TEXT,
   evidence_json TEXT NOT NULL,
@@ -178,7 +178,7 @@ CREATE TABLE IF NOT EXISTS events(
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_groups_entry ON operation_groups(entry_id, category);
-CREATE INDEX IF NOT EXISTS idx_handoffs_source ON component_handoffs(source_entry_id, target_component_id);
+CREATE INDEX IF NOT EXISTS idx_component_calls_source ON component_calls(source_entry_id, target_component_id);
 CREATE INDEX IF NOT EXISTS idx_groups_validation ON operation_groups(validation_required, entry_id);
 CREATE INDEX IF NOT EXISTS idx_validations_class ON validation_results(classification);
 CREATE INDEX IF NOT EXISTS idx_group_facts_type ON group_facts(group_id, fact_type);

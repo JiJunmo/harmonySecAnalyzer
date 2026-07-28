@@ -24,8 +24,8 @@ python3 deploy.py --global
 | 阶段 | 组件 | 产出 |
 |---|---|---|
 | 审计准备与任务生成 | `project-modeling` Skill、Atlas Indexer、Python Runtime | 项目事实、完整索引、组件分析单元与任务 |
-| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP | 真实入口、数据传播、实际操作组和防护事实 |
-| 六维验证 | `exploitability-validator` Agent | 每个操作组的六维结论、反证和漏洞分类 |
+| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP | 真实入口、数据传播、实际操作组、组件间身份权限变化和防护事实 |
+| 组件关联与六维验证 | Python Correlator、`exploitability-validator` Agent | 跨组件参数与身份链、每个操作组的六维结论、反证和漏洞分类 |
 | 状态与报告 | `audit-orchestration` Skill | SQLite 状态、根因聚合、漏洞证据路径、JSON/Markdown/HTML |
 
 `run.db` 是运行状态唯一事实源。`exports/attack_matrix.json` 是入口、实际操作组和 Finding 的确定性覆盖视图。

@@ -110,7 +110,7 @@ def normalize_submission(result, task, conn=None):
             if len(group.get("facts", [])) > len(existing.get("facts", [])):
                 group, existing = existing, group
                 merged_groups[identity] = existing
-            for key in ("branches", "guards"):
+            for key in ("branches", "security_checks"):
                 rows = existing.get(key, []) + group.get(key, [])
                 existing[key] = list({canonical_json(row): row for row in rows}.values())
             existing["evidence_refs"] = sorted(set(existing.get("evidence_refs", [])) | set(group.get("evidence_refs", [])))
@@ -120,22 +120,22 @@ def normalize_submission(result, task, conn=None):
                 set(existing_context.get("evidence_refs", [])) | set(duplicate_context.get("evidence_refs", []))
             )
         result["operation_groups"] = list(merged_groups.values()) + unmergeable_groups
-        normalized_handoffs = {}
-        for handoff in result.get("component_handoffs", []):
-            if not isinstance(handoff, dict):
+        normalized_calls = {}
+        for component_call in result.get("component_calls", []):
+            if not isinstance(component_call, dict):
                 continue
-            mappings = handoff.get("parameter_mappings", [])
+            mappings = component_call.get("parameter_mappings", [])
             if isinstance(mappings, list) and all(isinstance(row, dict) for row in mappings):
-                handoff["parameter_mappings"] = sorted(
+                component_call["parameter_mappings"] = sorted(
                     {canonical_json(row): row for row in mappings}.values(),
                     key=canonical_json,
                 )
             identity = canonical_json([
-                handoff.get("target_component_id"), normalize_location(handoff.get("call_location")),
-                handoff.get("parameter_mappings", []),
+                component_call.get("target_component_id"), normalize_location(component_call.get("call_location")),
+                component_call.get("parameter_mappings", []), component_call.get("principal_transition", {}),
             ])
-            normalized_handoffs.setdefault(identity, handoff)
-        result["component_handoffs"] = list(normalized_handoffs.values())
+            normalized_calls.setdefault(identity, component_call)
+        result["component_calls"] = list(normalized_calls.values())
         coverage["operation_sites_checked"] = sorted(checked_sites)
     elif task["kind"] == "exploitability_validation":
         for validation in result.get("validations", []):
@@ -167,17 +167,18 @@ def schema_errors(kind, result):
 
 def _semantic_refs(group):
     refs = list(group.get("evidence_refs", []))
-    for key in ("facts", "edges", "branches", "guards"):
+    for key in ("facts", "edges", "branches", "security_checks"):
         for row in group.get(key, []):
             refs.extend(row.get("evidence_refs", []))
     refs.extend(group.get("context", {}).get("evidence_refs", []))
     return refs
 
 
-def _handoff_refs(handoff):
-    refs = list(handoff.get("evidence_refs", []))
-    for guard in handoff.get("guards", []):
-        refs.extend(guard.get("evidence_refs", []))
+def _component_call_refs(component_call):
+    refs = list(component_call.get("evidence_refs", []))
+    refs.extend(component_call.get("principal_transition", {}).get("evidence_refs", []))
+    for security_check in component_call.get("security_checks", []):
+        refs.extend(security_check.get("evidence_refs", []))
     return refs
 
 
@@ -195,7 +196,7 @@ def validate_semantic_analysis(result, task, conn):
     entry_status = coverage.get("entry_status")
     if entry_status == "confirmed" and not coverage.get("entry_symbols_checked"):
         errors.append("confirmed_entry_requires_checked_symbol")
-    if entry_status == "excluded" and (result.get("operation_groups") or result.get("component_handoffs")):
+    if entry_status == "excluded" and (result.get("operation_groups") or result.get("component_calls")):
         errors.append("excluded_entry_cannot_have_semantic_outputs")
 
     model_keys = []
@@ -216,24 +217,24 @@ def validate_semantic_analysis(result, task, conn):
     known_components = {
         row.get("component_id") for row in project.get("components", []) if row.get("component_id")
     }
-    handoff_keys = []
-    handoff_identities = []
-    for index, handoff in enumerate(result.get("component_handoffs", [])):
-        label = f"component_handoffs[{index}]"
-        handoff_keys.append(handoff.get("handoff_key"))
-        handoff_identities.append(canonical_json([
-            handoff.get("target_component_id"), normalize_location(handoff.get("call_location")),
-            handoff.get("parameter_mappings", []),
+    call_keys = []
+    call_identities = []
+    for index, component_call in enumerate(result.get("component_calls", [])):
+        label = f"component_calls[{index}]"
+        call_keys.append(component_call.get("call_key"))
+        call_identities.append(canonical_json([
+            component_call.get("target_component_id"), normalize_location(component_call.get("call_location")),
+            component_call.get("parameter_mappings", []), component_call.get("principal_transition", {}),
         ]))
-        if handoff.get("target_component_id") not in known_components:
+        if component_call.get("target_component_id") not in known_components:
             errors.append(f"{label}:unknown_target_component")
-        missing = set(_handoff_refs(handoff)) - known_evidence
+        missing = set(_component_call_refs(component_call)) - known_evidence
         if missing:
             errors.append(f"{label}:unknown_evidence:" + ",".join(sorted(missing)))
-    if len(handoff_keys) != len(set(handoff_keys)):
-        errors.append("duplicate_handoff_key")
-    if len(handoff_identities) != len(set(handoff_identities)):
-        errors.append("equivalent_component_handoffs_must_merge")
+    if len(call_keys) != len(set(call_keys)):
+        errors.append("duplicate_call_key")
+    if len(call_identities) != len(set(call_identities)):
+        errors.append("equivalent_component_calls_must_merge")
     return errors
 
 
@@ -271,19 +272,22 @@ def validate_exploitability(result, task, conn):
         refs = list(validation.get("evidence_refs", []))
         refs.extend(validation.get("business_intent", {}).get("evidence_refs", []))
         refs.extend(validation.get("security_boundary", {}).get("evidence_refs", []))
+        refs.extend(validation.get("principal_analysis", {}).get("evidence_refs", []))
         for counter in validation.get("counter_evidence", []):
             refs.extend(counter.get("evidence_refs", []))
         missing = set(refs) - known_evidence
         if missing:
             errors.append(f"{label}:unknown_semantic_evidence:" + ",".join(sorted(missing)))
         checks = validation.get("exploitability", {})
+        if group.get("scope") == "cross_component" and not validation.get("principal_analysis"):
+            errors.append(f"{label}:cross_component_requires_principal_analysis")
         if validation.get("classification") == "confirmed_vulnerability":
             if entry_status != "confirmed":
                 errors.append(f"{label}:confirmed_vulnerability_requires_confirmed_entry")
             if not all(checks.get(name) is True for name in SIX_EXPLOITABILITY_CHECKS):
                 errors.append(f"{label}:confirmed_requires_six_dimensions")
-        if validation.get("guard_outcome") == "effective" and checks.get("guard_bypassed_or_absent") is True:
-            errors.append(f"{label}:effective_guard_conflicts_with_exploitability")
+        if validation.get("security_check_outcome") == "effective" and checks.get("security_check_bypassed_or_absent") is True:
+            errors.append(f"{label}:effective_security_check_conflicts_with_exploitability")
         if validation.get("security_boundary", {}).get("violation") != checks.get("boundary_violated"):
             errors.append(f"{label}:boundary_dimension_mismatch")
     return errors

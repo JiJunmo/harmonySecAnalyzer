@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .common import MAX_CONCURRENT_TASKS, MAX_TASK_ATTEMPTS, SCHEMAS_DIR, now, read_json, run_paths, write_json
-from .correlation import correlate_components, enqueue_handoff_targets
+from .correlation import correlate_components, enqueue_component_call_targets
 from .contracts import SCHEMA_BY_TASK
 from .lifecycle import run_row
 from .store import append_event, database, row_json, task_document, transaction
@@ -59,7 +59,7 @@ def claim_batch(run_dir, limit=MAX_CONCURRENT_TASKS, worker="harmony-auditor"):
             "SELECT COUNT(*) n FROM tasks WHERE kind='component_semantic_analysis' AND status='queued'"
         ).fetchone()["n"]
         if run["correlation_status"] == "pending" and not semantic_queued:
-            expanded = enqueue_handoff_targets(conn, paths["project_model"])
+            expanded = enqueue_component_call_targets(conn, paths["project_model"])
             if not expanded:
                 correlate_components(conn, run["run_id"])
         rows = conn.execute(

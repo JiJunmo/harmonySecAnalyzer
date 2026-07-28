@@ -95,9 +95,9 @@ def task_context(conn, task):
             "audit_scope": profiles,
             "analysis_contract": {
                 "task_unit": "one deterministic component analysis unit",
-                "phases": ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_handoffs", "merge_equivalent_operations", "record_gaps"],
+                "phases": ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_calls", "merge_equivalent_operations", "record_gaps"],
                 "group_by": ["operation_location", "controlled_properties"],
-                "stop_at": "component_handoff",
+                "stop_at": "component_call",
                 "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
             },
         }
@@ -113,7 +113,7 @@ def task_context(conn, task):
         locations = set(coverage.get("operation_sites_checked", []))
         for group in groups:
             locations.add(group["operation"]["location"])
-            for key in ("facts", "guards"):
+            for key in ("facts", "security_checks"):
                 locations.update(row.get("location") for row in group.get(key, []) if row.get("location"))
             for branch in group.get("branches", []):
                 locations.update(branch.get("locations", []))

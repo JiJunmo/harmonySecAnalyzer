@@ -679,7 +679,7 @@ entry/src/main/ets/
 - [ ] DataShare 是真实 Extension，外部客户端可以调用 `query/openFile`。
 - [ ] Service 是真实 Extension，外部客户端可以连接并发送 Transaction。
 - [ ] 12 条缺陷路径全部到达真实终态 API。
-- [ ] 12 条安全路径使用独立、不可被外部关闭的 Guard。
+- [ ] 12 条安全路径使用独立、不可被外部关闭的 安全检查。
 - [ ] 正常业务路径没有越过安全边界。
 - [ ] T13 不会被错误归类为已启用能力。
 - [ ] 源码中没有答案式命名、注释和 UI。

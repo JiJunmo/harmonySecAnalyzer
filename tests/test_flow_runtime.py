@@ -92,10 +92,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 {"from": "control", "to": "operation", "kind": "reaches", "evidence_refs": ["EV-TRACE"]},
                 {"from": "operation", "to": "effect", "kind": "causes", "evidence_refs": ["EV-TRACE"]},
             ],
-            "guards": [], "evidence_refs": ["EV-TRACE"],
+            "security_checks": [], "evidence_refs": ["EV-TRACE"],
         }
 
-    def semantic_result(self, task, groups, entry_status="confirmed", handoffs=None):
+    def semantic_result(self, task, groups, entry_status="confirmed", component_calls=None):
         return {
             "task_id": task["task_id"], "entry_id": task["subject_id"], "summary": "语义分析完成",
             "coverage": {
@@ -104,7 +104,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "operation_sites_checked": sorted({group["operation"]["location"] for group in groups}),
                 "unresolved_targets": [],
             },
-            "operation_groups": groups, "component_handoffs": handoffs or [],
+            "operation_groups": groups, "component_calls": component_calls or [],
             "evidence": [{
                 "evidence_id": "EV-TRACE", "kind": "atlas_trace", "source": "atlas",
                 "summary": "entry reaches database query", "location": "Db.ets:42",
@@ -127,7 +127,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "group_id": group["group_id"], "capability_id": group.get("capability_id"),
             "classification": classification,
             "title": "外部参数可控制私有数据查询",
-            "guard_outcome": "absent" if confirmed else "effective",
+            "security_check_outcome": "absent" if confirmed else "effective",
             "business_intent": {
                 "is_public_api": True, "declared_or_inferred_purpose": "打开公开内容",
                 "allowed_controls": ["recordId"], "evidence_refs": evidence,
@@ -146,9 +146,23 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         else:
             validation.update({
                 "demotion_reason": "防护阻止了越权查询",
-                "counter_evidence": [{"kind": "effective_guard", "reason": "校验覆盖受控参数",
+                "counter_evidence": [{"kind": "effective_security_check", "reason": "校验覆盖受控参数",
                                       "evidence_refs": evidence}],
             })
+        if group.get("scope") == "cross_component":
+            principal_state = group.get("principal_state", {})
+            validation["principal_analysis"] = {
+                "origin_principal": "external caller of the root component",
+                "target_observed_principal": principal_state.get("observed_principal", "unknown"),
+                "authority_used": principal_state.get("authority_used", "unknown"),
+                "security_check_subjects": sorted({
+                    security_check.get("subject_kind", "unknown") for security_check in group.get("security_checks", [])
+                }),
+                "origin_bound_to_observed_principal": principal_state.get("origin_binding") == "preserved",
+                "delegation_risk": principal_state.get("origin_binding") == "replaced_by_caller",
+                "reason": "downstream observes the component identity instead of the external origin",
+                "evidence_refs": evidence,
+            }
         return validation
 
     def submit_validation(self, classification="confirmed_vulnerability"):
@@ -184,7 +198,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             {"capability_id", "title", "domain"},
         )
         self.assertEqual(semantic_task["result_schema"]["required"],
-                         ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_handoffs", "evidence"])
+                         ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_calls", "evidence"])
 
     def test_malformed_legacy_shape_returns_schema_error_without_runtime_crash(self):
         task = self.claim("component_semantic_analysis")
@@ -228,9 +242,45 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertEqual(report["summary"]["paths"], 1)
         model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
         self.assertEqual(model["paths"][0]["path_id"], model["operation_groups"][0]["group_id"])
+        self.assertEqual(model["component_results"][0]["status"], "confirmed_vulnerability")
         self.assertTrue((self.run / "exports" / "semantic_analyses.json").is_file())
         self.assertTrue((self.run / "exports" / "validation_results.json").is_file())
-        self.assertIn('"type": "entrypoint"', (self.run / "report.html").read_text(encoding="utf-8"))
+        report_html = (self.run / "report.html").read_text(encoding="utf-8")
+        self.assertIn('"type": "entrypoint"', report_html)
+        self.assertIn("组件审计结果", report_html)
+
+    def test_protected_component_is_visible_with_function_and_security_checks(self):
+        group = self.semantic_group()
+        group["security_checks"] = [{
+            "type": "白名单检查", "location": "EntryAbility.ets:30",
+            "protects": "私有记录查询", "subject_kind": "origin_principal",
+            "validated_property": "caller bundle name", "behavior": "只允许受信任调用者继续查询",
+            "evidence_refs": ["EV-TRACE"],
+        }]
+        task = self.claim("component_semantic_analysis")
+        result = self.semantic_result(task, [group])
+        result["summary"] = "处理深度链接并根据记录编号查询内容"
+        submitted = submit_result(
+            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+        )
+        self.assertTrue(submitted["accepted"], submitted)
+        _, validated = self.submit_validation("protected_exposure")
+        self.assertTrue(validated["accepted"], validated)
+        finalize_run(self.run)
+        model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
+        component = model["component_results"][0]
+        self.assertEqual(component["status"], "protected_exposure")
+        self.assertEqual(component["function_summary"], "处理深度链接并根据记录编号查询内容")
+        self.assertEqual(component["security_checks"][0]["type"], "白名单检查")
+        self.assertEqual(model["summary"]["components_without_findings"], 1)
+        markdown = (self.run / "report.md").read_text(encoding="utf-8")
+        self.assertIn("# HarmonyOS 应用安全审计报告", markdown)
+        self.assertIn("## 组件审计结果", markdown)
+        self.assertIn("已有有效防护", markdown)
+        self.assertIn("白名单检查", markdown)
+        report_html = (self.run / "report.html").read_text(encoding="utf-8")
+        self.assertIn("组件审计", report_html)
+        self.assertIn("处理深度链接并根据记录编号查询内容", report_html)
 
     def test_finding_merge_keeps_columns_and_payload_on_same_strongest_result(self):
         self.submit_semantics([self.semantic_group()])
@@ -318,6 +368,9 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         build_report_ready(self.run)
         report = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
         self.assertEqual(report["coverage"]["entry_status"], {"excluded": 1})
+        self.assertEqual(report["component_results"][0]["status"], "entry_excluded")
+        self.assertEqual(report["component_results"][0]["operation_groups"], [])
+        self.assertIn("组件审计结果", (self.run / "report.html").read_text(encoding="utf-8"))
         with database(self.run / "run.db") as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM tasks").fetchone()["n"], 1)
 
@@ -391,30 +444,43 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             task = json.loads(Path(handle["task_file"]).read_text(encoding="utf-8"))
             tasks[task["input"]["entry"]["component"]] = task
 
-        def handoff(key, target, source_property, target_property, location, state="preserved"):
+        def component_call(key, target, source_property, target_property, location, state="preserved"):
             return {
-                "handoff_key": key, "target_component_id": target,
+                "call_key": key, "target_component_id": target,
                 "target_symbol": f"{target}.onCreate", "transport": "startAbility",
                 "call_location": location, "condition": "always",
                 "parameter_mappings": [{
                     "source_property": source_property, "target_property": target_property,
                     "control_state": state, "transform": "direct copy",
                 }],
-                "guards": [], "evidence_refs": ["EV-TRACE"],
+                "principal_transition": {
+                    "caller_principal": key.split("-to-")[0].upper() + " component",
+                    "callee_observed_principal": key.split("-to-")[0].upper() + " component",
+                    "origin_binding": "replaced_by_caller",
+                    "authority_used": "source_component",
+                    "evidence_refs": ["EV-TRACE"],
+                },
+                "security_checks": [], "evidence_refs": ["EV-TRACE"],
             }
 
         results = {
-            "AAbility": self.semantic_result(tasks["AAbility"], [], handoffs=[
-                handoff("a-to-b", "CMP-B", "want.parameters.path", "want.parameters.forwardedPath", "A.ets:20"),
-                handoff("a-to-c-constant", "CMP-C", "want.parameters.path", "want.parameters.filePath", "A.ets:25", "constant"),
+            "AAbility": self.semantic_result(tasks["AAbility"], [], component_calls=[
+                component_call("a-to-b", "CMP-B", "want.parameters.path", "want.parameters.forwardedPath", "A.ets:20"),
+                component_call("a-to-c-constant", "CMP-C", "want.parameters.path", "want.parameters.filePath", "A.ets:25", "constant"),
             ]),
-            "BAbility": self.semantic_result(tasks["BAbility"], [], handoffs=[
-                handoff("b-to-a", "CMP-A", "want.parameters.forwardedPath", "want.parameters.path", "B.ets:30"),
-                handoff("b-to-c", "CMP-C", "want.parameters.forwardedPath", "want.parameters.filePath", "B.ets:40"),
+            "BAbility": self.semantic_result(tasks["BAbility"], [], component_calls=[
+                component_call("b-to-a", "CMP-A", "want.parameters.forwardedPath", "want.parameters.path", "B.ets:30"),
+                component_call("b-to-c", "CMP-C", "want.parameters.forwardedPath", "want.parameters.filePath", "B.ets:40"),
             ]),
             "CAbility": self.semantic_result(tasks["CAbility"], [self.semantic_group()]),
         }
         results["CAbility"]["operation_groups"][0]["controlled_properties"] = ["want.parameters.filePath"]
+        results["CAbility"]["operation_groups"][0]["security_checks"] = [{
+            "type": "component whitelist", "location": "C.ets:35",
+            "protects": "private file operation", "subject_kind": "immediate_caller",
+            "validated_property": "calling component identity",
+            "behavior": "allows B component", "evidence_refs": ["EV-TRACE"],
+        }]
         for name, task in tasks.items():
             submitted = submit_result(
                 run, task["task_id"], self.write_submission(task, results[name]), task["attempt"]
@@ -429,9 +495,21 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertEqual(groups[0]["scope"], "cross_component")
         self.assertEqual(groups[0]["controlled_properties"], ["want.parameters.path"])
         self.assertEqual(groups[0]["component_chain"], ["CMP-A", "CMP-B", "CMP-C"])
-        self.assertEqual(len(groups[0]["handoff_ids"]), 2)
+        self.assertEqual(len(groups[0]["call_ids"]), 2)
+        self.assertEqual(len(groups[0]["principal_lineage"]), 2)
+        self.assertEqual(groups[0]["principal_state"]["origin_binding"], "replaced_by_caller")
+        self.assertEqual(groups[0]["security_checks"][0]["subject_kind"], "immediate_caller")
+        validation = self.validation_for(groups[0])
+        validation["security_check_outcome"] = "bypassable"
+        submitted = submit_result(
+            run, validation_task["task_id"], self.write_submission(validation_task, {
+                "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
+                "summary": "delegated authority validated", "validations": [validation], "evidence": [],
+            }), validation_task["attempt"],
+        )
+        self.assertTrue(submitted["accepted"], submitted)
         with database(run / "run.db") as conn:
-            self.assertEqual(conn.execute("SELECT COUNT(*) n FROM component_handoffs").fetchone()["n"], 4)
+            self.assertEqual(conn.execute("SELECT COUNT(*) n FROM component_calls").fetchone()["n"], 4)
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM operation_groups WHERE scope='cross_component'").fetchone()["n"], 1)
             correlation = json.loads(conn.execute("SELECT correlation_json FROM runs").fetchone()["correlation_json"])
             self.assertLessEqual(correlation["states_visited"], 4)
@@ -473,8 +551,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 self.assertEqual(first_batch["count"], 1)
                 first = json.loads(Path(first_batch["tasks"][0]["task_file"]).read_text())
                 self.assertEqual(first["input"]["entry"]["component"], "AAbility")
-                handoff = {
-                    "handoff_key": "a-to-b", "target_component_id": "CMP-B",
+                component_call = {
+                    "call_key": "a-to-b", "target_component_id": "CMP-B",
                     "target_symbol": "BAbility.onCreate", "transport": "startAbility",
                     "call_location": "A.ets:20", "condition": "always",
                     "parameter_mappings": [{
@@ -482,9 +560,16 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                         "target_property": "want.parameters.forwardedPath",
                         "control_state": "preserved", "transform": "direct copy",
                     }],
-                    "guards": [], "evidence_refs": ["EV-TRACE"],
+                    "principal_transition": {
+                        "caller_principal": "A component",
+                        "callee_observed_principal": "A component",
+                        "origin_binding": "replaced_by_caller",
+                        "authority_used": "source_component",
+                        "evidence_refs": ["EV-TRACE"],
+                    },
+                    "security_checks": [], "evidence_refs": ["EV-TRACE"],
                 }
-                result = self.semantic_result(first, [], handoffs=[handoff])
+                result = self.semantic_result(first, [], component_calls=[component_call])
                 submitted = submit_result(
                     run, first["task_id"], self.write_submission(first, result), first["attempt"]
                 )
@@ -494,7 +579,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 self.assertEqual(second_batch["count"], 1, second_batch)
                 second = json.loads(Path(second_batch["tasks"][0]["task_file"]).read_text())
                 self.assertEqual(second["input"]["entry"]["component"], "BAbility")
-                self.assertEqual(second["input"]["discovered_from_handoffs"], submitted["handoff_ids"])
+                self.assertEqual(second["input"]["discovered_from_component_calls"], submitted["call_ids"])
                 group = self.semantic_group()
                 group["capability_id"] = "CAP-IPC-001"
                 group["category"] = "ipc_rpc"

@@ -79,18 +79,20 @@ def _refs(values, identities):
 def _remap_group_evidence(group, evidence_ids):
     payload = json.loads(json.dumps(group))
     payload["evidence_refs"] = _refs(payload.get("evidence_refs", []), evidence_ids)
-    for key in ("facts", "edges", "branches", "guards"):
+    for key in ("facts", "edges", "branches", "security_checks"):
         for row in payload.get(key, []):
             row["evidence_refs"] = _refs(row.get("evidence_refs", []), evidence_ids)
     payload["context"]["evidence_refs"] = _refs(payload["context"].get("evidence_refs", []), evidence_ids)
     return payload
 
 
-def _remap_handoff_evidence(handoff, evidence_ids):
-    payload = json.loads(json.dumps(handoff))
+def _remap_component_call_evidence(component_call, evidence_ids):
+    payload = json.loads(json.dumps(component_call))
     payload["evidence_refs"] = _refs(payload.get("evidence_refs", []), evidence_ids)
-    for guard in payload.get("guards", []):
-        guard["evidence_refs"] = _refs(guard.get("evidence_refs", []), evidence_ids)
+    for security_check in payload.get("security_checks", []):
+        security_check["evidence_refs"] = _refs(security_check.get("evidence_refs", []), evidence_ids)
+    transition = payload.get("principal_transition", {})
+    transition["evidence_refs"] = _refs(transition.get("evidence_refs", []), evidence_ids)
     return payload
 
 
@@ -151,28 +153,29 @@ def _merge_semantic_analysis(conn, task, result):
                  (task["subject_id"], task["task_id"], result["summary"], canonical_json(result["coverage"]), now()))
     entry = conn.execute("SELECT payload_json FROM entries WHERE entry_id=?", (task["subject_id"],)).fetchone()
     entry_payload = row_json(entry, "payload_json", {})
-    handoff_ids = []
-    for source in result["component_handoffs"]:
-        handoff = _remap_handoff_evidence(source, evidence_ids)
+    call_ids = []
+    for source in result["component_calls"]:
+        component_call = _remap_component_call_evidence(source, evidence_ids)
         identity = canonical_json([
-            task["subject_id"], handoff["target_component_id"],
-            normalize_location(handoff["call_location"]), handoff["parameter_mappings"],
+            task["subject_id"], component_call["target_component_id"],
+            normalize_location(component_call["call_location"]), component_call["parameter_mappings"],
+            component_call["principal_transition"],
         ])
-        handoff_id = stable_id("HANDOFF", identity)
+        call_id = stable_id("CALL", identity)
         conn.execute(
-            """INSERT INTO component_handoffs
-               (handoff_id,identity_key,source_entry_id,source_component_id,target_component_id,
-                task_id,transport,call_location,condition,parameter_mappings_json,guards_json,
+            """INSERT INTO component_calls
+               (call_id,identity_key,source_entry_id,source_component_id,target_component_id,
+                task_id,transport,call_location,condition,parameter_mappings_json,security_checks_json,
                 evidence_json,payload_json,created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (handoff_id, identity, task["subject_id"],
+            (call_id, identity, task["subject_id"],
              entry_payload.get("component_id") or f"entry:{task['subject_id']}",
-             handoff["target_component_id"], task["task_id"], handoff["transport"],
-             handoff["call_location"], handoff["condition"],
-             canonical_json(handoff["parameter_mappings"]), canonical_json(handoff["guards"]),
-             canonical_json(handoff["evidence_refs"]), canonical_json(handoff), now()),
+             component_call["target_component_id"], task["task_id"], component_call["transport"],
+             component_call["call_location"], component_call["condition"],
+             canonical_json(component_call["parameter_mappings"]), canonical_json(component_call["security_checks"]),
+             canonical_json(component_call["evidence_refs"]), canonical_json(component_call), now()),
         )
-        handoff_ids.append(handoff_id)
+        call_ids.append(call_id)
     group_ids = []
     for source in result["operation_groups"]:
         group = _remap_group_evidence(source, evidence_ids)
@@ -182,14 +185,14 @@ def _merge_semantic_analysis(conn, task, result):
             """INSERT INTO operation_groups
                (group_id,identity_key,entry_id,task_id,scope,validation_required,source_group_id,
                 capability_id,category,title,operation_body,operation_location,
-                controlled_properties_json,context_json,guards_json,branches_json,evidence_json,
+                controlled_properties_json,context_json,security_checks_json,branches_json,evidence_json,
                 payload_json,created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (group_id, identity, task["subject_id"], task["task_id"], "local", 0, None,
              group.get("capability_id"),
              group["category"], group["title"], group["operation"]["body"], group["operation"]["location"],
              canonical_json(group["controlled_properties"]), canonical_json(group["context"]),
-             canonical_json(group["guards"]), canonical_json(group["branches"]),
+             canonical_json(group["security_checks"]), canonical_json(group["branches"]),
              canonical_json(group["evidence_refs"]), canonical_json(group), now()),
         )
         fact_ids = {}
@@ -206,8 +209,8 @@ def _merge_semantic_analysis(conn, task, result):
                 canonical_json(edge["evidence_refs"]), now()))
         group_ids.append(group_id)
     return {"entry_id": task["subject_id"], "operation_groups_created": len(group_ids),
-            "group_ids": group_ids, "component_handoffs_created": len(handoff_ids),
-            "handoff_ids": handoff_ids}
+            "group_ids": group_ids, "component_calls_created": len(call_ids),
+            "call_ids": call_ids}
 
 
 def _merge_exploitability_validation(conn, task, result):
@@ -218,6 +221,10 @@ def _merge_exploitability_validation(conn, task, result):
         validation["evidence_refs"] = _refs(validation.get("evidence_refs", []), evidence_ids)
         for key in ("business_intent", "security_boundary"):
             validation[key]["evidence_refs"] = _refs(validation[key].get("evidence_refs", []), evidence_ids)
+        if validation.get("principal_analysis"):
+            validation["principal_analysis"]["evidence_refs"] = _refs(
+                validation["principal_analysis"].get("evidence_refs", []), evidence_ids
+            )
         for counter in validation.get("counter_evidence", []):
             counter["evidence_refs"] = _refs(counter.get("evidence_refs", []), evidence_ids)
         group_id = validation["group_id"]
@@ -225,7 +232,7 @@ def _merge_exploitability_validation(conn, task, result):
         conn.execute(
             """INSERT INTO validation_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (group_id, task["task_id"], validation.get("capability_id"),
-             validation["classification"], validation["title"], validation["guard_outcome"],
+             validation["classification"], validation["title"], validation["security_check_outcome"],
              validation["security_boundary"]["expected_boundary"], canonical_json(validation["exploitability"]),
              canonical_json(validation["business_intent"]), canonical_json(validation["security_boundary"]),
              canonical_json(validation["counter_evidence"]), validation.get("severity"), validation.get("cwe"),
@@ -277,7 +284,7 @@ def status(run_dir):
         run["correlation"] = json.loads(run.pop("correlation_json"))
         task_counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
         counts = {table: conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"]
-                  for table in ("entries", "semantic_analyses", "component_handoffs", "operation_groups", "validation_results", "group_facts", "findings")}
+                  for table in ("entries", "semantic_analyses", "component_calls", "operation_groups", "validation_results", "group_facts", "findings")}
         retry_categories = {}
         for row in conn.execute("SELECT payload_json FROM events WHERE event_type='task_retry'"):
             payload = json.loads(row["payload_json"])

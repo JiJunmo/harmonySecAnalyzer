@@ -11,6 +11,28 @@ from .task_context import semantic_group_context
 
 MAX_CORRELATION_STATES_PER_ROOT = 2000
 PROPAGATING_STATES = {"preserved", "constrained"}
+PRINCIPAL_BINDING_RANK = {"preserved": 0, "not_observable": 1, "unknown": 2, "replaced_by_caller": 3}
+
+
+def _advance_principal_state(state, component_call):
+    transition = component_call.get("principal_transition", {})
+    prior_binding = state.get("origin_binding", "preserved")
+    next_binding = transition.get("origin_binding", "unknown")
+    binding = max((prior_binding, next_binding), key=lambda value: PRINCIPAL_BINDING_RANK.get(value, 2))
+    security_check_subjects = set(state.get("security_check_subjects", ()))
+    security_check_subjects.update(
+        security_check.get("subject_kind", "unknown") for security_check in component_call.get("security_checks", [])
+    )
+    return {
+        "origin_binding": binding,
+        "authority_used": transition.get("authority_used", "unknown"),
+        "observed_principal": transition.get("callee_observed_principal", "unknown"),
+        "security_check_subjects": sorted(security_check_subjects),
+    }
+
+
+def _principal_state_key(state):
+    return canonical_json(state)
 
 
 def _entry_records(conn):
@@ -44,8 +66,8 @@ def _external_roots(conn, entries):
     return sorted(roots)
 
 
-def enqueue_handoff_targets(conn, project_model):
-    """Expand only components reached by a control-preserving handoff."""
+def enqueue_component_call_targets(conn, project_model):
+    """Expand only components reached by a control-preserving component_call."""
     component_entries = {}
     for row in conn.execute("SELECT entry_id,payload_json FROM entries ORDER BY entry_id"):
         component_id = row_json(row, "payload_json", {}).get("component_id")
@@ -57,18 +79,18 @@ def enqueue_handoff_targets(conn, project_model):
         )
     }
     discovered = {}
-    for row in conn.execute("SELECT * FROM component_handoffs ORDER BY handoff_id"):
+    for row in conn.execute("SELECT * FROM component_calls ORDER BY call_id"):
         mappings = row_json(row, "parameter_mappings_json", [])
         if not any(mapping.get("control_state") in PROPAGATING_STATES for mapping in mappings):
             continue
         target_entry_id = component_entries.get(row["target_component_id"])
         if target_entry_id and target_entry_id not in existing:
-            discovered.setdefault(target_entry_id, []).append(row["handoff_id"])
+            discovered.setdefault(target_entry_id, []).append(row["call_id"])
     task_ids = []
-    for entry_id, handoff_ids in sorted(discovered.items()):
+    for entry_id, call_ids in sorted(discovered.items()):
         task_ids.append(enqueue_task(
             conn, f"component-semantics:{entry_id}", "component_semantic_analysis", entry_id,
-            {"project_model": str(project_model), "discovered_from_handoffs": sorted(handoff_ids)},
+            {"project_model": str(project_model), "discovered_from_component_calls": sorted(call_ids)},
         ))
     if task_ids:
         append_event(conn, "component_scope_expanded", None, {
@@ -77,23 +99,23 @@ def enqueue_handoff_targets(conn, project_model):
     return task_ids
 
 
-def _handoffs(conn, component_entries):
+def _component_calls(conn, component_entries):
     adjacency = {}
     unresolved = []
-    for row in conn.execute("SELECT * FROM component_handoffs ORDER BY source_entry_id,handoff_id"):
+    for row in conn.execute("SELECT * FROM component_calls ORDER BY source_entry_id,call_id"):
         payload = row_json(row, "payload_json", {})
         payload.update({
-            "handoff_id": row["handoff_id"], "source_entry_id": row["source_entry_id"],
+            "call_id": row["call_id"], "source_entry_id": row["source_entry_id"],
             "target_entry_id": component_entries.get(row["target_component_id"]),
             "target_component_id": row["target_component_id"],
             "parameter_mappings": row_json(row, "parameter_mappings_json", []),
-            "guards": row_json(row, "guards_json", []),
+            "security_checks": row_json(row, "security_checks_json", []),
             "evidence_refs": row_json(row, "evidence_json", []),
         })
         if not payload["target_entry_id"]:
             unresolved.append({
                 "type": "target_component_not_in_analysis_scope",
-                "handoff_id": row["handoff_id"], "target_component_id": row["target_component_id"],
+                "call_id": row["call_id"], "target_component_id": row["target_component_id"],
             })
             continue
         adjacency.setdefault(row["source_entry_id"], []).append(payload)
@@ -111,7 +133,7 @@ def _local_groups(conn):
     return groups, task_ids
 
 
-def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_property, path, entries):
+def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_property, path, principal_state, entries):
     root = entries[root_entry_id]
     refs = set(sink.get("evidence_refs", []))
     facts = []
@@ -122,32 +144,54 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
         "location": root.get("symbol"), "evidence_refs": list(first_refs),
     })
     lineage = []
+    principal_lineage = []
     component_chain = [root.get("component_id") or root_entry_id]
-    guards = []
+    security_checks = []
     branches = []
-    for index, handoff in enumerate(path, 1):
-        mapping = handoff["selected_mapping"]
-        refs.update(handoff.get("evidence_refs", []))
-        guards.extend(handoff.get("guards", []))
+    for index, component_call in enumerate(path, 1):
+        mapping = component_call["selected_mapping"]
+        refs.update(component_call.get("evidence_refs", []))
+        transition = component_call.get("principal_transition", {})
+        refs.update(transition.get("evidence_refs", []))
+        security_checks.extend(component_call.get("security_checks", []))
         branches.append({
-            "condition": handoff["condition"], "locations": [handoff["call_location"]],
-            "evidence_refs": handoff.get("evidence_refs", []),
+            "condition": component_call["condition"], "locations": [component_call["call_location"]],
+            "evidence_refs": component_call.get("evidence_refs", []),
         })
         lineage.append({
-            "handoff_id": handoff["handoff_id"], "source_property": mapping["source_property"],
+            "call_id": component_call["call_id"], "source_property": mapping["source_property"],
             "target_property": mapping["target_property"], "control_state": mapping["control_state"],
             "transform": mapping["transform"],
         })
-        component_chain.append(handoff["target_component_id"])
+        principal_lineage.append({
+            "call_id": component_call["call_id"],
+            "caller_principal": transition.get("caller_principal", "unknown"),
+            "callee_observed_principal": transition.get("callee_observed_principal", "unknown"),
+            "origin_binding": transition.get("origin_binding", "unknown"),
+            "authority_used": transition.get("authority_used", "unknown"),
+            "evidence_refs": transition.get("evidence_refs", []),
+        })
+        component_chain.append(component_call["target_component_id"])
         facts.append({
-            "fact_key": f"handoff-{index}", "type": "transform",
+            "fact_key": f"component_call-{index}", "type": "transform",
             "body": (
-                f"{mapping['source_property']} is passed to {handoff['target_symbol']} as "
+                f"{mapping['source_property']} is passed to {component_call['target_symbol']} as "
                 f"{mapping['target_property']} ({mapping['control_state']}: {mapping['transform']})"
             ),
-            "location": handoff["call_location"], "evidence_refs": handoff.get("evidence_refs", []),
+            "location": component_call["call_location"], "evidence_refs": component_call.get("evidence_refs", []),
         })
-    guards.extend(sink.get("guards", []))
+        facts.append({
+            "fact_key": f"principal-{index}", "type": "control",
+            "body": (
+                f"{transition.get('callee_observed_principal', 'downstream component')} observes "
+                f"{transition.get('caller_principal', 'unknown caller')}; origin identity is "
+                f"{transition.get('origin_binding', 'unknown')} and authority is "
+                f"{transition.get('authority_used', 'unknown')}"
+            ),
+            "location": component_call["call_location"],
+            "evidence_refs": transition.get("evidence_refs", []),
+        })
+    security_checks.extend(sink.get("security_checks", []))
     branches.extend(sink.get("branches", []))
     for fact in sink.get("facts", []):
         copied = dict(fact)
@@ -160,16 +204,19 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
         "category": sink["category"], "capability_id": sink.get("capability_id"),
         "title": sink["title"], "operation": sink["operation"],
         "controlled_properties": [root_property], "context": sink["context"],
-        "branches": branches, "facts": facts, "guards": guards,
+        "branches": branches, "facts": facts, "security_checks": security_checks,
         "evidence_refs": sorted(refs), "scope": "cross_component",
         "source_group_id": sink["group_id"], "component_chain": component_chain,
-        "handoff_ids": [row["handoff_id"] for row in path], "parameter_lineage": lineage,
+        "call_ids": [row["call_id"] for row in path], "parameter_lineage": lineage,
+        "principal_lineage": principal_lineage, "principal_state": principal_state,
     }
     group["edges"] = [{
         "from": source["fact_key"], "to": target["fact_key"], "kind": "next",
         "evidence_refs": sorted(set(source.get("evidence_refs", [])) | set(target.get("evidence_refs", []))),
     } for source, target in zip(facts, facts[1:])]
-    identity = operation_group_identity(root_entry_id, group)
+    identity = canonical_json([
+        operation_group_identity(root_entry_id, group), _principal_state_key(principal_state),
+    ])
     existing = conn.execute(
         "SELECT group_id FROM operation_groups WHERE identity_key=?", (identity,)
     ).fetchone()
@@ -183,13 +230,13 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
         """INSERT INTO operation_groups
            (group_id,identity_key,entry_id,task_id,scope,validation_required,source_group_id,
             capability_id,category,title,operation_body,operation_location,
-            controlled_properties_json,context_json,guards_json,branches_json,evidence_json,
+            controlled_properties_json,context_json,security_checks_json,branches_json,evidence_json,
             payload_json,created_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (group_id, identity, root_entry_id, sink_task_id, "cross_component", 1, sink["group_id"],
          group.get("capability_id"), group["category"], group["title"], group["operation"]["body"],
          group["operation"]["location"], canonical_json(group["controlled_properties"]),
-         canonical_json(group["context"]), canonical_json(group["guards"]),
+         canonical_json(group["context"]), canonical_json(group["security_checks"]),
          canonical_json(group["branches"]), canonical_json(group["evidence_refs"]),
          canonical_json(group), now()),
     )
@@ -223,7 +270,7 @@ def correlate_components(conn, run_id):
         row["entry_id"] for row in conn.execute("SELECT entry_id FROM semantic_analyses")
     }
     roots = _external_roots(conn, entries)
-    adjacency, gaps = _handoffs(conn, component_entries)
+    adjacency, gaps = _component_calls(conn, component_entries)
     local_groups, group_tasks = _local_groups(conn)
     if roots:
         placeholders = ",".join("?" for _ in roots)
@@ -239,20 +286,22 @@ def correlate_components(conn, run_id):
     for root_entry_id in roots:
         queue = deque()
         visited = set()
-        for handoff in adjacency.get(root_entry_id, []):
-            for mapping in handoff["parameter_mappings"]:
+        for component_call in adjacency.get(root_entry_id, []):
+            for mapping in component_call["parameter_mappings"]:
                 if mapping.get("control_state") not in PROPAGATING_STATES:
                     continue
-                selected = {**handoff, "selected_mapping": mapping}
+                selected = {**component_call, "selected_mapping": mapping}
+                principal_state = _advance_principal_state({}, selected)
                 queue.append((
-                    handoff["target_entry_id"], mapping["target_property"],
-                    mapping["source_property"], [selected],
+                    component_call["target_entry_id"], mapping["target_property"],
+                    mapping["source_property"], [selected], principal_state,
                 ))
         root_states = 0
         while queue:
-            current_entry, current_property, root_property, path = queue.popleft()
+            current_entry, current_property, root_property, path, principal_state = queue.popleft()
             state_key = (
                 current_entry, normalize_text(current_property), normalize_text(root_property),
+                _principal_state_key(principal_state),
             )
             if state_key in visited:
                 continue
@@ -278,20 +327,22 @@ def correlate_components(conn, run_id):
                 }:
                     continue
                 group_id, created = _insert_composed_group(
-                    conn, root_entry_id, sink, group_tasks[sink["group_id"]], root_property, path, entries,
+                    conn, root_entry_id, sink, group_tasks[sink["group_id"]], root_property,
+                    path, principal_state, entries,
                 )
                 if created:
                     composed_ids.append(group_id)
-            for handoff in adjacency.get(current_entry, []):
-                for mapping in handoff["parameter_mappings"]:
+            for component_call in adjacency.get(current_entry, []):
+                for mapping in component_call["parameter_mappings"]:
                     if mapping.get("control_state") not in PROPAGATING_STATES:
                         continue
                     if normalize_text(mapping.get("source_property")) != normalize_text(current_property):
                         continue
-                    selected = {**handoff, "selected_mapping": mapping}
+                    selected = {**component_call, "selected_mapping": mapping}
+                    next_principal_state = _advance_principal_state(principal_state, selected)
                     queue.append((
-                        handoff["target_entry_id"], mapping["target_property"], root_property,
-                        path + [selected],
+                        component_call["target_entry_id"], mapping["target_property"], root_property,
+                        path + [selected], next_principal_state,
                     ))
 
     for root_entry_id in roots:
@@ -309,7 +360,7 @@ def correlate_components(conn, run_id):
     if truncated_roots:
         gaps.extend({"type": "state_limit", "root_entry_id": value} for value in truncated_roots)
     summary = {
-        "roots": len(roots), "handoffs": sum(len(rows) for rows in adjacency.values()),
+        "roots": len(roots), "component_calls": sum(len(rows) for rows in adjacency.values()),
         "states_visited": states_visited, "composed_groups": len(composed_ids),
         "validation_groups": conn.execute(
             "SELECT COUNT(*) n FROM operation_groups WHERE validation_required=1"

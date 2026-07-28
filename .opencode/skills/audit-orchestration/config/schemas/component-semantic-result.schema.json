@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_handoffs", "evidence"],
+  "required": ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_calls", "evidence"],
   "properties": {
     "task_id": {"type": "string", "minLength": 1},
     "entry_id": {"type": "string", "minLength": 1},
@@ -19,7 +19,7 @@
       "additionalProperties": false
     },
     "operation_groups": {"type": "array", "items": {"$ref": "#/$defs/group"}},
-    "component_handoffs": {"type": "array", "items": {"$ref": "#/$defs/handoff"}},
+    "component_calls": {"type": "array", "items": {"$ref": "#/$defs/component_call"}},
     "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
   },
   "$defs": {
@@ -37,7 +37,7 @@
       "type": "object", "required": ["fact_key", "type", "body", "evidence_refs"],
       "properties": {
         "fact_key": {"type": "string", "minLength": 1},
-        "type": {"enum": ["entrypoint", "reachability", "control", "transform", "guard", "operation", "effect", "dead_end", "gap"]},
+        "type": {"enum": ["entrypoint", "reachability", "control", "transform", "security_check", "operation", "effect", "dead_end", "gap"]},
         "body": {"type": "string", "minLength": 1}, "location": {"type": ["string", "null"]},
         "evidence_refs": {"$ref": "#/$defs/refs"}
       }, "additionalProperties": false
@@ -57,13 +57,26 @@
         "evidence_refs": {"$ref": "#/$defs/refs"}
       }, "additionalProperties": false
     },
-    "guard": {
-      "type": "object", "required": ["type", "location", "protects", "validated_property", "behavior", "evidence_refs"],
+    "security_check": {
+      "type": "object", "required": ["type", "location", "protects", "subject_kind", "validated_property", "behavior", "evidence_refs"],
       "properties": {
         "type": {"type": "string", "minLength": 1}, "location": {"type": ["string", "null"]},
         "protects": {"type": "string", "minLength": 1}, "validated_property": {"type": "string", "minLength": 1},
+        "subject_kind": {"enum": ["origin_principal", "immediate_caller", "transferred_property", "resource_owner", "security_boundary", "unknown"]},
         "behavior": {"type": "string", "minLength": 1}, "evidence_refs": {"$ref": "#/$defs/refs"}
       }, "additionalProperties": false
+    },
+    "principalTransition": {
+      "type": "object",
+      "required": ["caller_principal", "callee_observed_principal", "origin_binding", "authority_used", "evidence_refs"],
+      "properties": {
+        "caller_principal": {"type": "string", "minLength": 1},
+        "callee_observed_principal": {"type": "string", "minLength": 1},
+        "origin_binding": {"enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"]},
+        "authority_used": {"enum": ["origin", "source_component", "system", "none", "unknown"]},
+        "evidence_refs": {"$ref": "#/$defs/refs"}
+      },
+      "additionalProperties": false
     },
     "parameterMapping": {
       "type": "object",
@@ -76,21 +89,22 @@
       },
       "additionalProperties": false
     },
-    "handoff": {
+    "component_call": {
       "type": "object",
       "required": [
-        "handoff_key", "target_component_id", "target_symbol", "transport",
-        "call_location", "condition", "parameter_mappings", "guards", "evidence_refs"
+        "call_key", "target_component_id", "target_symbol", "transport",
+        "call_location", "condition", "parameter_mappings", "principal_transition", "security_checks", "evidence_refs"
       ],
       "properties": {
-        "handoff_key": {"type": "string", "minLength": 1},
+        "call_key": {"type": "string", "minLength": 1},
         "target_component_id": {"type": "string", "minLength": 1},
         "target_symbol": {"type": "string", "minLength": 1},
         "transport": {"type": "string", "minLength": 1},
         "call_location": {"type": "string", "minLength": 1},
         "condition": {"type": "string", "minLength": 1},
         "parameter_mappings": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/parameterMapping"}},
-        "guards": {"type": "array", "items": {"$ref": "#/$defs/guard"}},
+        "principal_transition": {"$ref": "#/$defs/principalTransition"},
+        "security_checks": {"type": "array", "items": {"$ref": "#/$defs/security_check"}},
         "evidence_refs": {"$ref": "#/$defs/refs"}
       },
       "additionalProperties": false
@@ -107,7 +121,7 @@
     },
     "group": {
       "type": "object",
-      "required": ["group_key", "category", "capability_id", "title", "operation", "controlled_properties", "context", "branches", "facts", "guards", "evidence_refs"],
+      "required": ["group_key", "category", "capability_id", "title", "operation", "controlled_properties", "context", "branches", "facts", "security_checks", "evidence_refs"],
       "properties": {
         "group_key": {"type": "string", "minLength": 1}, "category": {"type": "string", "minLength": 1},
         "capability_id": {"type": ["string", "null"]}, "title": {"type": "string", "minLength": 1},
@@ -119,7 +133,7 @@
         "branches": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/branch"}},
         "facts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/fact"}},
         "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
-        "guards": {"type": "array", "items": {"$ref": "#/$defs/guard"}},
+        "security_checks": {"type": "array", "items": {"$ref": "#/$defs/security_check"}},
         "evidence_refs": {"$ref": "#/$defs/refs"}
       }, "additionalProperties": false
     }

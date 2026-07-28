@@ -23,3 +23,7 @@ target/
 
 # 系统文件
 .DS_Store
+
+# 本地文档生成与检查产物
+.tmp/
+*.inspect.ndjson
