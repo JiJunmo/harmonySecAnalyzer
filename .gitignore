@@ -1,25 +1,29 @@
-ipc-demo
-
-# AI & Local Metadata Files
-AGENTS.md
-CLAUDE.md
-
-# Architectural & Design Plans
-v2_weaknesses.md
-skills_v2/RULES_OPTIMIZATION_PLAN.md
-
-# Atlas Code Intelligence database
-.atlas/
-
-# Python cache & temporary files
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-
-# Local workspace scratch and configurations
-scratch/
+# 审计产出
+reports/*
+!reports/.gitkeep
+outputs/
 .claude/
 
+# atlas 索引（若在被审计仓生成）
+.atlas/
 
+# 依赖
+node_modules/
+.opencode/node_modules/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# Rust 构建产物
+target/
+
+# 日志
+*.log
+
+# 系统文件
+.DS_Store
+
+# 本地文档生成与检查产物
+.tmp/
+*.inspect.ndjson

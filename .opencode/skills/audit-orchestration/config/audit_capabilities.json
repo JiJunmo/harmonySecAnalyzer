@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {
+      "capability_id": "CAP-INJ-001",
+      "title": "Deeplink or Want input to SQL/command execution",
+      "domain": "injection",
+      "entry_types": [
+        "deeplink",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-FS-001",
+      "title": "Exported component input to file operation or path traversal",
+      "domain": "filesystem",
+      "entry_types": [
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-WEB-001",
+      "title": "External input controls unsafe Web navigation",
+      "domain": "web",
+      "entry_types": [
+        "deeplink",
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-WEB-002",
+      "title": "Untrusted Web origin reaches sensitive JSBridge method",
+      "domain": "web",
+      "entry_types": [
+        "deeplink",
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-ICC-001",
+      "title": "Attacker-controlled Want redirect to private component",
+      "domain": "icc",
+      "entry_types": [
+        "exported_ability",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-PROVIDER-001",
+      "title": "DataShare caller input alters query language structure",
+      "domain": "provider",
+      "entry_types": [
+        "exported_ability",
+        "provider"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-PROVIDER-002",
+      "title": "DataShare file URI or path escapes authorized scope",
+      "domain": "provider",
+      "entry_types": [
+        "exported_ability",
+        "provider"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-PROVIDER-003",
+      "title": "DataShare query crosses caller data ownership boundary",
+      "domain": "provider",
+      "entry_types": [
+        "exported_ability",
+        "provider"
+      ],
+      "status": "planned"
+    },
+    {
+      "capability_id": "CAP-ICC-002",
+      "title": "Unauthorized custom CommonEvent triggers protected operation",
+      "domain": "icc",
+      "entry_types": [
+        "common_event"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-ICC-003",
+      "title": "Untrusted custom CommonEvent data reaches sensitive operation",
+      "domain": "icc",
+      "entry_types": [
+        "common_event"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-001",
+      "title": "Unauthorized IPC/RPC server transaction",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-002",
+      "title": "Untrusted IPC/RPC MessageSequence reaches sensitive server operation",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-003",
+      "title": "IPC/RPC confused deputy through calling identity reset",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-004",
+      "title": "Sensitive IPC/RPC reply disclosure",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "planned"
+    },
+    {
+      "capability_id": "CAP-ARCHIVE-001",
+      "title": "Untrusted archive extraction or dynamic load",
+      "domain": "archive",
+      "entry_types": [
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "planned"
+    },
+    {
+      "capability_id": "CAP-PRIV-001",
+      "title": "Sensitive data flows to network, log or Web sink",
+      "domain": "privacy",
+      "entry_types": [],
+      "status": "planned"
+    },
+    {
+      "capability_id": "CAP-NET-001",
+      "title": "Cleartext transport or unsafe TLS configuration",
+      "domain": "network",
+      "entry_types": [],
+      "status": "planned"
+    },
+    {
+      "capability_id": "CAP-CRYPTO-001",
+      "title": "Weak crypto, hardcoded secret or plaintext sensitive storage",
+      "domain": "crypto",
+      "entry_types": [],
+      "status": "planned"
+    },
+    {
+      "capability_id": "CAP-DIST-001",
+      "title": "Distributed call crosses device trust boundary",
+      "domain": "distributed",
+      "entry_types": [
+        "exported_ability"
+      ],
+      "status": "deferred"
+    },
+    {
+      "capability_id": "CAP-NATIVE-DEP-001",
+      "title": "Dependency vulnerability and NAPI native memory safety",
+      "domain": "native_dependency",
+      "entry_types": [],
+      "status": "deferred"
+    }
+  ]
+}
