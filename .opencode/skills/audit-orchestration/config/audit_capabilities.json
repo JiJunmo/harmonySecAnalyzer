@@ -9,7 +9,7 @@
         "deeplink",
         "want"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-FS-001",
@@ -20,7 +20,7 @@
         "provider",
         "want"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-WEB-001",
@@ -32,7 +32,7 @@
         "provider",
         "want"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-WEB-002",
@@ -44,7 +44,7 @@
         "provider",
         "want"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-ICC-001",
@@ -54,7 +54,7 @@
         "exported_ability",
         "want"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-PROVIDER-001",
@@ -64,7 +64,7 @@
         "exported_ability",
         "provider"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-PROVIDER-002",
@@ -74,7 +74,7 @@
         "exported_ability",
         "provider"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-PROVIDER-003",
@@ -93,7 +93,7 @@
       "entry_types": [
         "common_event"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-ICC-003",
@@ -102,7 +102,7 @@
       "entry_types": [
         "common_event"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-IPC-001",
@@ -111,7 +111,7 @@
       "entry_types": [
         "ipc_transaction"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-IPC-002",
@@ -120,7 +120,7 @@
       "entry_types": [
         "ipc_transaction"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-IPC-003",
@@ -129,7 +129,7 @@
       "entry_types": [
         "ipc_transaction"
       ],
-      "status": "partial"
+      "status": "enabled"
     },
     {
       "capability_id": "CAP-IPC-004",

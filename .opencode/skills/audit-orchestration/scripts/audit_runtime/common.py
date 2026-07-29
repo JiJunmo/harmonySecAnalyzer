@@ -119,7 +119,7 @@ def load_capabilities(capability_filter=None):
     selected = set(capability_filter or [])
     rows = []
     for row in doc.get("capabilities", []):
-        if row.get("status") not in {"partial", "implemented"}:
+        if row.get("status") != "enabled":
             continue
         if selected and row.get("capability_id") not in selected:
             continue

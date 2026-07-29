@@ -15,7 +15,7 @@
           "title": {"type": "string", "minLength": 1},
           "domain": {"type": "string", "minLength": 1},
           "entry_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-          "status": {"enum": ["implemented", "partial", "planned", "deferred"]}
+          "status": {"enum": ["enabled", "planned", "deferred"]}
         },
         "additionalProperties": false
       }

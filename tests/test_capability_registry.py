@@ -20,7 +20,7 @@ class CapabilityRegistryTest(unittest.TestCase):
             self.assertEqual(
                 set(row), {"capability_id", "title", "domain", "entry_types", "status"}
             )
-            if row["status"] in {"partial", "implemented"}:
+            if row["status"] == "enabled":
                 self.assertTrue(row["entry_types"])
 
 if __name__ == "__main__":
