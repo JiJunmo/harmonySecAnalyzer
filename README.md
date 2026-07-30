@@ -6,10 +6,16 @@
 
 ```text
 /audit <repo-path>
+/audit --incremental <repo-path>
+/audit --resume <run-dir>
 /audit --capability <CAP-ID> <repo-path>
 /audit --component <AbilityName> <repo-path>
 /audit --component <module/ExtensionAbilityName> --capability <CAP-ID> <repo-path>
 ```
+
+`--incremental` 使用上次成功的无过滤审计作为基线。Git 项目记录两个审计提交之间的累计变化并纳入工作区，非 Git 项目使用内容哈希快照。受影响组件重新执行语义分析，未受影响组件复用已校验的语义结果；组件连接始终使用当前完整状态重新计算，操作组集合和安全语义均未变化时同时复用六维验证结论。报告按稳定 Finding ID 展示新增、结论变化、已消失和未变的风险路径。
+
+`--resume` 用于最终报告存在 exhausted 任务的运行。参数是具体 run 目录；已完成结果保持不变，只重试失败任务，成功后覆盖生成该 run 的报告并推进合格基线。
 
 `--component` 与 `--capability` 均可重复并可组合。组件过滤用于定点审计 Ability/ExtensionAbility，能力过滤用于只验证指定能力。
 

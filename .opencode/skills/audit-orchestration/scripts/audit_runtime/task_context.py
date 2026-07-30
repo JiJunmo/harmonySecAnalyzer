@@ -1,7 +1,9 @@
 """Build immutable semantic and validation task documents from canonical state."""
 from __future__ import annotations
 
-from .common import load_capabilities
+import hashlib
+
+from .common import canonical_json, load_capabilities
 from .store import row_json
 
 
@@ -56,6 +58,15 @@ def semantic_group_context(conn, group_id):
            WHERE e.group_id=? ORDER BY e.created_at,e.edge_id""", (group_id,)
     )]
     return group
+
+
+def validation_group_fingerprint(conn, group_id):
+    """Hash every security-relevant input consumed by six-dimensional validation."""
+    group = semantic_group_context(conn, group_id)
+    if not group:
+        return None
+    group.pop("validation_required", None)
+    return hashlib.sha256(canonical_json(group).encode("utf-8")).hexdigest()
 
 
 def validation_context(conn, group_id):
@@ -118,8 +129,15 @@ def task_context(conn, task):
             "SELECT group_id FROM operation_groups WHERE entry_id=? AND validation_required=1 ORDER BY group_id",
             (task["subject_id"],)
         )]
-        coverage = row_json(analysis, "coverage_json", {})
-        locations = set(coverage.get("operation_sites_checked", []))
+        for group in groups:
+            group.pop("edges", None)
+        full_coverage = row_json(analysis, "coverage_json", {})
+        coverage = {
+            key: full_coverage.get(key)
+            for key in ("entry_status", "entry_notes", "unresolved_targets")
+            if key in full_coverage
+        }
+        locations = set(full_coverage.get("operation_sites_checked", []))
         for group in groups:
             locations.add(group["operation"]["location"])
             for key in ("facts", "security_checks"):
@@ -137,7 +155,7 @@ def task_context(conn, task):
                 "target_repo": run["target_repo"],
                 "seed_locations": sorted(locations),
                 "seed_files": sorted({_source_file(location) for location in locations}),
-                "seed_symbols": coverage.get("entry_symbols_checked", []),
+                "seed_symbols": full_coverage.get("entry_symbols_checked", []),
             },
         }
     return payload

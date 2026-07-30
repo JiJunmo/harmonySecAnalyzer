@@ -541,10 +541,12 @@ def main():
     elif args.global_install:
         print("✓ 全局安装完成。任何目录启动 opencode 即可用 /audit。")
         print(f"    cd <某鸿蒙仓> && opencode && /audit <该仓路径>")
+        print(f"    失败任务恢复: /audit --resume <run目录>")
         print(f"  卸载: python deploy.py --uninstall")
     else:
         print("✓ 本地配置完成。在本项目目录启动 opencode:")
         print(f"    cd {root} && opencode && /audit <目标鸿蒙仓路径>")
+        print(f"    失败任务恢复: /audit --resume <run目录>")
     print("=" * 60)
     if not validation_ok:
         sys.exit(4)

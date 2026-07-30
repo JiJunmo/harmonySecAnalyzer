@@ -12,10 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / ".opencode/skills/audit-orchestration/scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-from audit_runtime.commands import _merge_finding, build_report_ready, finalize_run, status, submit_result
+from audit_runtime.commands import (_merge_finding, build_report_ready, finalize_run, resume_run,
+                                    status, submit_result)
 from audit_runtime.cli import dispatch as runtime_dispatch, parser as runtime_parser
 from audit_runtime.common import SIX_EXPLOITABILITY_CHECKS
 from audit_runtime.lifecycle import candidate_rows, initialize_run, new_run
+from audit_runtime.reporting import refresh_live_report
 from audit_runtime.scheduler import claim_batch, readiness, reconcile_batch
 from audit_runtime.store import SCHEMA_VERSION, database
 from audit_runtime.store import transaction
@@ -234,8 +236,15 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             set(semantic_task["input"]["audit_scope"][0]),
             {"capability_id", "title", "domain"},
         )
-        self.assertEqual(semantic_task["result_schema"]["required"],
-                         ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_calls", "evidence"])
+        self.assertNotIn("result_schema", semantic_task)
+        self.assertTrue(semantic_task["result_schema_file"].endswith(
+            "component-semantic-result.schema.json"
+        ))
+        self.assertNotIn("edges", validation_task["input"]["semantic_analysis"]["operation_groups"][0])
+        self.assertEqual(
+            set(validation_task["input"]["semantic_analysis"]["coverage"]),
+            {"entry_status", "entry_notes", "unresolved_targets"},
+        )
 
     def test_dos_capability_requires_availability_evidence_and_validation(self):
         allocated = new_run(self.root / "dos-reports", self.target, "capability", ["CAP-DOS-001"])
@@ -357,6 +366,18 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         report_html = (self.run / "report.html").read_text(encoding="utf-8")
         self.assertIn('"type": "entrypoint"', report_html)
         self.assertIn("组件审计结果", report_html)
+
+    def test_live_report_does_not_treat_unvalidated_operation_as_safe(self):
+        self.submit_semantics([self.semantic_group()])
+        refresh_live_report(self.run)
+        model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
+        component = model["component_results"][0]
+        self.assertEqual(component["status"], "verification_incomplete")
+        self.assertEqual(component["operation_groups"][0].get("classification"), None)
+        self.assertEqual(model["summary"]["components_without_findings"], 0)
+        self.assertIn("正在等待六维有效性验证", component["review_notes"][-1])
+        report_html = (self.run / "report.html").read_text(encoding="utf-8")
+        self.assertIn("result=g.classification||'verification_incomplete'", report_html)
 
     def test_protected_component_is_visible_with_function_and_security_checks(self):
         group = self.semantic_group()
@@ -787,6 +808,17 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertEqual(model["coverage"]["status"], "部分完成")
         self.assertEqual(model["summary"]["tasks"], {"exhausted": 1})
 
+        resumed = resume_run(self.run)
+        self.assertEqual(resumed["requeued_task_ids"], [task["task_id"]])
+        self.assertEqual(status(self.run)["run"]["status"], "running")
+        retried = self.claim("component_semantic_analysis")
+        self.write_submission(retried, self.semantic_result(retried, [], "excluded"))
+        reconciled = reconcile_batch(self.run)
+        self.assertEqual(reconciled["completed"], 1)
+        self.assertTrue(readiness(self.run)["ready"])
+        finalize_run(self.run)
+        self.assertEqual(status(self.run)["tasks"], {"completed": 1})
+
     def test_batch_cli_replaces_per_task_control_commands(self):
         args = runtime_parser().parse_args(["claim-batch", str(self.run)])
         claimed = runtime_dispatch(args)
@@ -794,6 +826,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         for removed in ("next", "submit", "fail", "recover", "validate-ready"):
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 runtime_parser().parse_args([removed, str(self.run)])
+        resumed = runtime_parser().parse_args(["resume", str(self.run)])
+        self.assertEqual(resumed.command, "resume")
 
     def test_six_components_fill_five_semantic_slots(self):
         candidates = [{"candidate_id": f"PE-{index}", "component_id": f"CMP-{index}",
@@ -850,9 +884,11 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                                         "--capability", "CAP-INJ-001"])
         component = parser.parse_args(["prepare", "--target-repo", str(self.target), "--mode", "full",
                                        "--component", "EntryAbility"])
+        incremental = parser.parse_args(["prepare", "--target-repo", str(self.target), "--mode", "incremental"])
         self.assertEqual(full.mode, "full")
         self.assertEqual(capability.capability, ["CAP-INJ-001"])
         self.assertEqual(component.component, ["EntryAbility"])
+        self.assertEqual(incremental.mode, "incremental")
 
 
 if __name__ == "__main__":

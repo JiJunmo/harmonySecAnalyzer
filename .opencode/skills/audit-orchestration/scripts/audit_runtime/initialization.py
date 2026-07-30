@@ -42,6 +42,16 @@ def prepare_run(target_repo, mode="full", capabilities=None, components=None, at
     except ValueError as exc:
         return {"ok": False, "stage": "request_validation", "error": str(exc)}
 
+    incremental = None
+    if mode == "incremental":
+        if components:
+            return {"ok": False, "stage": "request_validation", "error": "incremental_mode_cannot_filter_components"}
+        try:
+            from .incremental import plan_incremental
+            incremental = plan_incremental(target, model)
+        except ValueError as exc:
+            return {"ok": False, "stage": "incremental_planning", "error": str(exc)}
+
     indexer = _load_module("harmony_atlas_indexer", PROJECT_MODELING_SCRIPTS / "atlas_indexer.py")
     with tempfile.TemporaryDirectory(prefix="harmony-audit-prepare-") as temp_dir:
         index_output = Path(temp_dir) / "index_status.json"
@@ -56,6 +66,14 @@ def prepare_run(target_repo, mode="full", capabilities=None, components=None, at
     paths = run_paths(allocated["run_dir"])
     write_json(paths["project_model"], model)
     write_json(paths["root"] / "atlas" / "index_status.json", index_status)
+    if incremental:
+        write_json(paths["change_set"], incremental["change_set"])
+        write_json(paths["impact_plan"], incremental["impact_plan"])
+        write_json(paths["baseline_semantics"], incremental["baseline"]["semantic_results"])
+        write_json(paths["baseline_validations"], incremental["baseline"]["validation_results"])
+        write_json(paths["baseline_findings"], {
+            "schema_version": 1, "items": incremental["baseline"]["findings"],
+        })
     initialized = initialize_run(allocated["run_dir"], paths["project_model"])
     from .reporting import refresh_live_report
     live_report = refresh_live_report(allocated["run_dir"])
@@ -67,5 +85,10 @@ def prepare_run(target_repo, mode="full", capabilities=None, components=None, at
         "initial_task_ids": initialized["task_ids"],
         "entry_candidates": initialized["entry_candidates"],
         "analysis_units": initialized["analysis_units"],
+        "reused_semantic_analyses": initialized.get("reused_semantic_analyses", 0),
+        "incremental": ({
+            "change_set": incremental["change_set"],
+            "impact_plan": incremental["impact_plan"],
+        } if incremental else None),
         "live_report": live_report,
     }

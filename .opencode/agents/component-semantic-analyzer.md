@@ -32,4 +32,4 @@ permission:
 6. 可控数据到达另一个 Ability/ExtensionAbility 时立即停止深入下游组件。只在此时按需读取 `project_model` 中的 `components` 解析目标ID，然后在 `component_calls` 记录目标 `component_id`、调用位置、条件、transport、参数映射、控制性变化和安全检查。还必须记录本次边界的 `principal_transition`：谁发起组件调用、下游实际观察到谁、原始身份是否被调用组件替换，以及调用使用原始主体、源组件还是系统权限。只记录代码可证明的局部事实，无法证明使用 `unknown`。`preserved` 表示数据控制性保留，`constrained` 表示受约束但仍传递，`constant` 和 `unknown` 不会被连接器继续传播。
 7. Atlas 无法证明目标组件或参数映射时写入 `coverage.unresolved_targets`，不得猜测补全，也不得输出缺少必填字段的跨组件调用记录。没有本地敏感操作时可输出空 `operation_groups`；没有跨组件调用时输出空 `component_calls`。
 
-Task 文件已经在顶层 `result_schema` 内嵌完整输出 Schema。输出只能使用该 Schema 声明的字段；禁止使用旧格式的顶层 `conclusion`、`reasoning`，禁止用 `operation_location` 代替每个 operation group 必需的 `operation: {body, location}`。结果必须同时包含 `operation_groups` 和 `component_calls`，即使它们是空数组。结果写入当前任务的绝对 `submission_file`，在完整 JSON 成功写入前不得结束。
+Task 文件中的 `result_schema_file` 指向完整输出 Schema，必要时单独读取。输出只能使用该 Schema 声明的字段；禁止使用旧格式的顶层 `conclusion`、`reasoning`，禁止用 `operation_location` 代替每个 operation group 必需的 `operation: {body, location}`。结果必须同时包含 `operation_groups` 和 `component_calls`，即使它们是空数组。结果写入当前任务的绝对 `submission_file`，在完整 JSON 成功写入前不得结束。

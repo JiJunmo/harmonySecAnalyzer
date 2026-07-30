@@ -273,6 +273,8 @@ def finalize_run(run_dir):
     if not ready["ready"]:
         raise ValueError("run_not_ready:" + ",".join(ready["reasons"]))
     result = build_report(run_dir, report_status="complete")
+    from .incremental import save_baseline
+    baseline = save_baseline(run_dir)
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn, transaction(conn):
         run = run_row(conn)
@@ -280,7 +282,41 @@ def finalize_run(run_dir):
         conn.execute("UPDATE runs SET status='complete',updated_at=?,finalized_at=? WHERE run_id=?", (stamp, stamp, run["run_id"]))
         append_event(conn, "run_finalized", run["run_id"], result)
     update_session(paths, "complete")
-    return {"ok": True, **result}
+    return {"ok": True, **result, "baseline": baseline}
+
+
+def resume_run(run_dir):
+    """Reopen a finalized partial run and retry only its exhausted tasks."""
+    paths = run_paths(run_dir)
+    with database(paths["db"]) as conn, transaction(conn):
+        run = run_row(conn)
+        if run["status"] != "complete":
+            raise ValueError(f"run_not_complete:{run['status']}")
+        exhausted = [row["task_id"] for row in conn.execute(
+            "SELECT task_id FROM tasks WHERE status='exhausted' ORDER BY created_at,task_id"
+        )]
+        if not exhausted:
+            raise ValueError("run_has_no_exhausted_tasks")
+        stamp = now()
+        conn.execute(
+            "UPDATE tasks SET status='queued',attempts=0,error=NULL,result_ref=NULL,updated_at=? "
+            "WHERE status='exhausted'",
+            (stamp,),
+        )
+        conn.execute(
+            "UPDATE runs SET status='running',error=NULL,updated_at=?,finalized_at=NULL WHERE run_id=?",
+            (stamp, run["run_id"]),
+        )
+        append_event(conn, "run_resumed", run["run_id"], {"task_ids": exhausted})
+        target_repo = run["target_repo"]
+    update_session(paths, "running")
+    from .reporting import refresh_live_report
+    live_report = refresh_live_report(run_dir)
+    return {
+        "ok": True, "run_dir": str(paths["root"]), "target_repo": target_repo,
+        "requeued_task_ids": exhausted, "count": len(exhausted),
+        "live_report": live_report,
+    }
 
 
 def status(run_dir):

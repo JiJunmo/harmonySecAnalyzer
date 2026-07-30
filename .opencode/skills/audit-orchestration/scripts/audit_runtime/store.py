@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS runs(
   run_id TEXT PRIMARY KEY,
   target_repo TEXT NOT NULL,
-  audit_mode TEXT NOT NULL CHECK(audit_mode IN ('full','capability')),
+  audit_mode TEXT NOT NULL CHECK(audit_mode IN ('full','capability','incremental')),
   capability_filter_json TEXT NOT NULL,
   component_filter_json TEXT NOT NULL,
   correlation_status TEXT NOT NULL DEFAULT 'pending' CHECK(correlation_status IN ('pending','complete')),

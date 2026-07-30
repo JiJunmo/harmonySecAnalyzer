@@ -33,7 +33,7 @@ def _handle(row, paths):
     }
     handle["worker_prompt"] = (
         f"只处理这个 {row['kind']} 审计任务。读取 task_file={handle['task_file']}，"
-        f"该文件顶层 result_schema 已内嵌完整输出契约，必须严格按它生成结果并写入 "
+        f"任务文件中的 result_schema_file 指向完整输出契约，必须严格按它生成结果并写入 "
         f"submission_file={handle['submission_file']}。task_id={row['task_id']}，"
         f"attempt={row['attempts']}。不要处理其他任务，不要修改中央状态或报告。"
         f"在 submission_file 成功写入完整 JSON 前不得结束。"
@@ -61,7 +61,7 @@ def claim_batch(run_dir, limit=MAX_CONCURRENT_TASKS, worker="harmony-auditor"):
         if run["correlation_status"] == "pending" and not semantic_queued:
             expanded = enqueue_component_call_targets(conn, paths["project_model"])
             if not expanded:
-                correlate_components(conn, run["run_id"])
+                correlate_components(conn, run["run_id"], paths)
         rows = conn.execute(
             """SELECT * FROM tasks WHERE status='queued'
                ORDER BY created_at,task_id LIMIT ?""", (requested,),
@@ -79,7 +79,6 @@ def claim_batch(run_dir, limit=MAX_CONCURRENT_TASKS, worker="harmony-auditor"):
                 "task_file": handle["task_file"],
                 "submission_file": handle["submission_file"],
                 "result_schema_file": handle["result_schema_file"],
-                "result_schema": read_json(handle["result_schema_file"]),
             })
             for stale in paths["tasks"].glob(f"{row['task_id']}.attempt-*.submission.json"):
                 stale.unlink(missing_ok=True)

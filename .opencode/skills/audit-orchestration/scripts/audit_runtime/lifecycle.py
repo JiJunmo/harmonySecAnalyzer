@@ -1,6 +1,7 @@
 """Run allocation and deterministic initialization."""
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ def validate_run_request(mode="full", capabilities=None):
         raise ValueError("capability_mode_requires_filter")
     if mode == "full" and selected:
         raise ValueError("full_mode_cannot_filter_capabilities")
+    if mode == "incremental" and selected:
+        raise ValueError("incremental_mode_cannot_filter_capabilities")
     load_capabilities(selected)
     return selected
 
@@ -163,6 +166,8 @@ def new_run(reports_root, target_repo, mode="full", capabilities=None, component
     selected_components = list(dict.fromkeys(
         str(component).strip() for component in (components or []) if str(component).strip()
     ))
+    if mode == "incremental" and selected_components:
+        raise ValueError("incremental_mode_cannot_filter_components")
     root = Path(reports_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -191,6 +196,29 @@ def new_run(reports_root, target_repo, mode="full", capabilities=None, component
     return {"ok": True, "run_id": run_id, "run_dir": str(run_dir)}
 
 
+def _reuse_semantic_result(conn, paths, task, entry_id, snapshot):
+    """Import one schema-valid semantic result through the normal persistence contract."""
+    from .commands import _merge_semantic_analysis
+    from .contracts import normalize_submission, validate_submission
+
+    result = json.loads(json.dumps(snapshot.get("result", {})))
+    result["task_id"] = task["task_id"]
+    result["entry_id"] = entry_id
+    result = normalize_submission(result, task, conn)
+    errors = validate_submission(result, task, conn)
+    if errors:
+        return False, errors
+    _merge_semantic_analysis(conn, task, result)
+    result_ref = paths["tasks"] / f"{task['task_id']}.result.json"
+    write_json(result_ref, result)
+    conn.execute(
+        "UPDATE tasks SET status='completed',result_ref=?,error=NULL,updated_at=? WHERE task_id=?",
+        (str(result_ref), now(), task["task_id"]),
+    )
+    append_event(conn, "semantic_result_reused", entry_id, {"task_id": task["task_id"]})
+    return True, []
+
+
 def initialize_run(run_dir, project_model):
     paths = ensure_run_dirs(run_dir)
     source = Path(project_model).expanduser().resolve()
@@ -210,14 +238,25 @@ def initialize_run(run_dir, project_model):
         selected_candidate_ids = {row["candidate_id"] for row in selected_candidates}
         capabilities = load_capabilities(row_json(run, "capability_filter_json", []))
         profiles = capability_scope(capabilities)
+        impact_plan = read_json(paths["impact_plan"], {}) if run["audit_mode"] == "incremental" else {}
+        baseline_semantics = read_json(paths["baseline_semantics"], {}) if run["audit_mode"] == "incremental" else {}
+        affected_entry_keys = set(impact_plan.get("affected_entries", []))
         task_ids = []
         entry_ids = []
+        reused_entry_ids = []
         for group_key, rows in sorted(_candidate_groups(candidates).items()):
             first = rows[0]
             facets = [_candidate_facet(row) for row in rows]
             explicitly_selected = any(row["candidate_id"] in selected_candidate_ids for row in rows)
             has_external_facet = any(row.get("type") != "component_scope" for row in rows)
-            if component_filter:
+            entry_key = canonical_json([
+                first.get("module_id") or first.get("module_root") or first.get("module_name"),
+                first.get("component_id") or group_key,
+            ])
+            if run["audit_mode"] == "incremental":
+                initial_task = entry_key in affected_entry_keys or entry_key not in baseline_semantics
+                root_eligible = has_external_facet
+            elif component_filter:
                 initial_task = explicitly_selected
                 root_eligible = explicitly_selected and has_external_facet
             elif run["audit_mode"] == "capability":
@@ -228,10 +267,6 @@ def initialize_run(run_dir, project_model):
                 root_eligible = has_external_facet
             component = (first.get("component_name")
                          or f"{first.get('module_name') or 'project'} dynamic {first.get('type')}")
-            entry_key = canonical_json([
-                first.get("module_id") or first.get("module_root") or first.get("module_name"),
-                first.get("component_id") or group_key,
-            ])
             entry_id = stable_id("ENTRY", entry_key)
             symbol = facets[0]["symbol"]
             reachability = "reachable" if any(
@@ -253,17 +288,31 @@ def initialize_run(run_dir, project_model):
                  canonical_json(profiles), canonical_json(payload), now()),
             )
             entry_ids.append(entry_id)
-            if initial_task:
-                task_ids.append(enqueue_task(
+            if initial_task or run["audit_mode"] == "incremental":
+                task_id = enqueue_task(
                     conn, f"component-semantics:{entry_id}", "component_semantic_analysis", entry_id,
                     {"project_model": str(paths["project_model"])},
-                ))
+                )
+                if initial_task:
+                    task_ids.append(task_id)
+                else:
+                    task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+                    reused, errors = _reuse_semantic_result(
+                        conn, paths, task, entry_id, baseline_semantics.get(entry_key, {}),
+                    )
+                    if reused:
+                        reused_entry_ids.append(entry_id)
+                    else:
+                        task_ids.append(task_id)
+                        append_event(conn, "semantic_reuse_rejected", entry_id, {"errors": errors})
         conn.execute("UPDATE runs SET status='running',updated_at=? WHERE run_id=?", (now(), run["run_id"]))
         append_event(conn, "run_initialized", run["run_id"], {
             "entry_candidates": len(candidates), "analysis_units": len(entry_ids),
             "initial_semantic_analysis_tasks": len(task_ids),
+            "reused_semantic_analyses": len(reused_entry_ids),
             "components": component_filter,
         })
     update_session(paths, "running")
     return {"ok": True, "task_ids": task_ids, "entry_ids": entry_ids,
-            "entry_candidates": len(candidates), "analysis_units": len(entry_ids)}
+            "entry_candidates": len(candidates), "analysis_units": len(entry_ids),
+            "reused_semantic_analyses": len(reused_entry_ids)}

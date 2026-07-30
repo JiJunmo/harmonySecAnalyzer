@@ -95,6 +95,12 @@ def run_paths(run_dir):
         "db": root / "run.db",
         "session": root / "session.json",
         "project_model": root / "project" / "project_model.json",
+        "incremental": root / "incremental",
+        "change_set": root / "incremental" / "change_set.json",
+        "impact_plan": root / "incremental" / "impact_plan.json",
+        "baseline_semantics": root / "incremental" / "baseline_semantic_results.json",
+        "baseline_validations": root / "incremental" / "baseline_validation_results.json",
+        "baseline_findings": root / "incremental" / "baseline_findings.json",
         "tasks": root / "tasks",
         "evidence": root / "evidence",
         "exports": root / "exports",
@@ -108,7 +114,7 @@ def run_paths(run_dir):
 
 def ensure_run_dirs(run_dir):
     paths = run_paths(run_dir)
-    for key in ("root", "tasks", "evidence", "exports"):
+    for key in ("root", "tasks", "evidence", "exports", "incremental"):
         paths[key].mkdir(parents=True, exist_ok=True)
     paths["project_model"].parent.mkdir(parents=True, exist_ok=True)
     return paths

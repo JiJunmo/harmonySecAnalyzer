@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 from collections import deque
 
-from .common import canonical_json, normalize_location, normalize_text, now, operation_group_identity, stable_id
+from .common import (canonical_json, normalize_location, normalize_text, now, operation_group_identity,
+                     read_json, stable_id, write_json)
 from .store import append_event, enqueue_task, row_json
-from .task_context import semantic_group_context
+from .task_context import semantic_group_context, validation_group_fingerprint
 
 
 MAX_CORRELATION_STATES_PER_ROOT = 2000
@@ -257,7 +258,30 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
     return group_id, True
 
 
-def correlate_components(conn, run_id):
+def _reuse_validation_task(conn, paths, task, snapshot):
+    from .commands import _merge_exploitability_validation
+    from .contracts import normalize_submission, validate_submission
+
+    result = json.loads(json.dumps(snapshot.get("result", {})))
+    result["task_id"] = task["task_id"]
+    result["entry_id"] = task["subject_id"]
+    result = normalize_submission(result, task, conn)
+    errors = validate_submission(result, task, conn)
+    if errors:
+        append_event(conn, "validation_reuse_rejected", task["subject_id"], {"errors": errors})
+        return False
+    summary = _merge_exploitability_validation(conn, task, result)
+    result_ref = paths["tasks"] / f"{task['task_id']}.result.json"
+    write_json(result_ref, result)
+    conn.execute(
+        "UPDATE tasks SET status='completed',result_ref=?,error=NULL,updated_at=? WHERE task_id=?",
+        (str(result_ref), now(), task["task_id"]),
+    )
+    append_event(conn, "validation_result_reused", task["subject_id"], summary)
+    return True
+
+
+def correlate_components(conn, run_id, paths=None):
     run = conn.execute("SELECT correlation_status FROM runs WHERE run_id=?", (run_id,)).fetchone()
     if not run or run["correlation_status"] == "complete":
         return {"already_complete": True}
@@ -347,23 +371,45 @@ def correlate_components(conn, run_id):
                         path + [selected], next_principal_state,
                     ))
 
+    baseline_entries = {}
+    if paths:
+        run_mode = conn.execute("SELECT audit_mode FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if run_mode and run_mode["audit_mode"] == "incremental":
+            baseline_entries = read_json(paths["baseline_validations"], {}).get("entries", {})
+    reused_validations = 0
     for root_entry_id in roots:
         group_ids = [row["group_id"] for row in conn.execute(
             "SELECT group_id FROM operation_groups WHERE entry_id=? AND validation_required=1 ORDER BY group_id",
             (root_entry_id,),
         )]
         if group_ids:
-            enqueue_task(
+            task_id = enqueue_task(
                 conn, f"exploitability-validation:{root_entry_id}",
                 "exploitability_validation", root_entry_id,
                 {"semantic_group_ids": group_ids, "correlation_complete": True},
             )
+            entry = conn.execute(
+                "SELECT entry_key,payload_json FROM entries WHERE entry_id=?", (root_entry_id,)
+            ).fetchone()
+            payload = row_json(entry, "payload_json", {})
+            snapshot = baseline_entries.get(entry["entry_key"], {}) if entry else {}
+            current_fingerprints = {
+                group_id: validation_group_fingerprint(conn, group_id) for group_id in group_ids
+            }
+            if (
+                entry and not payload.get("initial_scope")
+                and snapshot.get("group_fingerprints") == current_fingerprints
+            ):
+                task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+                if _reuse_validation_task(conn, paths, task, snapshot):
+                    reused_validations += 1
 
     if truncated_roots:
         gaps.extend({"type": "state_limit", "root_entry_id": value} for value in truncated_roots)
     summary = {
         "roots": len(roots), "component_calls": sum(len(rows) for rows in adjacency.values()),
         "states_visited": states_visited, "composed_groups": len(composed_ids),
+        "validation_tasks_reused": reused_validations,
         "validation_groups": conn.execute(
             "SELECT COUNT(*) n FROM operation_groups WHERE validation_required=1"
         ).fetchone()["n"],
