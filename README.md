@@ -28,6 +28,8 @@ python3 deploy.py --global
 | 组件关联与六维验证 | Python Correlator、`exploitability-validator` Agent | 跨组件参数与身份链、每个操作组的六维结论、反证和漏洞分类 |
 | 状态与报告 | `audit-orchestration` Skill | SQLite 状态、根因聚合、漏洞证据路径、JSON/Markdown/HTML |
 
+CAP-DOS-001 用于 ArkTS 可用性安全审计，覆盖外部可触发的崩溃、无界或可放大的 CPU/内存/线程/队列/存储消耗，以及可重复的 IPC 和 CommonEvent 资源耗尽。Native/NAPI 层 DoS 不在当前范围内。
+
 `run.db` 是运行状态唯一事实源。`exports/attack_matrix.json` 是入口、实际操作组和 Finding 的确定性覆盖视图。
 
 完整设计见 [DESIGN.md](DESIGN.md)。

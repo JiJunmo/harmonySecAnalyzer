@@ -438,6 +438,20 @@ def _render_markdown(model):
                 f"- **{group.get('title') or group['group_id']}**：{_label(group.get('classification') or 'no_exploitable_path')}；"
                 f"操作 `{operation.get('body') or group.get('operation_location')}`，位置 `{operation.get('location') or group.get('operation_location')}`；{conclusion}"
             )
+            availability = group.get("availability") or {}
+            availability_analysis = group.get("availability_analysis") or {}
+            if availability:
+                lines.append(
+                    f"  - 可用性事实：{availability.get('resource_or_failure')}；"
+                    f"上限/放大关系：{availability.get('limit_or_amplification')}；"
+                    f"异常处理/隔离：{availability.get('exception_or_isolation')}；"
+                    f"影响范围：{availability.get('affected_scope')}"
+                )
+            if availability_analysis:
+                lines.append(
+                    f"  - DoS验证：{availability_analysis.get('reason')}；"
+                    f"恢复方式：{availability_analysis.get('recovery')}"
+                )
         lines.extend(["", "#### 防护事实", ""])
         if not component["security_checks"]:
             lines.append("- 未观察到显式防护事实；若组件未执行安全相关操作，这不表示组件存在漏洞。")
@@ -484,6 +498,7 @@ def _render_html(model):
                 "group_id", "scope", "title", "category", "classification", "operation", "operation_location",
                 "controlled_properties", "context", "security_checks", "impact", "demotion_reason", "evidence_gap",
                 "business_intent", "security_boundary", "exploitability", "counter_evidence", "component_chain",
+                "availability", "availability_analysis",
             )} | {"facts": [{key: fact.get(key) for key in (
                 "type", "body", "location", "evidence_refs",
             )} for fact in group.get("facts", [])]} for group in component["operation_groups"]],

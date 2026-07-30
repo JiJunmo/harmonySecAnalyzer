@@ -83,6 +83,10 @@ def _remap_group_evidence(group, evidence_ids):
         for row in payload.get(key, []):
             row["evidence_refs"] = _refs(row.get("evidence_refs", []), evidence_ids)
     payload["context"]["evidence_refs"] = _refs(payload["context"].get("evidence_refs", []), evidence_ids)
+    if payload.get("availability"):
+        payload["availability"]["evidence_refs"] = _refs(
+            payload["availability"].get("evidence_refs", []), evidence_ids
+        )
     return payload
 
 
@@ -224,6 +228,10 @@ def _merge_exploitability_validation(conn, task, result):
         if validation.get("principal_analysis"):
             validation["principal_analysis"]["evidence_refs"] = _refs(
                 validation["principal_analysis"].get("evidence_refs", []), evidence_ids
+            )
+        if validation.get("availability_analysis"):
+            validation["availability_analysis"]["evidence_refs"] = _refs(
+                validation["availability_analysis"].get("evidence_refs", []), evidence_ids
             )
         for counter in validation.get("counter_evidence", []):
             counter["evidence_refs"] = _refs(counter.get("evidence_refs", []), evidence_ids)

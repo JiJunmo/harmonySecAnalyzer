@@ -119,6 +119,24 @@
         "evidence_refs": {"$ref": "#/$defs/refs"}
       }, "additionalProperties": false
     },
+    "availability": {
+      "type": "object",
+      "required": [
+        "resource_or_failure", "attacker_influence", "limit_or_amplification",
+        "exception_or_isolation", "repeat_trigger", "affected_scope", "recovery", "evidence_refs"
+      ],
+      "properties": {
+        "resource_or_failure": {"type": "string", "minLength": 1},
+        "attacker_influence": {"type": "string", "minLength": 1},
+        "limit_or_amplification": {"type": "string", "minLength": 1},
+        "exception_or_isolation": {"type": "string", "minLength": 1},
+        "repeat_trigger": {"type": "string", "minLength": 1},
+        "affected_scope": {"type": "string", "minLength": 1},
+        "recovery": {"type": "string", "minLength": 1},
+        "evidence_refs": {"$ref": "#/$defs/refs"}
+      },
+      "additionalProperties": false
+    },
     "group": {
       "type": "object",
       "required": ["group_key", "category", "capability_id", "title", "operation", "controlled_properties", "context", "branches", "facts", "security_checks", "evidence_refs"],
@@ -130,12 +148,21 @@
         }, "additionalProperties": false},
         "controlled_properties": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "context": {"$ref": "#/$defs/context"},
+        "availability": {"$ref": "#/$defs/availability"},
         "branches": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/branch"}},
         "facts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/fact"}},
         "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
         "security_checks": {"type": "array", "items": {"$ref": "#/$defs/security_check"}},
         "evidence_refs": {"$ref": "#/$defs/refs"}
-      }, "additionalProperties": false
+      },
+      "allOf": [{
+        "if": {"properties": {"capability_id": {"const": "CAP-DOS-001"}}},
+        "then": {
+          "required": ["availability"],
+          "properties": {"category": {"const": "availability"}}
+        }
+      }],
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

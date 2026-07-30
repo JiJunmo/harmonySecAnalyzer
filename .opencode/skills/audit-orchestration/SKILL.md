@@ -25,6 +25,8 @@ AI 任务严格分成 `component_semantic_analysis` 和 `exploitability_validati
 
 Operation Group 只按操作源码位置和关键受控参数集合拆分，普通分支、防护代码和业务上下文作为组内事实。跨组件关联额外按身份是否保留、下游观察主体、实际权限和 安全检查 约束对象区分安全语义，避免把正常身份透传与代理借权路径合并。运行时验证语义证据后再要求每个组有且只有一个六维结论；验证结果不能引用语义阶段不存在的证据。只有 confirmed vulnerability 和 residual risk 生成 Finding 及报告证据路径。
 
+`CAP-DOS-001` 仍使用上述 Operation Group 和六维验证。语义结果必须额外记录受影响资源/失败、输入上限或放大关系、异常隔离、重复触发、影响范围和恢复方式。验证阶段只有在单次触发足以致命或攻击者可重复放大、存在实质可用性损失且没有有效限制/隔离时才允许确认漏洞。
+
 编排者调用一次 `claim-batch` 领取最多 5 个任务，并在同一条 assistant 消息中一次派发全部句柄。整批返回后只调用一次 `reconcile-batch`；脚本检查每个任务约定的 submission 文件，接收有效结果，并将缺失或无效结果重新排队。第三次仍没有有效结果时只将该任务标记为 `exhausted`，不终止其他组件。会话中断后也使用同一个收敛命令，不存在独立恢复分支。
 
 `prepare` 完成后立即创建动态 `report.html`；`claim-batch` 和 `reconcile-batch` 会用当前 SQLite 状态原子更新文件，用户刷新浏览器即可查看最新进度。中间更新不生成 Markdown、导出文件或最终快照，`finalize` 才生成完整正式产物。

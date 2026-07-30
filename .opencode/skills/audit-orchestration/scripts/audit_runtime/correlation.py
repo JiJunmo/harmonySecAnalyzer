@@ -210,6 +210,8 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
         "call_ids": [row["call_id"] for row in path], "parameter_lineage": lineage,
         "principal_lineage": principal_lineage, "principal_state": principal_state,
     }
+    if sink.get("availability"):
+        group["availability"] = sink["availability"]
     group["edges"] = [{
         "from": source["fact_key"], "to": target["fact_key"], "kind": "next",
         "evidence_refs": sorted(set(source.get("evidence_refs", [])) | set(target.get("evidence_refs", []))),

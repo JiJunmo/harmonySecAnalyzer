@@ -141,6 +141,20 @@
       "status": "planned"
     },
     {
+      "capability_id": "CAP-DOS-001",
+      "title": "Externally triggered crash or availability resource exhaustion",
+      "domain": "availability",
+      "entry_types": [
+        "deeplink",
+        "exported_ability",
+        "want",
+        "provider",
+        "common_event",
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
       "capability_id": "CAP-ARCHIVE-001",
       "title": "Untrusted archive extraction or dynamic load",
       "domain": "archive",

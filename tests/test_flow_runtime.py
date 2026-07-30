@@ -95,6 +95,43 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "security_checks": [], "evidence_refs": ["EV-TRACE"],
         }
 
+    @classmethod
+    def dos_group(cls):
+        group = cls.semantic_group()
+        group.update({
+            "group_key": "unbounded-worker-allocation",
+            "category": "availability",
+            "capability_id": "CAP-DOS-001",
+            "title": "外部数量参数触发无界任务分配",
+            "operation": {"body": "allocate worker tasks in a caller-sized loop", "location": "Worker.ets:42"},
+            "controlled_properties": ["want.parameters.count"],
+            "context": {
+                "external_actor": "三方应用",
+                "intended_behavior": "按请求数量创建后台处理任务",
+                "protected_assets": ["应用进程可用性", "任务队列"],
+                "observed_effect": "任务数量随外部 count 线性增长直至进程资源耗尽",
+                "evidence_refs": ["EV-TRACE"],
+            },
+            "availability": {
+                "resource_or_failure": "任务队列和内存持续增长，最终导致应用进程不可用",
+                "attacker_influence": "外部调用者完全控制 count",
+                "limit_or_amplification": "count 未设置上限，每次调用按 count 创建任务",
+                "exception_or_isolation": "任务创建没有异常捕获，也没有独立进程隔离",
+                "repeat_trigger": "导出组件可被三方应用重复调用",
+                "affected_scope": "应用主进程及其全部组件",
+                "recovery": "需要系统终止并重启应用进程",
+                "evidence_refs": ["EV-TRACE"],
+            },
+        })
+        group["facts"][1]["body"] = "count comes from Want"
+        group["facts"][2].update({
+            "body": "allocate worker tasks in a caller-sized loop", "location": "Worker.ets:42",
+        })
+        group["facts"][3].update({
+            "body": "task queue and memory grow until process failure", "location": "Worker.ets:48",
+        })
+        return group
+
     def semantic_result(self, task, groups, entry_status="confirmed", component_calls=None):
         return {
             "task_id": task["task_id"], "entry_id": task["subject_id"], "summary": "语义分析完成",
@@ -199,6 +236,78 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         )
         self.assertEqual(semantic_task["result_schema"]["required"],
                          ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_calls", "evidence"])
+
+    def test_dos_capability_requires_availability_evidence_and_validation(self):
+        allocated = new_run(self.root / "dos-reports", self.target, "capability", ["CAP-DOS-001"])
+        run = Path(allocated["run_dir"])
+        initialize_run(run, self.model)
+
+        semantic_task = self.claim("component_semantic_analysis", run)
+        self.assertEqual([row["capability_id"] for row in semantic_task["input"]["audit_scope"]], ["CAP-DOS-001"])
+        self.assertIn("availability_requirements", semantic_task["input"]["analysis_contract"])
+        group = self.dos_group()
+        without_availability = json.loads(json.dumps(group))
+        without_availability.pop("availability")
+        rejected = submit_result(
+            run, semantic_task["task_id"],
+            self.write_submission(semantic_task, self.semantic_result(semantic_task, [without_availability])),
+            semantic_task["attempt"],
+        )
+        self.assertFalse(rejected["accepted"])
+        self.assertIn("availability", rejected["error"])
+
+        semantic_task = self.claim("component_semantic_analysis", run)
+        accepted = submit_result(
+            run, semantic_task["task_id"],
+            self.write_submission(semantic_task, self.semantic_result(semantic_task, [group])),
+            semantic_task["attempt"],
+        )
+        self.assertTrue(accepted["accepted"], accepted)
+
+        validation_task = self.claim("exploitability_validation", run)
+        persisted_group = validation_task["input"]["semantic_analysis"]["operation_groups"][0]
+        validation = self.validation_for(persisted_group)
+        validation.update({
+            "title": "外部数量参数可耗尽应用任务资源",
+            "impact": "三方应用可使目标应用主进程失去可用性",
+            "cwe": "CWE-400",
+            "poc": "Repeatedly invoke the exported component with an unbounded count value",
+            "availability_analysis": {
+                "single_trigger_fatal_or_repeatable": True,
+                "amplified_consumption_or_fatal_failure": True,
+                "effective_containment": True,
+                "material_availability_loss": True,
+                "affected_scope": "应用主进程及其全部组件",
+                "recovery": "需要系统终止并重启应用进程",
+                "reason": "外部 count 无上限并直接决定任务分配数量",
+                "evidence_refs": persisted_group["evidence_refs"],
+            },
+        })
+        rejected = submit_result(
+            run, validation_task["task_id"], self.write_submission(validation_task, {
+                "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
+                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [],
+            }), validation_task["attempt"],
+        )
+        self.assertFalse(rejected["accepted"])
+        self.assertIn("effective_containment", rejected["error"])
+
+        validation_task = self.claim("exploitability_validation", run)
+        validation["availability_analysis"]["effective_containment"] = False
+        accepted = submit_result(
+            run, validation_task["task_id"], self.write_submission(validation_task, {
+                "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
+                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [],
+            }), validation_task["attempt"],
+        )
+        self.assertTrue(accepted["accepted"], accepted)
+        report = build_report_ready(run)
+        self.assertTrue(report["ok"], report)
+        model = json.loads((run / "report_model.json").read_text(encoding="utf-8"))
+        self.assertEqual(model["component_results"][0]["operation_groups"][0]["availability"]["affected_scope"],
+                         "应用主进程及其全部组件")
+        self.assertFalse(model["component_results"][0]["operation_groups"][0]
+                         ["availability_analysis"]["effective_containment"])
 
     def test_malformed_legacy_shape_returns_schema_error_without_runtime_crash(self):
         task = self.claim("component_semantic_analysis")

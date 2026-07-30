@@ -89,17 +89,26 @@ def task_context(conn, task):
         profile_ids = set(entry.get("profiles", [])) if entry else set()
         profiles = [{key: row.get(key) for key in ("capability_id", "title", "domain")}
                     for row in load_capabilities() if row["capability_id"] in profile_ids]
+        analysis_contract = {
+            "task_unit": "one deterministic component analysis unit",
+            "phases": ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_calls", "merge_equivalent_operations", "record_gaps"],
+            "group_by": ["operation_location", "controlled_properties"],
+            "stop_at": "component_call",
+            "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
+        }
+        if "CAP-DOS-001" in profile_ids:
+            analysis_contract["availability_requirements"] = [
+                "externally_triggered_failure_or_resource_consumption",
+                "attacker_scale_or_repeatability",
+                "bounds_and_amplification",
+                "exception_handling_or_isolation",
+                "affected_scope_and_recovery",
+            ]
         return {
             **payload,
             "entry": entry,
             "audit_scope": profiles,
-            "analysis_contract": {
-                "task_unit": "one deterministic component analysis unit",
-                "phases": ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_calls", "merge_equivalent_operations", "record_gaps"],
-                "group_by": ["operation_location", "controlled_properties"],
-                "stop_at": "component_call",
-                "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
-            },
+            "analysis_contract": analysis_contract,
         }
     if task["kind"] == "exploitability_validation":
         analysis = conn.execute(

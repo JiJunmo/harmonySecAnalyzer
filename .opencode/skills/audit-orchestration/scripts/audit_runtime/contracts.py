@@ -171,6 +171,7 @@ def _semantic_refs(group):
         for row in group.get(key, []):
             refs.extend(row.get("evidence_refs", []))
     refs.extend(group.get("context", {}).get("evidence_refs", []))
+    refs.extend(group.get("availability", {}).get("evidence_refs", []))
     return refs
 
 
@@ -213,6 +214,15 @@ def validate_semantic_analysis(result, task, conn):
     if len(identities) != len(set(identities)):
         errors.append("equivalent_operation_groups_must_merge")
     payload = row_json(task, "input_json", {})
+    entry = conn.execute("SELECT profiles_json FROM entries WHERE entry_id=?", (task["subject_id"],)).fetchone()
+    allowed_capabilities = set(row_json(entry, "profiles_json", [])) if entry else set()
+    run = conn.execute("SELECT audit_mode FROM runs LIMIT 1").fetchone()
+    for index, group in enumerate(result.get("operation_groups", [])):
+        capability_id = group.get("capability_id")
+        if run and run["audit_mode"] == "capability" and not capability_id:
+            errors.append(f"operation_groups[{index}]:capability_id_required_in_scoped_audit")
+        if capability_id and capability_id not in allowed_capabilities:
+            errors.append(f"operation_groups[{index}]:capability_outside_audit_scope:{capability_id}")
     project = read_json(payload.get("project_model"), {})
     known_components = {
         row.get("component_id") for row in project.get("components", []) if row.get("component_id")
@@ -273,6 +283,7 @@ def validate_exploitability(result, task, conn):
         refs.extend(validation.get("business_intent", {}).get("evidence_refs", []))
         refs.extend(validation.get("security_boundary", {}).get("evidence_refs", []))
         refs.extend(validation.get("principal_analysis", {}).get("evidence_refs", []))
+        refs.extend(validation.get("availability_analysis", {}).get("evidence_refs", []))
         for counter in validation.get("counter_evidence", []):
             refs.extend(counter.get("evidence_refs", []))
         missing = set(refs) - known_evidence
@@ -281,6 +292,8 @@ def validate_exploitability(result, task, conn):
         checks = validation.get("exploitability", {})
         if group.get("scope") == "cross_component" and not validation.get("principal_analysis"):
             errors.append(f"{label}:cross_component_requires_principal_analysis")
+        if validation.get("capability_id") != group.get("capability_id"):
+            errors.append(f"{label}:capability_id_mismatch")
         if validation.get("classification") == "confirmed_vulnerability":
             if entry_status != "confirmed":
                 errors.append(f"{label}:confirmed_vulnerability_requires_confirmed_entry")
