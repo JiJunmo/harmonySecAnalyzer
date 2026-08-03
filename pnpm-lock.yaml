@@ -10,6 +10,10 @@ overrides:
 importers:
 
   .:
+    dependencies:
+      '@agent-platform/harmony-audit':
+        specifier: workspace:*
+        version: link:packages/harmony-audit
     devDependencies:
       '@types/node':
         specifier: ^26.1.2

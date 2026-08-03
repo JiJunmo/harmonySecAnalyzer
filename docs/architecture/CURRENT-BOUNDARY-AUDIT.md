@@ -32,13 +32,14 @@ apps/web + apps/cli
 - 删除未进入运行链路的旧 `ModelManager`，模型与认证统一由 Pi 官方配置管理；
 - 删除重复的基础 Tool Registry，通用助手直接使用 Pi 工具体系；
 - 删除已被 Plugin Host 替代的 `AgentKernel`/Registry 路由实现；
-- 根 workspace 不再声明领域插件和各包运行依赖，依赖由所有者 package 自行声明；
+- 根 workspace 作为部署组合根声明当前安装的领域插件；各包的其他运行依赖仍由所有者 package 自行声明；
 - 保留 Harmony 实际复用的领域无关 `McpManager`、`SkillManager`、`RollingAgentPool` 和 `GraphApplication`；
 - 正式配置、Pi 会话、构建缓存和本地 pnpm store 均与可提交源码分离。
 
 ## 不构成边界泄漏的组合点
 
 - 配置中的 `plugins.modules=["@agent-platform/harmony-audit"]` 是组合根的运行期选择，不是平台源码依赖；
+- 根 `package.json` 安装 Harmony 插件是部署装配，不代表 Core、Interface 或应用服务静态依赖该插件；
 - Harmony 调用 `PiSessionFactory`、`RollingAgentPool` 和 `GraphApplication` 是插件依赖通用机制，方向正确；
 - Harmony Web 资源经 Plugin Web Contribution 暴露，Server 仅做受控静态传输；
 - Host 的 `discoverRuns()` 是通用可选合同，目录扫描和重启修复规则仍由 Harmony Runtime 实现。

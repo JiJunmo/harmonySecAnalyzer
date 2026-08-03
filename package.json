@@ -17,6 +17,9 @@
     "project-profiler": "tsx packages/harmony-audit/src/project/profiler-cli.ts",
     "atlas-indexer": "tsx packages/harmony-audit/src/project/atlas-indexer-cli.ts"
   },
+  "dependencies": {
+    "@agent-platform/harmony-audit": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^26.1.2",
     "tsx": "^4.23.1",
