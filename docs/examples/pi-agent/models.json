@@ -1,0 +1,13 @@
+{
+  "providers": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:8045/v1",
+      "api": "openai-completions",
+      "apiKey": "$AGENT_PLATFORM_MODEL_API_KEY",
+      "models": [
+        { "id": "gemini-3.6-flash-high", "name": "Gemini Flash High", "reasoning": true, "input": ["text", "image"], "contextWindow": 1000000, "maxTokens": 32768 },
+        { "id": "gemini-3.6-pro-high", "name": "Gemini Pro High", "reasoning": true, "input": ["text", "image"], "contextWindow": 1000000, "maxTokens": 65536 }
+      ]
+    }
+  }
+}

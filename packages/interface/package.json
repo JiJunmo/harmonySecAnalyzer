@@ -1,0 +1,16 @@
+{
+  "name": "@agent-platform/interface",
+  "version": "3.2.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./dist/index.js" },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@agent-platform/core": "workspace:*",
+    "better-sqlite3": "^13.0.2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@types/better-sqlite3": "^7.6.13"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "mcp": {
+    "maxSessions": 5,
+    "connectRetries": 2,
+    "retryDelayMs": 100,
+    "healthCheck": true,
+    "servers": {}
+  },
+  "subagents": {
+    "enabled": true,
+    "maxConcurrent": 4,
+    "maxRetained": 100,
+    "model": "local/gemini-3.6-flash-high",
+    "tools": ["read", "bash"]
+  },
+  "reliability": {
+    "dataDirectory": ".agent-platform",
+    "retentionDays": 90,
+    "maxHostRuns": 500,
+    "maxSubagentRuns": 500,
+    "logMaxBytes": 10485760
+  },
+  "plugins": {
+    "modules": ["@agent-platform/harmony-audit"],
+    "configs": {
+      "harmony-audit": {
+        "atlasExecutable": "/absolute/path/to/atlas",
+        "allowedRoots": ["/absolute/path/to/auditable/projects"],
+        "capacity": 5,
+        "discoverHistory": true,
+        "historyMaxRuns": 500,
+        "eventPollIntervalMs": 500
+      }
+    }
+  }
+}

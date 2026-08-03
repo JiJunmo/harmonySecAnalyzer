@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Agent Platform 通用 AI 助手">
+  <title>Agent Platform</title>
+  <link rel="stylesheet" href="./styles.css?v=4">
+  <link rel="stylesheet" href="./capabilities.css?v=1">
+  <link rel="stylesheet" href="./subagents.css?v=2">
+  <link rel="stylesheet" href="./layout-overrides.css?v=2">
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <header class="brand"><span>AP</span><div><strong>Agent Platform</strong><small>AI WORKSPACE</small></div></header>
+      <button id="catalog-nav" class="primary-nav active" type="button"><span>⌂</span><div>应用中心<small>选择助手或领域插件</small></div></button>
+      <section class="nav-section app-section">
+        <div class="section-heading"><span>应用</span></div>
+        <nav aria-label="应用列表">
+          <button id="assistant-nav" type="button"><span>通用助手</span><small>内置 · 对话与工具调用</small></button>
+          <div id="contributions"><p class="muted">正在载入…</p></div>
+        </nav>
+      </section>
+      <section id="session-section" class="nav-section session-section hidden">
+        <div class="section-heading"><span>对话</span><button id="new-chat" type="button" title="新建对话">＋</button></div>
+        <nav id="sessions" aria-label="对话列表"><p class="muted">暂无对话</p></nav>
+      </section>
+      <section class="nav-section system-section">
+        <div class="section-heading"><span>系统</span></div>
+        <button id="capabilities-nav" class="system-nav" type="button">能力管理 <small>MCP · Skills · Extensions</small></button>
+        <button id="subagents-nav" class="system-nav" type="button">子 Agent <small>委派任务与运行状态</small></button>
+      </section>
+      <footer><div><i id="health-dot"></i><span id="health-text">连接服务</span></div><button id="settings" type="button">访问设置</button></footer>
+    </aside>
+
+    <main>
+      <section id="catalog-view" class="catalog-view">
+        <header class="catalog-header"><div><small>AGENT PLATFORM</small><h1>选择一个应用</h1><p>通用助手与领域插件共享同一套 Agent 引擎，各自提供独立工作流。</p></div><span class="catalog-status"><i></i><b id="catalog-health">正在连接</b></span></header>
+        <div class="catalog-content">
+          <div class="catalog-section-heading"><div><h2>可用应用</h2><p>选择后进入对应工作空间</p></div></div>
+          <div id="app-cards" class="app-cards">
+            <button id="assistant-card" class="app-card builtin" type="button"><span class="app-mark">AI</span><span class="app-copy"><small>内置应用</small><strong>通用助手</strong><span>自由对话、工具调用、Skills 与子 Agent 委派。</span><em>打开应用 →</em></span></button>
+            <div id="plugin-cards" class="plugin-cards"><p class="muted">正在载入插件…</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="assistant-view" class="assistant-view hidden">
+        <header class="chat-header">
+          <div><h1 id="chat-title">新对话</h1><p id="chat-meta">选择模型并开始交谈</p></div>
+          <div class="chat-actions"><select id="model-select" aria-label="选择模型"></select><button id="abort-chat" class="hidden" type="button">停止</button><button id="rename-chat" type="button" disabled>重命名</button><button id="delete-chat" type="button" disabled>删除</button></div>
+        </header>
+        <div id="messages" class="messages" aria-live="polite">
+          <div id="empty-chat" class="empty-chat"><div>✦</div><h2>今天想一起完成什么？</h2><p>这是通用 AI 助手。它可以使用已启用的模型、MCP 工具和 Skills；安全审计等领域能力由插件提供。</p></div>
+        </div>
+        <form id="composer" class="composer">
+          <textarea id="prompt" rows="1" placeholder="给助手发送消息…" aria-label="消息内容"></textarea>
+          <button id="send" type="submit">发送</button>
+          <small id="tool-summary">正在读取可用能力…</small>
+        </form>
+      </section>
+
+      <section id="plugin-view" class="plugin-view hidden">
+        <iframe id="workspace" title="插件工作台"></iframe>
+      </section>
+      <section id="capabilities-view" class="capabilities-view hidden">
+        <header class="plugin-header"><div><small>ASSISTANT CAPABILITIES</small><h1>能力管理</h1></div><button id="reload-capabilities" type="button">重新加载</button></header>
+        <div class="capability-content"><p class="capability-note">修改会写回 Pi settings.json 或平台 MCP 配置，并从下一次新建会话开始生效。</p><div id="capability-groups"><p class="muted">正在读取能力…</p></div></div>
+      </section>
+      <section id="subagents-view" class="subagents-view hidden">
+        <header class="plugin-header"><div><small>DELEGATED EXECUTION</small><h1>子 Agent</h1></div><button id="reload-subagents" type="button">重新加载</button></header>
+        <div class="subagent-content"><p class="capability-note">子 Agent 由主助手通过 <code>delegate_task</code> 创建；选择任务可查看模型消息、工具调用及最终结果。这里只展示 Pi 提供的可见过程事件，不包含模型的隐藏内部状态。</p><div id="subagent-summary"></div><div class="subagent-workspace"><div id="subagent-list"><p class="muted">正在读取运行状态…</p></div><section id="subagent-detail" class="subagent-detail"><p class="subagent-empty">选择一个任务查看完整过程。</p></section></div></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="token-dialog">
+    <form method="dialog">
+      <h2>访问设置</h2>
+      <label>Web API Token<input id="token" type="password" autocomplete="off" placeholder="服务未启用 Token 时留空"></label>
+      <p>Token 仅保存在当前浏览器。</p>
+      <div><button value="cancel">取消</button><button id="save-token" value="default">保存并重载</button></div>
+    </form>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./app.js?v=6"></script>
+</body>
+</html>

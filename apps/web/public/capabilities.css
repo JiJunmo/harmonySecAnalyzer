@@ -1,0 +1,24 @@
+.primary-nav { margin-bottom: 4px; }
+.plugin-view,
+.capabilities-view { display: grid; grid-template-rows: 70px minmax(0, 1fr); height: 100%; }
+.capabilities-view { background: var(--paper); }
+#reload-capabilities { padding: 8px 13px; border: 1px solid var(--line); border-radius: 8px; background: white; cursor: pointer; }
+.capability-content { overflow: auto; padding: 28px max(24px, calc((100% - 980px) / 2)); }
+.capability-note { margin: 0 0 22px; padding: 12px 15px; border: 1px solid #cfd8cf; border-radius: 10px; color: var(--muted); background: #f8faf6; }
+.capability-group { margin-bottom: 24px; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); }
+.capability-group h2 { margin: 0; padding: 13px 17px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.capability-row { display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; align-items: center; gap: 13px; padding: 13px 17px; border-bottom: 1px solid #ebe9e2; }
+.capability-row:last-child { border-bottom: 0; }
+.capability-row > i { width: 8px; height: 8px; border-radius: 50%; background: #a8afa9; }
+.capability-row > i.loaded { background: #74a845; }
+.capability-row > i.failed { background: #c65f4b; }
+.capability-row strong,
+.capability-row small { display: block; }
+.capability-row small { overflow: hidden; text-overflow: ellipsis; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, monospace; white-space: nowrap; }
+.empty-capability { margin: 0; padding: 18px; color: var(--muted); }
+.switch { position: relative; width: 38px; height: 22px; }
+.switch input { position: absolute; opacity: 0; }
+.switch span { position: absolute; inset: 0; border-radius: 20px; background: #c9cdc9; cursor: pointer; transition: .2s; }
+.switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: .2s; }
+.switch input:checked + span { background: var(--green-2); }
+.switch input:checked + span::after { transform: translateX(16px); }

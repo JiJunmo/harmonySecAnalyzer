@@ -1,0 +1,14 @@
+{
+  "name": "@agent-platform/cli",
+  "version": "3.2.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-platform": "./dist/main.js",
+    "harmony-agent": "./dist/main.js"
+  },
+  "dependencies": {
+    "@agent-platform/core": "workspace:*",
+    "@agent-platform/interface": "workspace:*"
+  }
+}

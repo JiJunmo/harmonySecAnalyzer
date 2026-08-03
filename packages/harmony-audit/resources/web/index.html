@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="HarmonyOS 白盒安全审计任务控制台">
+  <title>Harmony Audit Console</title>
+  <link rel="stylesheet" href="./styles.css?v=2">
+  <link rel="stylesheet" href="./readiness.css">
+  <link rel="stylesheet" href="./trace.css">
+  <link rel="stylesheet" href="./layout-overrides.css?v=2">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark">HA</span><div><strong>鸿蒙白盒安全审计</strong><small>Harmony Audit</small></div></div>
+      <div class="header-context"><span id="page-title">审计概览</span></div>
+      <div class="top-actions"><span class="live-pill" id="readiness-pill"><i></i> 检查插件配置</span><button class="secondary" id="adopt-run">导入 Run</button><button class="primary" id="new-run">新建审计</button></div>
+    </header>
+
+    <div class="workspace">
+      <aside class="rail">
+        <div class="section-label"><span>最近运行</span><button class="icon-button" id="refresh" aria-label="刷新运行记录">↻</button></div>
+        <nav id="run-list" class="run-list" aria-label="审计运行记录"><div class="empty compact">尚无运行记录</div></nav>
+        <div class="rail-footer"><span class="health-dot" id="health-dot"></span><span id="health-text">正在连接服务</span><button class="text-button" id="settings">访问设置</button></div>
+      </aside>
+
+      <main>
+
+      <section id="welcome-view" class="view">
+        <div class="hero">
+          <span class="kicker">HARMONYOS WHITE-BOX AUDIT</span>
+          <h2>创建一次安全审计</h2>
+          <p>选择 HarmonyOS 工程后，插件会自动完成项目解析、路径发现、六维验证并生成 HTML 报告。</p>
+          <button class="primary launch" id="hero-new-run">新建审计 <span>→</span></button>
+        </div>
+        <div class="workflow-strip"><div><b>01</b><span>项目解析</span></div><i></i><div><b>02</b><span>路径发现</span></div><i></i><div><b>03</b><span>六维验证</span></div><i></i><div><b>04</b><span>生成报告</span></div></div>
+      </section>
+
+      <section id="create-view" class="view hidden">
+        <div class="panel create-panel">
+          <div class="panel-heading"><div><p class="eyebrow">NEW AUDIT</p><h2>配置审计范围</h2></div><button class="icon-button close-view" aria-label="关闭">×</button></div>
+          <div id="readiness-detail" class="readiness-detail">正在检查 Atlas、模型和审计 Skills…</div>
+          <form id="audit-form">
+            <label class="field wide"><span>HarmonyOS 项目绝对路径</span><div class="input-action"><input id="target" name="target" required placeholder="/absolute/path/to/HarmonyOS-project" autocomplete="off"><button type="button" class="secondary" id="profile-project">解析项目</button></div><small>路径必须位于服务端允许访问的目录中。</small></label>
+            <div id="profile-summary" class="profile-summary hidden"></div>
+            <label class="option incremental-option"><input type="checkbox" id="incremental" name="incremental"><span><strong>增量审计</strong><span>复用最近一次完整无缺口审计的未变化结果；首次使用前必须先完成一次全量审计。</span></span><code>BASELINE</code></label>
+            <details class="scope-options"><summary>审计范围与能力 <small>可选；默认审计全部已启用能力</small></summary><div class="form-grid"><fieldset><legend>组件范围 <small>不选择表示全部</small></legend><div id="component-options" class="option-list"><div class="empty compact">解析项目后显示组件</div></div></fieldset><fieldset><legend>审计能力 <small>不选择表示全部 Enabled</small></legend><div id="capability-options" class="option-list"></div></fieldset></div></details>
+            <div class="form-footer"><label class="field small"><span>并发槽位</span><select id="capacity"><option>1</option><option>2</option><option>3</option><option>4</option><option selected>5</option></select></label><label class="field model"><span>模型别名（可选）</span><input id="model" list="model-options" placeholder="使用配置默认模型"><datalist id="model-options"></datalist></label><button class="primary submit" type="submit" disabled>启动安全审计 <span>→</span></button></div>
+          </form>
+        </div>
+      </section>
+
+      <section id="run-view" class="view hidden">
+        <div class="run-heading"><div><div class="status-line"><span id="run-status" class="status-badge">PREPARING</span><span id="run-updated"></span></div><h2 id="run-target">—</h2><code id="run-id">—</code></div><div class="action-group"><button class="secondary" id="rebuild-report">重建报告</button><button class="secondary" id="resume-run">恢复</button><button class="danger" id="cancel-run">取消</button></div></div>
+        <div class="metrics"><div><span>任务进度</span><strong id="task-progress">0 / 0</strong><div class="meter"><i id="progress-bar"></i></div></div><div><span>确认 Finding</span><strong id="finding-count">0</strong><small>规范化根因</small></div><div><span>覆盖缺口</span><strong id="gap-count">0</strong><small>需要人工关注</small></div><div><span>运行代次</span><strong id="generation">0</strong><small>恢复隔离游标</small></div></div>
+        <div class="content-grid">
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">FINDINGS</p><h3>已确认问题</h3></div></div><div class="table-wrap"><table><thead><tr><th>严重性</th><th>问题</th><th>CWE</th></tr></thead><tbody id="findings"><tr><td colspan="3" class="empty">尚无已确认 Finding</td></tr></tbody></table></div></section>
+          <section class="panel"><div class="panel-heading"><div><p class="eyebrow">COVERAGE</p><h3>覆盖与缺口</h3></div></div><div id="gaps" class="gap-list"><div class="empty">暂无覆盖缺口</div></div></section>
+        </div>
+        <section class="panel activity-panel"><div class="panel-heading"><div><p class="eyebrow">LIVE ACTIVITY</p><h3>执行状态</h3></div><span class="muted" id="pool-caption">等待任务</span></div><div class="slots" id="slots"></div></section>
+        <details class="panel executions-panel"><summary><span><b>子 Agent 任务</b><small>查看任务内容与执行轨迹</small></span><span>展开任务列表 ↓</span></summary><div id="execution-list" class="execution-list"><div class="empty">正在读取任务…</div></div></details>
+        <section class="panel report-panel hidden" id="report-panel"><div><p class="eyebrow">FINAL DELIVERABLE</p><h3>审计报告已生成</h3><p>HTML 适合交互查看，Markdown 适合归档和对外交付。</p></div><div class="report-actions"><a class="secondary button-link" id="open-markdown" target="_blank" rel="noopener">Markdown 报告</a><a class="primary button-link" id="open-report" target="_blank" rel="noopener">打开 HTML →</a></div><span id="report-frame" hidden></span></section>
+      </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="simple-dialog"><form method="dialog"><div class="dialog-heading"><h3 id="dialog-title">设置</h3><button class="icon-button" value="cancel">×</button></div><div id="dialog-body"></div><div class="dialog-actions"><button class="secondary" value="cancel">取消</button><button class="primary" id="dialog-confirm" value="default">确认</button></div></form></dialog>
+  <dialog id="execution-dialog" class="execution-dialog"><div class="trace-dialog"><div class="dialog-heading"><div><p class="eyebrow">EXECUTION TRACE</p><h3 id="execution-title">子 Agent 任务</h3></div><form method="dialog"><button class="icon-button" value="cancel" aria-label="关闭任务详情">×</button></form></div><div id="execution-meta" class="execution-meta"></div><details class="trace-input"><summary>查看任务输入</summary><pre id="execution-input"></pre></details><div id="execution-timeline" class="execution-timeline"></div></div></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./app.js?v=2"></script>
+  <script type="module" src="./report-links.js?v=1"></script>
+</body>
+</html>

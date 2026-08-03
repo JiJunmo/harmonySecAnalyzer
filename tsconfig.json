@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/dummy-plugin" },
+    { "path": "packages/harmony-audit" },
+    { "path": "packages/interface" },
+    { "path": "apps/cli" },
+    { "path": "apps/server" }
+  ]
+}

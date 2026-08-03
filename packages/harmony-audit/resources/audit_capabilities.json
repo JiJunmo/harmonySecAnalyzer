@@ -1,0 +1,247 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {
+      "capability_id": "CAP-INJ-001",
+      "title": "Deeplink or Want input to SQL/command execution",
+      "domain": "injection",
+      "entry_types": [
+        "deeplink",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-FS-001",
+      "title": "Exported component input to file operation or path traversal",
+      "domain": "filesystem",
+      "entry_types": [
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-WEB-001",
+      "title": "External input controls unsafe Web navigation",
+      "domain": "web",
+      "entry_types": [
+        "deeplink",
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-WEB-002",
+      "title": "Untrusted Web origin reaches sensitive JSBridge method",
+      "domain": "web",
+      "entry_types": [
+        "deeplink",
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-ICC-001",
+      "title": "Attacker-controlled Want redirect to private component",
+      "domain": "icc",
+      "entry_types": [
+        "exported_ability",
+        "want"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-PROVIDER-001",
+      "title": "DataShare caller input alters query language structure",
+      "domain": "provider",
+      "entry_types": [
+        "exported_ability",
+        "provider"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-PROVIDER-002",
+      "title": "DataShare file URI or path escapes authorized scope",
+      "domain": "provider",
+      "entry_types": [
+        "exported_ability",
+        "provider"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-PROVIDER-003",
+      "title": "DataShare query crosses caller data ownership boundary",
+      "domain": "provider",
+      "entry_types": [
+        "exported_ability",
+        "provider"
+      ],
+      "status": "enabled",
+      "analysis_scope": "component",
+      "guidance": [
+        "跟踪 DataShare query/insert/update/delete 的调用方身份、选择条件与数据所有者字段",
+        "记录调用方是否只能访问其自身、授权共享或公开数据，以及身份清除和代理调用是否改变所有权边界"
+      ]
+    },
+    {
+      "capability_id": "CAP-ICC-002",
+      "title": "Unauthorized custom CommonEvent triggers protected operation",
+      "domain": "icc",
+      "entry_types": [
+        "common_event"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-ICC-003",
+      "title": "Untrusted custom CommonEvent data reaches sensitive operation",
+      "domain": "icc",
+      "entry_types": [
+        "common_event"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-001",
+      "title": "Unauthorized IPC/RPC server transaction",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-002",
+      "title": "Untrusted IPC/RPC MessageSequence reaches sensitive server operation",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-003",
+      "title": "IPC/RPC confused deputy through calling identity reset",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-IPC-004",
+      "title": "Sensitive IPC/RPC reply disclosure",
+      "domain": "ipc_rpc",
+      "entry_types": [
+        "ipc_transaction"
+      ],
+      "status": "enabled",
+      "analysis_scope": "component",
+      "guidance": [
+        "跟踪 IPC/RPC 服务端写入 MessageSequence 或返回对象的敏感字段及其来源",
+        "核对 transaction code、调用方权限和身份校验是否同时约束返回数据的可见范围"
+      ]
+    },
+    {
+      "capability_id": "CAP-DOS-001",
+      "title": "Externally triggered crash or availability resource exhaustion",
+      "domain": "availability",
+      "entry_types": [
+        "deeplink",
+        "exported_ability",
+        "want",
+        "provider",
+        "common_event",
+        "ipc_transaction"
+      ],
+      "status": "enabled"
+    },
+    {
+      "capability_id": "CAP-ARCHIVE-001",
+      "title": "Untrusted archive extraction or dynamic load",
+      "domain": "archive",
+      "entry_types": [
+        "exported_ability",
+        "provider",
+        "want"
+      ],
+      "status": "enabled",
+      "analysis_scope": "component",
+      "guidance": [
+        "跟踪外部可控压缩包、归档路径、解压目录、动态模块或脚本到解包、文件写入和动态加载操作",
+        "核对规范化路径、目标目录约束、符号链接、覆盖策略、签名或来源完整性校验"
+      ]
+    },
+    {
+      "capability_id": "CAP-PRIV-001",
+      "title": "Sensitive data flows to network, log or Web sink",
+      "domain": "privacy",
+      "entry_types": ["project"],
+      "status": "enabled",
+      "analysis_scope": "project",
+      "guidance": [
+        "从权限保护数据、账号标识、设备标识、位置、联系人、剪贴板和业务敏感字段出发，跟踪到网络、日志、Web、剪贴板或持久化输出",
+        "记录用户授权、目的限制、最小化、脱敏、加密和第三方接收方边界；仅报告有源码证据的数据流"
+      ]
+    },
+    {
+      "capability_id": "CAP-NET-001",
+      "title": "Cleartext transport or unsafe TLS configuration",
+      "domain": "network",
+      "entry_types": ["project"],
+      "status": "enabled",
+      "analysis_scope": "project",
+      "guidance": [
+        "检查 HTTP、WebSocket、socket、WebView 和网络安全配置中的明文传输、宽松证书或主机名校验、自定义信任和调试代理配置",
+        "结合构建模式、目标地址、数据敏感性和实际调用链判断配置是否进入生产路径"
+      ]
+    },
+    {
+      "capability_id": "CAP-CRYPTO-001",
+      "title": "Weak crypto, hardcoded secret or plaintext sensitive storage",
+      "domain": "crypto",
+      "entry_types": ["project"],
+      "status": "enabled",
+      "analysis_scope": "project",
+      "guidance": [
+        "检查硬编码密钥或口令、弱算法或模式、固定 IV/nonce、可预测随机数、缺失认证以及敏感数据明文落盘",
+        "区分测试素材、公开常量和真实凭据，核对密钥生成、存储、轮换、用途和错误处理"
+      ]
+    },
+    {
+      "capability_id": "CAP-DIST-001",
+      "title": "Distributed call crosses device trust boundary",
+      "domain": "distributed",
+      "entry_types": [
+        "exported_ability"
+      ],
+      "status": "enabled",
+      "analysis_scope": "component",
+      "guidance": [
+        "跟踪分布式启动、跨设备数据同步、远端对象或 continuation 调用中的来源设备、账号、调用方和参数",
+        "核对设备信任、账号绑定、权限、数据分级、远端身份保持以及本地权限代理边界"
+      ]
+    },
+    {
+      "capability_id": "CAP-NATIVE-DEP-001",
+      "title": "Dependency vulnerability and NAPI native memory safety",
+      "domain": "native_dependency",
+      "entry_types": ["project"],
+      "status": "enabled",
+      "analysis_scope": "project",
+      "guidance": [
+        "使用项目模型中的依赖声明定位锁定版本、来源和生产可达用途；仅在本地证据能够证明受影响版本或危险用法时形成操作组",
+        "定位 NAPI/Node-API、C/C++ 和 native 库边界，检查长度、索引、生命周期、所有权、整数转换、线程与异常跨边界问题",
+        "无法离线确认漏洞数据库命中时记录覆盖缺口，不得根据包名或存在 native 代码直接判定漏洞"
+      ]
+    }
+  ]
+}

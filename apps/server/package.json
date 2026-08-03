@@ -1,0 +1,13 @@
+{
+  "name": "@agent-platform/server",
+  "version": "3.2.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agent-platform/core": "workspace:*",
+    "@agent-platform/interface": "workspace:*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.82.1"
+  }
+}

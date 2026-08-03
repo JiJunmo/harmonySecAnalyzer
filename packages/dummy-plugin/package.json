@@ -1,0 +1,13 @@
+{
+  "name": "@agent-platform/dummy-plugin",
+  "version": "3.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@agent-platform/core": "workspace:*"
+  }
+}

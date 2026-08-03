@@ -1,0 +1,8 @@
+#readiness-pill.ready { color: var(--green); }
+#readiness-pill.ready i { background: var(--lime); }
+#readiness-pill.failed { color: var(--red); }
+#readiness-pill.failed i { background: var(--red); }
+.readiness-detail { margin-top: 22px; padding: 12px 15px; border-left: 3px solid #b8bdb8; color: var(--muted); background: #f4f3ed; font-size: 11px; }
+.readiness-detail.ready { border-left-color: var(--lime); color: var(--green); background: #edf2e5; }
+.readiness-detail.failed { border-left-color: var(--red); color: var(--red); background: #fff2ef; }
+.submit:disabled { opacity: .5; cursor: not-allowed; }

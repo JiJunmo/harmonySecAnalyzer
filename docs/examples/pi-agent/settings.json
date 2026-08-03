@@ -1,0 +1,12 @@
+{
+  "defaultProvider": "local",
+  "defaultModel": "gemini-3.6-flash-high",
+  "defaultThinkingLevel": "medium",
+  "enabledModels": ["local/gemini-3.6-flash-high", "local/gemini-3.6-pro-high"],
+  "sessionDir": ".pi/sessions",
+  "compaction": { "enabled": true, "reserveTokens": 16384, "keepRecentTokens": 20000 },
+  "retry": { "enabled": true, "maxRetries": 3 },
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "skills": []
+}

@@ -1,0 +1,22 @@
+export type InvariantErrorCode =
+  | "TASK_NOT_RUNNING" | "STALE_TASK_ATTEMPT" | "TASK_ID_MISMATCH" | "ENTRY_ID_MISMATCH"
+  | "DUPLICATE_LOCAL_ID" | "UNKNOWN_EVIDENCE_REF" | "INVALID_FACT_EDGE"
+  | "CONFIRMED_ENTRY_SYMBOL_MISSING" | "EXCLUDED_ENTRY_HAS_OUTPUTS"
+  | "CAPABILITY_OUT_OF_SCOPE" | "CAPABILITY_NOT_ENABLED" | "CAPABILITY_CATEGORY_MISMATCH"
+  | "UNKNOWN_TARGET_COMPONENT" | "INVALID_PARAMETER_MAPPING" | "MISSING_GROUP_VALIDATION"
+  | "UNEXPECTED_GROUP_VALIDATION" | "DUPLICATE_GROUP_VALIDATION" | "CONFIRMED_DIMENSIONS_INCOMPLETE"
+  | "CONFIRMED_DETAILS_INCOMPLETE" | "DEMOTION_REASON_MISSING" | "EVIDENCE_GAP_MISSING"
+  | "PROTECTION_OUTCOME_MISMATCH" | "DOS_SEMANTIC_MISMATCH" | "PRINCIPAL_CHAIN_INCOMPLETE"
+  | "CONFIRMED_ENTRY_REQUIRED" | "SECURITY_CHECK_OUTCOME_CONFLICT" | "BOUNDARY_DIMENSION_MISMATCH"
+  | "IDENTITY_COLLISION" | "UNSUPPORTED_SCHEMA_VERSION" | "ILLEGAL_STATE_TRANSITION" | "SCHEMA_INVALID";
+
+export class AuditInvariantError extends Error {
+  constructor(readonly code: InvariantErrorCode, readonly details?: unknown) {
+    super(`${code}${details === undefined ? "" : `:${JSON.stringify(details)}`}`);
+    this.name = "AuditInvariantError";
+  }
+}
+
+export function invariant(condition: unknown, code: InvariantErrorCode, details?: unknown): asserts condition {
+  if (!condition) throw new AuditInvariantError(code, details);
+}

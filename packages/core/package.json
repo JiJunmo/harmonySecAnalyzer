@@ -1,0 +1,20 @@
+{
+  "name": "@agent-platform/core",
+  "version": "3.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts"
+  ,
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@langchain/langgraph-checkpoint-sqlite": "^1.0.3",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ajv": "^8.20.0",
+    "fast-glob": "^3.3.3"
+  }
+}
