@@ -83,6 +83,8 @@ def _remap_group_evidence(group, evidence_ids):
         for row in payload.get(key, []):
             row["evidence_refs"] = _refs(row.get("evidence_refs", []), evidence_ids)
     payload["context"]["evidence_refs"] = _refs(payload["context"].get("evidence_refs", []), evidence_ids)
+    for hypothesis in payload["context"].get("effect_hypotheses", []):
+        hypothesis["basis_evidence_refs"] = _refs(hypothesis.get("basis_evidence_refs", []), evidence_ids)
     if payload.get("availability"):
         payload["availability"]["evidence_refs"] = _refs(
             payload["availability"].get("evidence_refs", []), evidence_ids
@@ -111,7 +113,15 @@ def _merge_finding(conn, group_id, group, validation):
     finding_id = stable_id("FIND", root_key)
     existing = conn.execute("SELECT * FROM findings WHERE root_cause_key=?", (root_key,)).fetchone()
     payload = {**group, **validation, "related_group_ids": [group_id]}
-    evidence_refs = sorted(set(group["evidence_refs"]) | set(validation.get("evidence_refs", [])))
+    nested_validation_refs = {
+        ref
+        for section in (validation.get("exploitability", {}), validation.get("effect_chain", {}))
+        for item in section.values()
+        for ref in item.get("evidence_refs", [])
+    }
+    evidence_refs = sorted(
+        set(group["evidence_refs"]) | set(validation.get("evidence_refs", [])) | nested_validation_refs
+    )
     if existing:
         old = row_json(existing, "payload_json", {})
         related_group_ids = sorted(set(old.get("related_group_ids", [existing["group_id"]])) | {group_id})
@@ -225,6 +235,10 @@ def _merge_exploitability_validation(conn, task, result):
         validation["evidence_refs"] = _refs(validation.get("evidence_refs", []), evidence_ids)
         for key in ("business_intent", "security_boundary"):
             validation[key]["evidence_refs"] = _refs(validation[key].get("evidence_refs", []), evidence_ids)
+        for dimension in validation.get("exploitability", {}).values():
+            dimension["evidence_refs"] = _refs(dimension.get("evidence_refs", []), evidence_ids)
+        for proof in validation.get("effect_chain", {}).values():
+            proof["evidence_refs"] = _refs(proof.get("evidence_refs", []), evidence_ids)
         if validation.get("principal_analysis"):
             validation["principal_analysis"]["evidence_refs"] = _refs(
                 validation["principal_analysis"].get("evidence_refs", []), evidence_ids

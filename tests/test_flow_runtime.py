@@ -72,7 +72,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "external_actor": "third-party application",
                 "intended_behavior": "open a public record",
                 "protected_assets": ["private records"],
-                "observed_effect": "query result is returned to the caller",
+                "direct_observed_effect": "query result is returned to the caller",
+                "effect_hypotheses": [],
                 "evidence_refs": ["EV-TRACE"],
             },
             "branches": branches or [{
@@ -86,13 +87,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                  "location": "EntryAbility.ets:20", "evidence_refs": ["EV-TRACE"]},
                 {"fact_key": "operation", "type": "operation", "body": "database query",
                  "location": "Db.ets:42", "evidence_refs": ["EV-TRACE"]},
-                {"fact_key": "effect", "type": "effect", "body": "records returned",
-                 "location": "Db.ets:45", "evidence_refs": ["EV-TRACE"]},
             ],
             "edges": [
                 {"from": "entry", "to": "control", "kind": "carries", "evidence_refs": ["EV-TRACE"]},
                 {"from": "control", "to": "operation", "kind": "reaches", "evidence_refs": ["EV-TRACE"]},
-                {"from": "operation", "to": "effect", "kind": "causes", "evidence_refs": ["EV-TRACE"]},
             ],
             "security_checks": [], "evidence_refs": ["EV-TRACE"],
         }
@@ -111,7 +109,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "external_actor": "三方应用",
                 "intended_behavior": "按请求数量创建后台处理任务",
                 "protected_assets": ["应用进程可用性", "任务队列"],
-                "observed_effect": "任务数量随外部 count 线性增长直至进程资源耗尽",
+                "direct_observed_effect": "任务数量随外部 count 线性增长直至进程资源耗尽",
+                "effect_hypotheses": [],
                 "evidence_refs": ["EV-TRACE"],
             },
             "availability": {
@@ -128,9 +127,6 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         group["facts"][1]["body"] = "count comes from Want"
         group["facts"][2].update({
             "body": "allocate worker tasks in a caller-sized loop", "location": "Worker.ets:42",
-        })
-        group["facts"][3].update({
-            "body": "task queue and memory grow until process failure", "location": "Worker.ets:48",
         })
         return group
 
@@ -158,10 +154,15 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         return task, submitted
 
     @staticmethod
-    def validation_for(group, classification="confirmed_vulnerability"):
+    def validation_for(group, classification="confirmed_vulnerability", verification_ref="EV-VERIFY"):
         confirmed = classification == "confirmed_vulnerability"
-        checks = {name: confirmed for name in SIX_EXPLOITABILITY_CHECKS}
         evidence = list(group["evidence_refs"])
+        checks = {name: {
+            "status": str(confirmed).lower(),
+            "reason": "源码核验成立" if confirmed else "源码核验不成立",
+            "evidence_level": "direct",
+            "evidence_refs": evidence,
+        } for name in SIX_EXPLOITABILITY_CHECKS}
         validation = {
             "group_id": group["group_id"], "capability_id": group.get("capability_id"),
             "classification": classification,
@@ -181,6 +182,15 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             validation.update({
                 "impact": "未授权读取私有记录", "severity": "high",
                 "cwe": "CWE-89", "poc": "demo://query?q=x",
+                "effect_chain": {
+                    key: {"description": description, "location": "Db.ets:44", "evidence_refs": [verification_ref]}
+                    for key, description in {
+                        "controlled_value_use": "受控查询参数在查询构造中被读取",
+                        "security_behavior_change": "受控参数改变查询选择范围",
+                        "protected_operation": "变化后的查询读取私有记录",
+                        "concrete_impact": "查询结果返回给外部调用者",
+                    }.items()
+                },
             })
         else:
             validation.update({
@@ -221,7 +231,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         semantic_task, submitted = self.submit_semantics([self.semantic_group()])
         self.assertNotIn("validation_task_id", submitted)
         validation_task = self.claim("exploitability_validation")
-        self.assertEqual(set(validation_task["input"]), {"semantic_analysis", "verification_scope"})
+        self.assertEqual(set(validation_task["input"]), {"semantic_analysis", "verification_scope", "validation_contract"})
         self.assertNotIn("pattern_cards", validation_task["input"])
         self.assertNotIn("project_model", validation_task["input"])
         self.assertNotIn("entry", validation_task["input"]["semantic_analysis"])
@@ -295,7 +305,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         rejected = submit_result(
             run, validation_task["task_id"], self.write_submission(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
-                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [],
+                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [{
+                    "evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
+                    "summary": "核验外部数量参数到资源耗尽的完整效果链", "location": "Worker.ets:42",
+                }],
             }), validation_task["attempt"],
         )
         self.assertFalse(rejected["accepted"])
@@ -306,7 +319,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         accepted = submit_result(
             run, validation_task["task_id"], self.write_submission(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
-                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [],
+                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [{
+                    "evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
+                    "summary": "核验外部数量参数到资源耗尽的完整效果链", "location": "Worker.ets:42",
+                }],
             }), validation_task["attempt"],
         )
         self.assertTrue(accepted["accepted"], accepted)
@@ -468,13 +484,13 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertTrue(submitted["accepted"], submitted)
         self.assertEqual(submitted["operation_groups_created"], 1)
 
-    def test_confirmed_validation_does_not_require_redundant_effect_fact(self):
+    def test_confirmed_validation_requires_independent_effect_chain_not_effect_fact(self):
         group = self.semantic_group()
         group["facts"] = [fact for fact in group["facts"] if fact["type"] != "effect"]
         self.submit_semantics([group])
         task = self.claim("exploitability_validation")
         semantic_group = task["input"]["semantic_analysis"]["operation_groups"][0]
-        validation = self.validation_for(semantic_group)
+        validation = self.validation_for(semantic_group, verification_ref="EV-ANALYSIS")
         validation["demotion_reason"] = ""
         validation["evidence_gap"] = ""
         validation["evidence_refs"].append("EV-ANALYSIS")
@@ -490,6 +506,55 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
         )
         self.assertTrue(submitted["accepted"], submitted)
+
+    def test_inferred_effect_cannot_be_persisted_as_semantic_fact(self):
+        task = self.claim("component_semantic_analysis")
+        group = self.semantic_group()
+        group["context"].update({
+            "direct_observed_effect": None,
+            "effect_hypotheses": [{
+                "claim": "参数可能跳过安全检查", "basis_evidence_refs": ["EV-TRACE"],
+                "missing_proofs": ["字段读取位置", "安全行为变化", "具体影响"],
+            }],
+        })
+        group["facts"].append({
+            "fact_key": "guessed-effect", "type": "effect", "body": "安全检查被跳过",
+            "location": "Db.ets:45", "evidence_refs": ["EV-TRACE"],
+        })
+        submitted = submit_result(
+            self.run, task["task_id"], self.write_submission(task, self.semantic_result(task, [group])),
+            task["attempt"],
+        )
+        self.assertFalse(submitted["accepted"])
+        self.assertIn("schema:", submitted["error"])
+
+    def test_hypothesis_cannot_mark_dimension_true_and_semantic_evidence_cannot_confirm_effect(self):
+        self.submit_semantics([self.semantic_group()])
+        task = self.claim("exploitability_validation")
+        group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        validation = self.validation_for(group, "residual_risk")
+        validation["evidence_gap"] = "缺少实际安全效果证据"
+        validation["exploitability"]["sink_reached"].update({
+            "status": "true", "reason": "字段名暗示到达操作", "evidence_level": "hypothesis",
+        })
+        result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
+                  "summary": "效果尚未确认", "validations": [validation], "evidence": []}
+        rejected = submit_result(
+            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+        )
+        self.assertFalse(rejected["accepted"])
+        self.assertIn("true_dimension_evidence_insufficient:sink_reached", rejected["error"])
+
+        task = self.claim("exploitability_validation")
+        group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        inherited_only = self.validation_for(group, verification_ref="EV-TRACE")
+        result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
+                  "summary": "仅复用语义证据", "validations": [inherited_only], "evidence": []}
+        rejected = submit_result(
+            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+        )
+        self.assertFalse(rejected["accepted"])
+        self.assertIn("confirmed_effect_not_independently_verified", rejected["error"])
 
     def test_excluded_entry_finishes_without_validation_task(self):
         self.submit_semantics([], "excluded")
@@ -517,7 +582,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.submit_semantics([self.semantic_group()])
         task = self.claim("exploitability_validation")
         group = task["input"]["semantic_analysis"]["operation_groups"][0]
-        validation = self.validation_for(group)
+        validation = self.validation_for(group, verification_ref="EV-OUTSIDE")
         validation["evidence_refs"] = ["EVID-INVENTED"]
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
                   "summary": "invalid evidence", "validations": [validation], "evidence": []}
@@ -529,7 +594,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.submit_semantics([self.semantic_group()])
         task = self.claim("exploitability_validation")
         group = task["input"]["semantic_analysis"]["operation_groups"][0]
-        validation = self.validation_for(group)
+        validation = self.validation_for(group, verification_ref="EV-OUTSIDE")
         validation["evidence_refs"].append("EV-OUTSIDE")
         result = {
             "task_id": task["task_id"], "entry_id": task["subject_id"],
@@ -634,7 +699,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         submitted = submit_result(
             run, validation_task["task_id"], self.write_submission(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
-                "summary": "delegated authority validated", "validations": [validation], "evidence": [],
+                "summary": "delegated authority validated", "validations": [validation], "evidence": [{
+                    "evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
+                    "summary": "核验跨组件参数使用和受保护操作", "location": "CAbility.ets:42",
+                }],
             }), validation_task["attempt"],
         )
         self.assertTrue(submitted["accepted"], submitted)

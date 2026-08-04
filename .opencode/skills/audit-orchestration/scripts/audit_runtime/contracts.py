@@ -171,6 +171,8 @@ def _semantic_refs(group):
         for row in group.get(key, []):
             refs.extend(row.get("evidence_refs", []))
     refs.extend(group.get("context", {}).get("evidence_refs", []))
+    for hypothesis in group.get("context", {}).get("effect_hypotheses", []):
+        refs.extend(hypothesis.get("basis_evidence_refs", []))
     refs.extend(group.get("availability", {}).get("evidence_refs", []))
     return refs
 
@@ -209,6 +211,12 @@ def validate_semantic_analysis(result, task, conn):
         missing = set(_semantic_refs(group)) - known_evidence
         if missing:
             errors.append(f"{label}:unknown_evidence:" + ",".join(sorted(missing)))
+        semantic_context = group.get("context", {})
+        for hypothesis in semantic_context.get("effect_hypotheses", []):
+            if not hypothesis.get("basis_evidence_refs"):
+                errors.append(f"{label}:hypothesis_basis_missing")
+        if semantic_context.get("direct_observed_effect") is not None and not semantic_context.get("evidence_refs"):
+            errors.append(f"{label}:direct_effect_evidence_missing")
     if len(model_keys) != len(set(model_keys)):
         errors.append("duplicate_group_key")
     if len(identities) != len(set(identities)):
@@ -284,12 +292,23 @@ def validate_exploitability(result, task, conn):
         refs.extend(validation.get("security_boundary", {}).get("evidence_refs", []))
         refs.extend(validation.get("principal_analysis", {}).get("evidence_refs", []))
         refs.extend(validation.get("availability_analysis", {}).get("evidence_refs", []))
+        for dimension in validation.get("exploitability", {}).values():
+            if isinstance(dimension, dict):
+                refs.extend(dimension.get("evidence_refs", []))
+        for proof in validation.get("effect_chain", {}).values():
+            if isinstance(proof, dict):
+                refs.extend(proof.get("evidence_refs", []))
         for counter in validation.get("counter_evidence", []):
             refs.extend(counter.get("evidence_refs", []))
         missing = set(refs) - known_evidence
         if missing:
             errors.append(f"{label}:unknown_semantic_evidence:" + ",".join(sorted(missing)))
         checks = validation.get("exploitability", {})
+        for name in SIX_EXPLOITABILITY_CHECKS:
+            dimension = checks.get(name, {})
+            if dimension.get("status") == "true" and (
+                    dimension.get("evidence_level") == "hypothesis" or not dimension.get("evidence_refs")):
+                errors.append(f"{label}:true_dimension_evidence_insufficient:{name}")
         if group.get("scope") == "cross_component" and not validation.get("principal_analysis"):
             errors.append(f"{label}:cross_component_requires_principal_analysis")
         if validation.get("capability_id") != group.get("capability_id"):
@@ -297,11 +316,21 @@ def validate_exploitability(result, task, conn):
         if validation.get("classification") == "confirmed_vulnerability":
             if entry_status != "confirmed":
                 errors.append(f"{label}:confirmed_vulnerability_requires_confirmed_entry")
-            if not all(checks.get(name) is True for name in SIX_EXPLOITABILITY_CHECKS):
+            if not all(checks.get(name, {}).get("status") == "true" for name in SIX_EXPLOITABILITY_CHECKS):
                 errors.append(f"{label}:confirmed_requires_six_dimensions")
-        if validation.get("security_check_outcome") == "effective" and checks.get("security_check_bypassed_or_absent") is True:
+            effect_chain = validation.get("effect_chain", {})
+            for proof_name in ("controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"):
+                proof = effect_chain.get(proof_name, {})
+                proof_refs = proof.get("evidence_refs", [])
+                if not proof.get("location") or not proof_refs:
+                    errors.append(f"{label}:confirmed_effect_chain_incomplete:{proof_name}")
+                elif not set(proof_refs) & set(verification_ids):
+                    errors.append(f"{label}:confirmed_effect_not_independently_verified:{proof_name}")
+        if (validation.get("security_check_outcome") == "effective"
+                and checks.get("security_check_bypassed_or_absent", {}).get("status") == "true"):
             errors.append(f"{label}:effective_security_check_conflicts_with_exploitability")
-        if validation.get("security_boundary", {}).get("violation") != checks.get("boundary_violated"):
+        if validation.get("security_boundary", {}).get("violation") != (
+                checks.get("boundary_violated", {}).get("status") == "true"):
             errors.append(f"{label}:boundary_dimension_mismatch")
     return errors
 

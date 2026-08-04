@@ -265,7 +265,8 @@ class IncrementalRuntimeTest(unittest.TestCase):
             "controlled_properties": ["want.parameters.recordId"],
             "context": {
                 "external_actor": "third-party application", "intended_behavior": "query one record",
-                "protected_assets": ["private records"], "observed_effect": "record is returned",
+                "protected_assets": ["private records"], "direct_observed_effect": "record is returned",
+                "effect_hypotheses": [],
                 "evidence_refs": ["EV-TRACE"],
             },
             "branches": [{
@@ -307,13 +308,12 @@ class IncrementalRuntimeTest(unittest.TestCase):
         validation_handle = claim_batch(full, 5)["tasks"][0]
         validation_task = json.loads(Path(validation_handle["task_file"]).read_text(encoding="utf-8"))
         persisted_group = validation_task["input"]["semantic_analysis"]["operation_groups"][0]
-        checks = {name: True for name in SIX_EXPLOITABILITY_CHECKS}
-        checks.update({
-            "security_check_bypassed_or_absent": False,
-            "boundary_violated": False,
-            "concrete_impact": False,
-        })
         evidence_refs = list(persisted_group["evidence_refs"])
+        checks = {name: {
+            "status": "false" if name in {"security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"} else "true",
+            "reason": "所有者校验阻止越权" if name in {"security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"} else "源码事实已确认",
+            "evidence_level": "direct", "evidence_refs": evidence_refs,
+        } for name in SIX_EXPLOITABILITY_CHECKS}
         validation = {
             "group_id": persisted_group["group_id"], "capability_id": "CAP-PROVIDER-001",
             "classification": "protected_exposure", "title": "所有者校验有效",

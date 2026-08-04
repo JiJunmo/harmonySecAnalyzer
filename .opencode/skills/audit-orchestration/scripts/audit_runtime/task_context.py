@@ -106,6 +106,11 @@ def task_context(conn, task):
             "group_by": ["operation_location", "controlled_properties"],
             "stop_at": "component_call",
             "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
+            "evidence_model": {
+                "facts": "only directly observed source facts",
+                "effect_hypotheses": "untrusted search leads with explicit missing proofs",
+                "forbidden_as_fact": ["name_based_effect_inference", "comment_based_effect_inference", "unverified_runtime_effect"],
+            },
         }
         if "CAP-DOS-001" in profile_ids:
             analysis_contract["availability_requirements"] = [
@@ -150,6 +155,12 @@ def task_context(conn, task):
                 "summary": analysis["summary"],
                 "coverage": coverage,
                 "operation_groups": groups,
+            },
+            "validation_contract": {
+                "semantic_effect_hypotheses_are_untrusted": True,
+                "dimensions_require_status_reason_evidence_level_and_refs": True,
+                "confirmed_effect_chain": ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
+                "confirmed_effect_chain_requires_fresh_validation_evidence": True,
             },
             "verification_scope": {
                 "target_repo": run["target_repo"],
