@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
+import { effectChain, sixDimensions, validationEvidence } from "./p0-fixtures.js";
 
 const coverage = { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["onCreate"], operation_sites_checked: ["B.ets:20"], unresolved_targets: [] };
 const call = (target: string) => ({
@@ -14,7 +15,7 @@ const call = (target: string) => ({
 });
 const group = {
   group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "外部参数影响查询", operation: { body: "query", location: "B.ets:20" }, controlled_properties: ["want.forwarded"],
-  context: { external_actor: "third-party app", intended_behavior: "query public records", protected_assets: ["private records"], observed_effect: "query executes", evidence_refs: [] },
+  context: { external_actor: "third-party app", intended_behavior: "query public records", protected_assets: ["private records"], direct_observed_effect: null, effect_hypotheses: [], evidence_refs: [] },
   branches: [{ condition: "always", locations: ["B.ets:20"], evidence_refs: [] }], facts: [{ fact_key: "sink", type: "operation", body: "query", evidence_refs: [] }], edges: [], security_checks: [], evidence_refs: [],
 };
 const semantic = (task: Record<string, any>, calls: Record<string, unknown>[], groups: Record<string, unknown>[], customCoverage = coverage) => ({ task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: customCoverage, operation_groups: groups, component_calls: calls, evidence: [] });
@@ -26,7 +27,7 @@ function confirmed(groupInput: Record<string, any>): Record<string, unknown> {
     business_intent: { is_public_api: true, declared_or_inferred_purpose: "query public records", allowed_controls: ["recordId"], evidence_refs: [] },
     security_boundary: { type: "data_owner", expected_boundary: "private records remain isolated", violation: true, reason: "input changes query structure", evidence_refs: [] },
     ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence_refs: [] } } : {}),
-    exploitability: { externally_reachable: true, attacker_controlled: true, sink_reached: true, security_check_bypassed_or_absent: true, boundary_violated: true, concrete_impact: true },
+    exploitability: sixDimensions(), effect_chain: effectChain(),
     counter_evidence: [], impact: "读取私有记录", severity: cross ? "critical" : "high", cwe: "CWE-89", poc: "demo://query?q=x", evidence_refs: [],
   };
 }
@@ -49,7 +50,7 @@ describe("deterministic reporting", () => {
     submittedValidations[0]!.principal_analysis.origin_principal = "model-guessed-principal";
     submittedValidations[0]!.principal_analysis.origin_bound_to_observed_principal = true;
     submittedValidations[0]!.principal_analysis.delegation_risk = false;
-    const result = { task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "confirmed", validations: submittedValidations, evidence: [] };
+    const result = { task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "confirmed", validations: submittedValidations, evidence: [validationEvidence] };
     expect(store.reconcile(validationTask!.task_id, validationTask!.attempt, result)).toMatchObject({ accepted: true });
     const [pocTask] = (await store.claim(5)).tasks;
     expect(pocTask!.kind).toBe("poc_generation");
@@ -118,7 +119,7 @@ describe("deterministic reporting", () => {
     }
     const successfulGroup = (successfulTask!.input.operation_groups as Record<string, any>[])[0]!;
     expect(store.reconcile(successfulTask!.task_id, successfulTask!.attempt, {
-      task_id: successfulTask!.task_id, entry_id: successfulTask!.input.entry_id, summary: "confirmed", validations: [confirmed(successfulGroup)], evidence: [],
+      task_id: successfulTask!.task_id, entry_id: successfulTask!.input.entry_id, summary: "confirmed", validations: [confirmed(successfulGroup)], evidence: [validationEvidence],
     })).toMatchObject({ accepted: true });
 
     const status = store.status(); const gaps = status.coverage_gaps as Record<string, unknown>[];

@@ -37,6 +37,7 @@ import { pocTaskInput, semanticTaskInput, validationTaskInput } from "./task-con
 const now = () => new Date().toISOString();
 const rows = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
 const refs = (value: Record<string, unknown>): string[] => Array.isArray(value.evidence_refs) ? value.evidence_refs.filter((item): item is string => typeof item === "string") : [];
+const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 const executionStatus = (status: string): PluginExecutionStatus => ({
   queued: "queued", running: "running", completed: "succeeded", exhausted: "failed", cancelled: "cancelled",
 }[status] as PluginExecutionStatus | undefined) ?? "failed";
@@ -644,6 +645,7 @@ export class AuditStore {
     rows(group.security_checks).forEach((check, index) => this.insertSecurityCheck(db, { groupId: id }, check, index, evidence));
     this.addRefs(db, "operation_group", id, [
       ...refs(group), ...refs((group.context as Record<string, unknown> | undefined) ?? {}), ...refs((group.availability as Record<string, unknown> | undefined) ?? {}),
+      ...rows(((group.context as Record<string, unknown> | undefined) ?? {}).effect_hypotheses).flatMap((hypothesis) => strings(hypothesis.basis_evidence_refs)),
       ...rows(group.branches).flatMap(refs), ...rows(group.facts).flatMap(refs), ...rows(group.edges).flatMap(refs), ...rows(group.security_checks).flatMap(refs),
     ], evidence);
     return normalized;
@@ -672,6 +674,8 @@ export class AuditStore {
       this.addRefs(db, "validation", id, [
         ...refs(validation), ...refs((validation.business_intent as Record<string, unknown> | undefined) ?? {}), ...refs((validation.security_boundary as Record<string, unknown> | undefined) ?? {}),
         ...refs((validation.principal_analysis as Record<string, unknown> | undefined) ?? {}), ...refs((validation.availability_analysis as Record<string, unknown> | undefined) ?? {}), ...rows(validation.counter_evidence).flatMap(refs),
+        ...Object.values((validation.exploitability as Record<string, unknown> | undefined) ?? {}).flatMap((dimension) => refs((dimension as Record<string, unknown> | undefined) ?? {})),
+        ...Object.values((validation.effect_chain as Record<string, unknown> | undefined) ?? {}).flatMap((proof) => refs((proof as Record<string, unknown> | undefined) ?? {})),
       ], evidence);
       rows(validation.counter_evidence).forEach((counter, index) => {
         const counterId = stableId("COUNTER", id, index, counter.kind, counter.reason);

@@ -8,6 +8,7 @@ import { AuditStore } from "../src/runtime/store.js";
 import { AuditInvariantError } from "../src/validation/invariant-errors.js";
 import { validateExploitabilitySubmission, validateSemanticSubmission } from "../src/validation/submission-validator.js";
 import { canonicalJson, stableId } from "../src/runtime/identity.js";
+import { effectChain, sixDimensions, validationEvidence } from "./p0-fixtures.js";
 
 async function fixture(): Promise<{ root: string; store: AuditStore }> {
   const root = await mkdtemp(join(tmpdir(), "harmony-invariants-"));
@@ -24,7 +25,7 @@ function semantic(task: Record<string, any>): Record<string, unknown> {
     operation_groups: [{
       group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "query injection",
       operation: { body: "query", location: "A.ets:12" }, controlled_properties: ["want.query"],
-      context: { external_actor: "third-party app", intended_behavior: "open public data", protected_assets: ["private data"], observed_effect: "query executes", evidence_refs: ["EV-1"] },
+      context: { external_actor: "third-party app", intended_behavior: "open public data", protected_assets: ["private data"], direct_observed_effect: "query executes", effect_hypotheses: [], evidence_refs: ["EV-1"] },
       branches: [{ condition: "always", locations: ["A.ets:10"], evidence_refs: ["EV-1"] }], security_checks: [], evidence_refs: ["EV-1"],
       facts: [
         { fact_key: "entry", type: "entrypoint", body: "external", evidence_refs: ["EV-1"] },
@@ -38,13 +39,13 @@ function semantic(task: Record<string, any>): Record<string, unknown> {
 function validation(task: Record<string, any>): Record<string, unknown> {
   const group = task.input.operation_groups[0];
   return {
-    task_id: task.task_id, entry_id: task.input.entry_id, summary: "confirmed", evidence: [],
+    task_id: task.task_id, entry_id: task.input.entry_id, summary: "confirmed", evidence: [validationEvidence],
     validations: [{
       group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "query injection",
       security_check_outcome: "absent",
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence_refs: ["EV-1"] },
       security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence_refs: ["EV-1"] },
-      exploitability: { externally_reachable: true, attacker_controlled: true, sink_reached: true, security_check_bypassed_or_absent: true, boundary_violated: true, concrete_impact: true },
+      exploitability: sixDimensions(), effect_chain: effectChain(),
       counter_evidence: [], impact: "private data disclosure", severity: "high", cwe: "CWE-89", poc: "demo://x", evidence_refs: ["EV-1"],
     }],
   };
@@ -127,6 +128,19 @@ describe("audit domain invariants", () => {
       .toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "INVALID_FACT_EDGE" }));
   });
 
+  it("keeps inferred effects out of semantic facts", async () => {
+    const { store } = await fixture(); const [task] = (await store.claim(1)).tasks;
+    const inferred = semantic(task as Record<string, any>);
+    const group = (inferred.operation_groups as Record<string, any>[])[0]!;
+    group.context = {
+      ...group.context,
+      direct_observed_effect: null,
+      effect_hypotheses: [{ claim: "参数可能跳过安全检查", basis_evidence_refs: ["EV-1"], missing_proofs: ["字段读取位置", "安全行为变化", "具体影响"] }],
+    };
+    group.facts.push({ fact_key: "guessed-effect", type: "effect", body: "安全检查被跳过", evidence_refs: ["EV-1"] });
+    expect(store.reconcile(task!.task_id, task!.attempt, inferred)).toMatchObject({ accepted: false, error_code: "SCHEMA_INVALID" });
+  });
+
   it("rejects capability scope, category and unknown component violations", async () => {
     const { store } = await fixture(); const [task] = (await store.claim(1)).tasks;
     const context = { taskId: task!.task_id, entryId: String(task!.input.entry.candidate_id), capabilities: [] as string[], enabledCapabilities: new Set(["CAP-INJ-001"]), componentIds: new Set([String(task!.input.entry.component_id)]) };
@@ -145,16 +159,40 @@ describe("audit domain invariants", () => {
     expect(() => validateExploitabilitySubmission(demoted, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() })).toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "EVIDENCE_GAP_MISSING" }));
   });
 
+  it("rejects hypothesis-backed true dimensions and inherited-only effect chains", () => {
+    const group = { group_id: "GRP-1", capability_id: "CAP-INJ-001" };
+    const hypothesis = sixDimensions({ sink_reached: "unknown" }, ["EV-V"]);
+    hypothesis.sink_reached = { status: "true", reason: "字段名暗示会执行查询", evidence_level: "hypothesis", evidence_refs: ["EV-V"] };
+    const hypothesisCandidate = {
+      task_id: "TASK-1", entry_id: "PE-1", evidence: [validationEvidence], validations: [{
+        group_id: "GRP-1", capability_id: "CAP-INJ-001", classification: "insufficient_evidence",
+        exploitability: hypothesis, demotion_reason: "效果尚未核验", evidence_gap: "缺少实际调用证据",
+      }],
+    };
+    expect(() => validateExploitabilitySubmission(hypothesisCandidate, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() }))
+      .toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "TRUE_DIMENSION_EVIDENCE_INSUFFICIENT" }));
+
+    const inheritedOnly = {
+      task_id: "TASK-1", entry_id: "PE-1", evidence: [], validations: [{
+        group_id: "GRP-1", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability",
+        security_boundary: { violation: true }, exploitability: sixDimensions({}, ["EV-1"]), effect_chain: effectChain(["EV-1"]),
+        impact: "private data disclosure", severity: "high", cwe: "CWE-89", poc: "demo://x",
+      }],
+    };
+    expect(() => validateExploitabilitySubmission(inheritedOnly, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set(["EV-1"]) }))
+      .toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "CONFIRMED_EFFECT_NOT_INDEPENDENTLY_VERIFIED" }));
+  });
+
   it("rejects DoS confirmations without availability semantics", () => {
     const group = { group_id: "GRP-DOS", capability_id: "CAP-DOS-001" };
-    const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [], validations: [{ group_id: "GRP-DOS", capability_id: "CAP-DOS-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: { externally_reachable: true, attacker_controlled: true, sink_reached: true, security_check_bypassed_or_absent: true, boundary_violated: true, concrete_impact: true }, impact: "crash", severity: "high", cwe: "CWE-400", poc: "repeat" }] };
+    const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [validationEvidence], validations: [{ group_id: "GRP-DOS", capability_id: "CAP-DOS-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "crash", severity: "high", cwe: "CWE-400", poc: "repeat" }] };
     expect(() => validateExploitabilitySubmission(candidate, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() })).toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "DOS_SEMANTIC_MISMATCH" }));
   });
 
   it("INV-PRINCIPAL validates deterministic cross-component identity", () => {
     const group = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", scope: "cross_component", principal_state: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_binding: "replaced_by_caller" } };
-    const validation = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: { externally_reachable: true, attacker_controlled: true, sink_reached: true, security_check_bypassed_or_absent: true, boundary_violated: true, concrete_impact: true }, impact: "impact", severity: "high", cwe: "CWE-441", poc: "poc", principal_analysis: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_bound_to_observed_principal: false, delegation_risk: true } };
-    const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [], validations: [validation] };
+    const validation = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "impact", severity: "high", cwe: "CWE-441", poc: "poc", principal_analysis: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_bound_to_observed_principal: false, delegation_risk: true } };
+    const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [validationEvidence], validations: [validation] };
     expect(() => validateExploitabilitySubmission(candidate, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() })).not.toThrow();
     const invalid = structuredClone(candidate); (invalid.validations[0]!.principal_analysis as Record<string, unknown>).delegation_risk = false;
     try {

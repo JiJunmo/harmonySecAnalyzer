@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
 import { validatePocSubmission } from "../src/validation/submission-validator.js";
+import { effectChain, sixDimensions, validationEvidence } from "./p0-fixtures.js";
 
 async function fixture(): Promise<{ root: string; store: AuditStore }> {
   const root = await mkdtemp(join(tmpdir(), "harmony-poc-"));
@@ -21,7 +22,7 @@ const semantic = (task: Record<string, any>) => ({
   operation_groups: [{
     group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "query injection",
     operation: { body: "query", location: "A.ets:12" }, controlled_properties: ["want.query"],
-    context: { external_actor: "third-party app", intended_behavior: "open public data", protected_assets: ["private data"], observed_effect: "query executes", evidence_refs: ["EV-1"] },
+    context: { external_actor: "third-party app", intended_behavior: "open public data", protected_assets: ["private data"], direct_observed_effect: "query executes", effect_hypotheses: [], evidence_refs: ["EV-1"] },
     branches: [{ condition: "always", locations: ["A.ets:10"], evidence_refs: ["EV-1"] }], security_checks: [], evidence_refs: ["EV-1"],
     facts: [{ fact_key: "entry", type: "entrypoint", body: "external", evidence_refs: ["EV-1"] }, { fact_key: "sink", type: "operation", body: "query", evidence_refs: ["EV-1"] }],
     edges: [{ from: "entry", to: "sink", kind: "reaches", evidence_refs: ["EV-1"] }],
@@ -31,13 +32,13 @@ const semantic = (task: Record<string, any>) => ({
 const validation = (task: Record<string, any>) => {
   const group = task.input.operation_groups[0];
   return {
-    task_id: task.task_id, entry_id: task.input.entry_id, summary: "confirmed", evidence: [],
+    task_id: task.task_id, entry_id: task.input.entry_id, summary: "confirmed", evidence: [validationEvidence],
     validations: [{
       group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "query injection",
       security_check_outcome: "absent",
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence_refs: [] },
       security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence_refs: [] },
-      exploitability: { externally_reachable: true, attacker_controlled: true, sink_reached: true, security_check_bypassed_or_absent: true, boundary_violated: true, concrete_impact: true },
+      exploitability: sixDimensions(), effect_chain: effectChain(),
       counter_evidence: [], impact: "private data disclosure", severity: "high", cwe: "CWE-89", poc: "demo://x", evidence_refs: [],
     }],
   };
@@ -115,7 +116,7 @@ describe("poc generation phase", () => {
         capability_id: "CAP-INJ-001", classification: "insufficient_evidence", title: "query injection", security_check_outcome: "unknown",
         business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence_refs: [] },
         security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: false, reason: "missing trace", evidence_refs: [] },
-        exploitability: { externally_reachable: false, attacker_controlled: false, sink_reached: false, security_check_bypassed_or_absent: false, boundary_violated: false, concrete_impact: false },
+        exploitability: sixDimensions({ externally_reachable: false, attacker_controlled: false, sink_reached: false, security_check_bypassed_or_absent: false, boundary_violated: false, concrete_impact: false }, []),
         counter_evidence: [], demotion_reason: "cannot confirm reachable chain", evidence_gap: "missing trace", evidence_refs: [],
       }],
     };

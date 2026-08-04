@@ -102,7 +102,7 @@ describe("audit store", () => {
       operation_groups: [{
         group_key: "query", category: "sql", capability_id: "CAP-INJ-001", title: "查询",
         operation: { body: "query", location: "A.ets:12" }, controlled_properties: ["want.id"],
-        context: { external_actor: "外部应用", intended_behavior: "查询", protected_assets: ["数据"], observed_effect: "执行查询", evidence_refs: ["E1"] },
+        context: { external_actor: "外部应用", intended_behavior: "查询", protected_assets: ["数据"], direct_observed_effect: "执行查询", effect_hypotheses: [], evidence_refs: ["E1"] },
         branches: [{ condition: "always", locations: ["A.ets:10"], evidence_refs: ["E1"] }],
         facts: [{ fact_key: "entry", type: "entrypoint", body: "入口", evidence_refs: ["E1"] }],
         security_checks: [], evidence_refs: ["E1"],

@@ -20,10 +20,19 @@ const labels: Record<string, string> = {
   exhausted_task: "任务达到最大重试次数", uncertain_entry: "入口状态不确定", unresolved_targets: "存在未解析调用目标",
   unvalidated_operation_group: "安全相关操作未完成六维验证",
   absent: "未发现有效防护", bypassable: "防护可绕过", effective: "防护有效", unknown: "无法确认",
+  direct: "直接证据", derived: "基于源码推导", hypothesis: "待验证假设",
   type_check: "类型检查", publisher_restriction: "发布者限制", permission_check: "权限检查", path_check: "路径检查",
 };
 const label = (value: unknown) => labels[String(value ?? "")] ?? String(value ?? "-");
-const yesNo = (value: unknown) => value === true ? "满足" : value === false ? "不满足" : "未知";
+const dimensionStatus = (value: unknown): string => {
+  if (value === true || value === false) return String(value);
+  return String(obj(value).status ?? "unknown");
+};
+const yesNo = (value: unknown) => dimensionStatus(value) === "true" ? "满足" : dimensionStatus(value) === "false" ? "不满足" : "未知";
+const dimensionBasis = (value: unknown) => {
+  const dimension = obj(value);
+  return [dimension.reason, dimension.evidence_level ? `证据等级：${label(dimension.evidence_level)}` : ""].filter(Boolean).join("；") || "-";
+};
 const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 
 function reportData(report: Row) {
@@ -152,13 +161,13 @@ export function renderMarkdown(report: Row): string {
       `- 防护判定：${label(assessment.security_check_outcome)}`,
       ...(Object.keys(principal).length ? [`- 身份与权限：来源主体 ${inlineMd(principal.origin_principal || "-")}，目标观察主体 ${inlineMd(principal.target_observed_principal || "-")}，使用权限 ${inlineMd(principal.authority_used || "-")}`] : []), "",
       "#### 六维有效性验证", "",
-      "| 维度 | 结果 |", "|---|---|",
-      `| 外部可达 | ${yesNo(exploitability.externally_reachable)} |`,
-      `| 关键参数可控 | ${yesNo(exploitability.attacker_controlled)} |`,
-      `| 可达敏感操作 | ${yesNo(exploitability.sink_reached)} |`,
-      `| 防护缺失或可绕过 | ${yesNo(exploitability.security_check_bypassed_or_absent)} |`,
-      `| 安全边界被突破 | ${yesNo(exploitability.boundary_violated)} |`,
-      `| 存在具体影响 | ${yesNo(exploitability.concrete_impact)} |`, "",
+      "| 维度 | 结果 | 依据 |", "|---|---|---|",
+      `| 外部可达 | ${yesNo(exploitability.externally_reachable)} | ${inlineMd(dimensionBasis(exploitability.externally_reachable))} |`,
+      `| 关键参数可控 | ${yesNo(exploitability.attacker_controlled)} | ${inlineMd(dimensionBasis(exploitability.attacker_controlled))} |`,
+      `| 可达敏感操作 | ${yesNo(exploitability.sink_reached)} | ${inlineMd(dimensionBasis(exploitability.sink_reached))} |`,
+      `| 防护缺失或可绕过 | ${yesNo(exploitability.security_check_bypassed_or_absent)} | ${inlineMd(dimensionBasis(exploitability.security_check_bypassed_or_absent))} |`,
+      `| 安全边界被突破 | ${yesNo(exploitability.boundary_violated)} | ${inlineMd(dimensionBasis(exploitability.boundary_violated))} |`,
+      `| 存在具体影响 | ${yesNo(exploitability.concrete_impact)} | ${inlineMd(dimensionBasis(exploitability.concrete_impact))} |`, "",
     );
     const checks = rows(groupPayload.security_checks); if (checks.length) {
       lines.push("#### 已识别防护", "");
@@ -236,7 +245,10 @@ export function renderHtml(report: Row): string {
   const findingHtml = findings.length ? findings.map((finding, index) => {
     const validation = validationFor(finding, validations); const assessment = obj(validation.payload); const group = groupFor(finding, groups); const payload = obj(group.payload); const operation = obj(payload.operation);
     const intent = obj(assessment.business_intent); const boundary = obj(assessment.security_boundary); const principal = obj(assessment.principal_analysis); const exploitability = obj(assessment.exploitability);
-    const dimensions = Object.entries(dimensionNames).map(([key, name]) => `<div class="dimension ${exploitability[key] === true ? "pass" : "fail"}"><i>${exploitability[key] === true ? "✓" : "–"}</i><span>${escapeHtml(name)}</span><b>${escapeHtml(yesNo(exploitability[key]))}</b></div>`).join("");
+    const dimensions = Object.entries(dimensionNames).map(([key, name]) => {
+      const status = dimensionStatus(exploitability[key]);
+      return `<div class="dimension ${status === "true" ? "pass" : "fail"}" title="${escapeHtml(dimensionBasis(exploitability[key]))}"><i>${status === "true" ? "✓" : status === "false" ? "×" : "–"}</i><span>${escapeHtml(name)}</span><b>${escapeHtml(yesNo(exploitability[key]))}</b></div>`;
+    }).join("");
     const checks = rows(payload.security_checks).map((check) => `<div class="fact"><strong>${escapeHtml(check.type || "安全检查")}</strong><p>${escapeHtml(check.behavior || check.protects || "-")}</p><small>校验 ${escapeHtml(check.validated_property || "-")} · ${escapeHtml(check.location || "-")}</small></div>`).join("");
     const referenced = evidenceFor(assessment.evidence_refs, evidence); const facts = rows(payload.facts);
     const evidenceHtml = [...facts.map((fact) => `<div class="fact"><strong>${escapeHtml(label(fact.type))}</strong><p>${escapeHtml(fact.body)}</p><small>${escapeHtml(fact.location || "-")}</small></div>`), ...referenced.map((item) => `<div class="fact"><strong>${escapeHtml(label(item.kind))}</strong><p>${escapeHtml(obj(item.payload).summary || item.source)}</p><small>${escapeHtml(item.location || item.source || "-")}</small></div>`)].join("");

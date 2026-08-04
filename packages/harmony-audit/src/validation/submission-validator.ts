@@ -10,6 +10,7 @@ function refs(value: Row): string[] { return strings(value.evidence_refs); }
 function allSemanticRefs(candidate: Row): string[] {
   const result = [...rows(candidate.operation_groups).flatMap((group) => [
     ...refs(group), ...refs((group.context as Row | undefined) ?? {}), ...refs((group.availability as Row | undefined) ?? {}),
+    ...rows(((group.context as Row | undefined) ?? {}).effect_hypotheses).flatMap((hypothesis) => strings(hypothesis.basis_evidence_refs)),
     ...rows(group.branches).flatMap(refs), ...rows(group.facts).flatMap(refs), ...rows(group.edges).flatMap(refs),
     ...rows(group.security_checks).flatMap(refs),
   ]), ...rows(candidate.component_calls).flatMap((call) => [
@@ -43,6 +44,13 @@ export function validateSemanticSubmission(candidate: Row, context: SemanticVali
     const expectedCategory = context.capabilityDomains?.get(capability);
     if (expectedCategory) invariant(expectedCategory === group.category, "CAPABILITY_CATEGORY_MISMATCH", { capability, category: group.category, expectedCategory });
     if (capability === "CAP-DOS-001") invariant(group.category === "availability" && !!group.availability, "DOS_SEMANTIC_MISMATCH");
+    const semanticContext = (group.context as Row | undefined) ?? {};
+    for (const hypothesis of rows(semanticContext.effect_hypotheses)) {
+      invariant(strings(hypothesis.basis_evidence_refs).length > 0, "HYPOTHESIS_BASIS_MISSING", { group: group.group_key, claim: hypothesis.claim });
+    }
+    if (semanticContext.direct_observed_effect !== null) {
+      invariant(refs(semanticContext).length > 0, "DIRECT_EFFECT_EVIDENCE_MISSING", { group: group.group_key });
+    }
     const facts = rows(group.facts).map((fact) => String(fact.fact_key ?? ""));
     invariant(facts.every(Boolean) && unique(facts), "DUPLICATE_LOCAL_ID", { entity: "fact", group: group.group_key });
     const factSet = new Set(facts);
@@ -63,6 +71,9 @@ export function validateSemanticSubmission(candidate: Row, context: SemanticVali
 
 export interface ValidationContext { taskId: string; entryId: string; groups: readonly Row[]; inheritedEvidence: ReadonlySet<string>; entryStatus?: string; }
 
+const DIMENSIONS = ["externally_reachable", "attacker_controlled", "sink_reached", "security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"] as const;
+const EFFECT_PROOFS = ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"] as const;
+
 export function validateExploitabilitySubmission(candidate: Row, context: ValidationContext): void {
   invariant(candidate.task_id === context.taskId, "TASK_ID_MISMATCH", { expected: context.taskId, actual: candidate.task_id });
   invariant(candidate.entry_id === context.entryId, "ENTRY_ID_MISMATCH", { expected: context.entryId, actual: candidate.entry_id });
@@ -81,16 +92,32 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
     invariant(validation.capability_id === group.capability_id, "CAPABILITY_CATEGORY_MISMATCH", { groupId: validation.group_id });
     const classification = String(validation.classification);
     const dimensions = (validation.exploitability as Row | undefined) ?? {};
+    for (const key of DIMENSIONS) {
+      const dimension = (dimensions[key] as Row | undefined) ?? {};
+      const dimensionRefs = refs(dimension);
+      if (dimension.status === "true") {
+        invariant(dimension.evidence_level !== "hypothesis" && dimensionRefs.length > 0, "TRUE_DIMENSION_EVIDENCE_INSUFFICIENT", { groupId: validation.group_id, dimension: key });
+      }
+      for (const ref of dimensionRefs) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
+    }
     if (classification === "confirmed_vulnerability") {
       if (context.entryStatus) invariant(context.entryStatus === "confirmed", "CONFIRMED_ENTRY_REQUIRED", { entryStatus: context.entryStatus });
-      invariant(["externally_reachable", "attacker_controlled", "sink_reached", "security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"].every((key) => dimensions[key] === true), "CONFIRMED_DIMENSIONS_INCOMPLETE");
+      invariant(DIMENSIONS.every((key) => ((dimensions[key] as Row | undefined) ?? {}).status === "true"), "CONFIRMED_DIMENSIONS_INCOMPLETE");
       invariant(["impact", "severity", "cwe", "poc"].every((key) => typeof validation[key] === "string" && String(validation[key]).length > 0), "CONFIRMED_DETAILS_INCOMPLETE");
+      const effectChain = (validation.effect_chain as Row | undefined) ?? {};
+      for (const key of EFFECT_PROOFS) {
+        const proof = (effectChain[key] as Row | undefined) ?? {};
+        const proofRefs = refs(proof);
+        invariant(typeof proof.location === "string" && proof.location.length > 0 && proofRefs.length > 0, "CONFIRMED_EFFECT_CHAIN_INCOMPLETE", { groupId: validation.group_id, proof: key });
+        invariant(proofRefs.some((ref) => localIds.includes(ref)), "CONFIRMED_EFFECT_NOT_INDEPENDENTLY_VERIFIED", { groupId: validation.group_id, proof: key });
+        for (const ref of proofRefs) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
+      }
     } else invariant(typeof validation.demotion_reason === "string" && validation.demotion_reason.length > 0, "DEMOTION_REASON_MISSING");
     if (["residual_risk", "insufficient_evidence"].includes(classification)) invariant(typeof validation.evidence_gap === "string" && validation.evidence_gap.length > 0, "EVIDENCE_GAP_MISSING");
     if (classification === "protected_exposure") invariant(validation.security_check_outcome === "effective", "PROTECTION_OUTCOME_MISMATCH");
-    invariant(!(validation.security_check_outcome === "effective" && dimensions.security_check_bypassed_or_absent === true), "SECURITY_CHECK_OUTCOME_CONFLICT");
+    invariant(!(validation.security_check_outcome === "effective" && (((dimensions.security_check_bypassed_or_absent as Row | undefined) ?? {}).status === "true")), "SECURITY_CHECK_OUTCOME_CONFLICT");
     const boundary = (validation.security_boundary as Row | undefined) ?? {};
-    invariant(boundary.violation === dimensions.boundary_violated, "BOUNDARY_DIMENSION_MISMATCH");
+    invariant(boundary.violation === (((dimensions.boundary_violated as Row | undefined) ?? {}).status === "true"), "BOUNDARY_DIMENSION_MISMATCH");
     if (["protected_exposure", "benign_business_flow"].includes(classification)) invariant(rows(validation.counter_evidence).length > 0, "DEMOTION_REASON_MISSING", { reason: "counter_evidence_required" });
     if (group.capability_id === "CAP-DOS-001") {
       const availability = (validation.availability_analysis as Row | undefined) ?? {};

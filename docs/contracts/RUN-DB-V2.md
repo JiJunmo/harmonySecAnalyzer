@@ -64,6 +64,8 @@ erDiagram
 | `group_edges` | `(group_id, from_fact_key, to_fact_key, kind)` | 两端必须属于同一 group |
 | `security_checks` | `security_check_id` | 所属 group 或 call 二选一；subject kind、validated property、behavior |
 
+Operation Group 的 `payload_json` 将源码事实与效果假设分开保存：事实链不允许 `effect` 类型；直接观察效果写入 `context.direct_observed_effect`，未验证推断写入带缺失证明项的 `context.effect_hypotheses`。Validation 的六维字段采用三态结构，并为确认漏洞保存独立核验的 `effect_chain`。
+
 证据引用使用关联表，不在规范化实体中保存 JSON ID 数组：
 
 ```text

@@ -54,6 +54,11 @@ export function semanticTaskInput(raw: Row, capabilities: readonly Capability[])
     group_by: ["operation_location", "controlled_properties"],
     stop_at: "component_call",
     forbidden_outputs: ["classification", "exploitability", "severity", "cwe", "poc"],
+    evidence_model: {
+      facts: "only directly observed source facts",
+      effect_hypotheses: "untrusted search leads with explicit missing proofs",
+      forbidden_as_fact: ["name_based_effect_inference", "comment_based_effect_inference", "unverified_runtime_effect"],
+    },
   };
   if (selected.has("CAP-DOS-001")) analysisContract.availability_requirements = [
     "externally_triggered_failure_or_resource_consumption", "attacker_scale_or_repeatability", "bounds_and_amplification",
@@ -88,6 +93,12 @@ export function validationTaskInput(db: Database.Database, raw: Row, entryId: st
   const targetRepo = String(((raw.verification_scope as Row | undefined) ?? {}).target_repo ?? "");
   return {
     semantic_analysis: { summary: analysis?.summary ?? "", coverage: selectedCoverage, operation_groups: groups },
+    validation_contract: {
+      semantic_effect_hypotheses_are_untrusted: true,
+      dimensions_require_status_reason_evidence_level_and_refs: true,
+      confirmed_effect_chain: ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
+      confirmed_effect_chain_requires_fresh_validation_evidence: true,
+    },
     principal_contracts: groups.filter((group) => group.scope === "cross_component").map((group) => {
       const state = (group.principal_state as Row | undefined) ?? {};
       return {

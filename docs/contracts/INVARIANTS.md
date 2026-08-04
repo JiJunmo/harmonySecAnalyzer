@@ -57,6 +57,11 @@ stateDiagram-v2
 | `UNEXPECTED_GROUP_VALIDATION` | validation 引用了输入外 group |
 | `DUPLICATE_GROUP_VALIDATION` | 同一 group 有多个 validation |
 | `CONFIRMED_DIMENSIONS_INCOMPLETE` | confirmed 六维不全真 |
+| `TRUE_DIMENSION_EVIDENCE_INSUFFICIENT` | 判真维度没有非假设证据 |
+| `CONFIRMED_EFFECT_CHAIN_INCOMPLETE` | confirmed 缺少完整效果因果链 |
+| `CONFIRMED_EFFECT_NOT_INDEPENDENTLY_VERIFIED` | 效果链没有本轮验证新增的源码证据 |
+| `HYPOTHESIS_BASIS_MISSING` | 效果假设没有候选依据 |
+| `DIRECT_EFFECT_EVIDENCE_MISSING` | 直接效果没有源码证据 |
 | `CONFIRMED_DETAILS_INCOMPLETE` | confirmed 缺 impact/severity/CWE/PoC |
 | `DEMOTION_REASON_MISSING` | 非 confirmed 缺降级理由 |
 | `EVIDENCE_GAP_MISSING` | residual/insufficient 缺证据缺口 |
@@ -82,6 +87,7 @@ Schema 校验错误使用 `SCHEMA_INVALID`，并附 AJV 路径；以上错误发
 | capability/category/专项字段匹配 | `INV-CAP-003 accepts registered category semantics` | `INV-CAP-004 rejects category and DoS mismatch` |
 | 每个输入 group 恰有一个 validation | `INV-VAL-001 accepts bijective validation set` | `INV-VAL-002 rejects missing duplicate and extra validation` |
 | confirmed 六维与详情完整 | `INV-VAL-003 accepts fully confirmed result` | `INV-VAL-004 rejects false dimension or missing details` |
+| 推断不能升级为事实或确认结论 | `INV-EFFECT-001 accepts explicit hypothesis with gaps` | `INV-EFFECT-002 rejects effect fact, hypothesis-backed true dimension and inherited-only effect chain` |
 | 非漏洞降级信息完整 | `INV-VAL-005 accepts protected benign residual insufficient` | `INV-VAL-006 rejects missing reason gap or counter evidence` |
 | 跨组件 Call 目标与参数合法 | `INV-CALL-001 accepts known target mappings` | `INV-CALL-002 rejects unknown target duplicate ordinal and invalid state` |
 | 跨组件主体/权限链完整 | `INV-PRINCIPAL-001 accepts preserved and delegated identity` | `INV-PRINCIPAL-002 rejects incomplete identity reset chain` |

@@ -15,9 +15,9 @@ tools: [search, symbol, explore, calls, path, trace, impact, file_dependencies]
 
 1. 根据 `entry.project_candidates` 和 `entry.facets` 找到本组件的真实 callback、触发条件和输入。仅有 `component_scope` 时，只确认上游组件可调用的 callback 和调用者可控参数，不得声称组件外部可达。入口结论只能是 `confirmed`、`excluded` 或 `uncertain`。
 2. 在本组件边界内有界追踪可控数据，允许经过本组件使用的普通 helper 和异步回调。禁止全仓枚举危险 API，禁止构造 Entry 与敏感 API 的组合。
-3. 只记录实际可达的安全相关操作及沿途参数转换、条件、权限检查、白名单、身份检查和可观察效果。每个 security check 必须用 `subject_kind` 标明它实际约束的主体或属性；本阶段不得判断其是否有效。
+3. 只记录实际可达的安全相关操作及沿途参数转换、条件、权限检查、白名单、身份检查和源码直接可观察的效果。参数名、函数名、类型名、注释和业务词义只能产生 `effect_hypotheses`，不得写成事实或 `direct_observed_effect`。每个假设必须列出 `missing_proofs`；没有找到字段读取、控制分支和受影响操作时，效果必须保持未知。每个 security check 必须用 `subject_kind` 标明它实际约束的主体或属性；本阶段不得判断其是否有效。
 4. 按“操作源码位置 + 关键受控参数集合”归并 operation group。普通分支进入组内 `branches`，不得生成重复组。`category` 必须使用 `audit_scope` 中对应 capability 的 `domain` 原值。
-5. 每组按真实调用顺序输出最短 `facts` 证据链。`edges` 由运行时根据 facts 顺序确定性生成；没有受控参数时 `controlled_properties` 为空数组。不得输出漏洞分类、利用性、严重性、CWE 或 PoC。
+5. 每组按真实调用顺序输出最短 `facts` 证据链。`facts` 只能是源码事实，不允许使用 `effect` 类型承载推断；直接效果写入 `context.direct_observed_effect`，不能证明时填 `null`。`edges` 由运行时根据 facts 顺序确定性生成；没有受控参数时 `controlled_properties` 为空数组。不得输出漏洞分类、利用性、严重性、CWE 或 PoC。
 6. 数据到达另一个 Ability/ExtensionAbility 时立即停止深入。根据 `component_directory` 解析目标 `component_id`，只记录 component call 的位置、条件、transport、参数映射、安全检查和 `principal_transition`。无法证明目标或映射时写入 `coverage.unresolved_targets`，不得猜测。
 7. 没有本地安全操作时输出空 `operation_groups`；没有组件调用时输出空 `component_calls`。
 

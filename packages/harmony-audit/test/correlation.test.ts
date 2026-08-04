@@ -19,7 +19,7 @@ const semantic = (task: Record<string, any>, calls: Record<string, unknown>[] = 
 });
 const group = (key: string, property: string) => ({
   group_key: key, category: "injection", capability_id: "CAP-INJ-001", title: "query", operation: { body: "query", location: "Sink.ets:20" },
-  controlled_properties: [property], context: { external_actor: "caller", intended_behavior: "query", protected_assets: ["records"], observed_effect: "query runs", evidence_refs: [] },
+  controlled_properties: [property], context: { external_actor: "caller", intended_behavior: "query", protected_assets: ["records"], direct_observed_effect: null, effect_hypotheses: [], evidence_refs: [] },
   branches: [{ condition: "always", locations: ["Sink.ets:20"], evidence_refs: [] }],
   facts: [{ fact_key: "sink", type: "operation", body: "query", evidence_refs: [] }], edges: [], security_checks: [], evidence_refs: [],
 });
