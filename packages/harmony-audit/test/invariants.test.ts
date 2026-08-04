@@ -157,7 +157,12 @@ describe("audit domain invariants", () => {
     const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [], validations: [validation] };
     expect(() => validateExploitabilitySubmission(candidate, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() })).not.toThrow();
     const invalid = structuredClone(candidate); (invalid.validations[0]!.principal_analysis as Record<string, unknown>).delegation_risk = false;
-    expect(() => validateExploitabilitySubmission(invalid, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() })).toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "PRINCIPAL_CHAIN_INCOMPLETE" }));
+    try {
+      validateExploitabilitySubmission(invalid, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() });
+      throw new Error("expected principal mismatch");
+    } catch (error) {
+      expect(error).toMatchObject<Partial<AuditInvariantError>>({ code: "PRINCIPAL_CHAIN_INCOMPLETE", details: expect.objectContaining({ mismatched_fields: ["delegation_risk"] }) });
+    }
   });
 
   it("INV-REPORT-002 marks exhausted work complete_with_gaps", async () => {

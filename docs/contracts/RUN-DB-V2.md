@@ -100,7 +100,7 @@ counter_evidence_refs
 2. 执行全部上下文及领域校验。
 3. 写 Semantic Analysis、Evidence、Call、Group、Fact、Edge、Check。
 4. 合并跨组件关联输入并创建/更新下游任务。
-5. 为存在 operation group 的分析创建 Validation Task。
+5. 为存在 operation group 的分析按一组一任务创建 Validation Task；任一组失败不得回滚或拒绝其他组。
 6. 将当前任务置为 completed，追加事件。
 
 任一步失败必须整体回滚；不得先完成任务再写事实。

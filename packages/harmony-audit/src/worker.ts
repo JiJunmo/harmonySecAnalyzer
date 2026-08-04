@@ -1,5 +1,5 @@
 import { type ChildExecutionResult, type McpManager, type PiSessionFactory, type SkillManager, type SubAgentInstance } from "@agent-platform/core";
-import { AtlasProfile, SEMANTIC_TOOLS, VALIDATION_TOOLS } from "./atlas.js";
+import { AtlasProfile, POC_TOOLS, SEMANTIC_TOOLS, VALIDATION_TOOLS } from "./atlas.js";
 import type { AuditStore } from "./runtime/store.js";
 
 export class HarmonyAuditWorker {
@@ -12,7 +12,7 @@ export class HarmonyAuditWorker {
     const task = await this.store.taskDocument(instance.handle);
     const input = task.input as Record<string, unknown>;
     const target = instance.kind === "component_semantic_analysis" ? String(input.target_repo) : String((input.verification_scope as Record<string, unknown>).target_repo);
-    const tools = instance.kind === "component_semantic_analysis" ? SEMANTIC_TOOLS : VALIDATION_TOOLS;
+    const tools = instance.kind === "component_semantic_analysis" ? SEMANTIC_TOOLS : instance.kind === "exploitability_validation" ? VALIDATION_TOOLS : POC_TOOLS;
     const skill = this.skills.activate(instance.kind, tools);
     const session = await this.mcp.connect("atlas", this.atlas.mcpServer(target, tools));
     try {

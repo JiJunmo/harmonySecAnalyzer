@@ -6,6 +6,7 @@ import type { McpServerConfig } from "@agent-platform/core";
 
 export const SEMANTIC_TOOLS = ["search", "symbol", "explore", "calls", "path", "trace", "impact", "file_dependencies"] as const;
 export const VALIDATION_TOOLS = ["symbol", "explore", "calls", "path", "trace"] as const;
+export const POC_TOOLS = ["symbol", "explore", "path", "trace"] as const;
 
 export class AtlasProfile {
   constructor(readonly executable: string) {}

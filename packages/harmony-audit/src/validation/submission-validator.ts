@@ -99,15 +99,45 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
     }
     if (group.scope === "cross_component") {
       const expected = (group.principal_state as Row | undefined) ?? {}; const principal = (validation.principal_analysis as Row | undefined) ?? {};
+      const expectedAnalysis: Row = {
+        origin_principal: expected.origin_principal,
+        target_observed_principal: expected.target_observed_principal,
+        authority_used: expected.authority_used,
+        origin_bound_to_observed_principal: expected.origin_binding === "preserved",
+        delegation_risk: expected.origin_binding === "replaced_by_caller",
+      };
+      const mismatchedFields = Object.keys(expectedAnalysis).filter((field) => principal[field] !== expectedAnalysis[field]);
       invariant(
-        principal.origin_principal === expected.origin_principal
-        && principal.target_observed_principal === expected.target_observed_principal
-        && principal.authority_used === expected.authority_used
-        && principal.origin_bound_to_observed_principal === (expected.origin_binding === "preserved")
-        && principal.delegation_risk === (expected.origin_binding === "replaced_by_caller"),
-        "PRINCIPAL_CHAIN_INCOMPLETE", { groupId: validation.group_id, expected },
+        mismatchedFields.length === 0,
+        "PRINCIPAL_CHAIN_INCOMPLETE", {
+          groupId: validation.group_id,
+          mismatched_fields: mismatchedFields,
+          expected: expectedAnalysis,
+          actual: Object.fromEntries(Object.keys(expectedAnalysis).map((field) => [field, principal[field]])),
+        },
       );
     }
     for (const ref of [...refs(validation), ...refs((validation.business_intent as Row | undefined) ?? {}), ...refs((validation.security_boundary as Row | undefined) ?? {}), ...refs((validation.principal_analysis as Row | undefined) ?? {}), ...refs((validation.availability_analysis as Row | undefined) ?? {}), ...rows(validation.counter_evidence).flatMap(refs)]) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
   }
+}
+
+export interface PocValidationContext {
+  taskId: string; entryId: string; findingId: string; allowedEntryTypes: ReadonlySet<string>;
+  allowedEvidence: ReadonlySet<string>;
+}
+
+export function validatePocSubmission(candidate: Row, context: PocValidationContext): void {
+  invariant(candidate.task_id === context.taskId, "TASK_ID_MISMATCH", { expected: context.taskId, actual: candidate.task_id });
+  invariant(candidate.finding_id === context.findingId, "FINDING_ID_MISMATCH", { expected: context.findingId, actual: candidate.finding_id });
+  const entryType = String(candidate.entry_type ?? "");
+  invariant(context.allowedEntryTypes.has(entryType), "POC_ENTRY_TYPE_MISMATCH", { entry_type: entryType, allowed: [...context.allowedEntryTypes].sort() });
+  const localIds = rows(candidate.evidence).map((item) => String(item.evidence_id ?? ""));
+  invariant(localIds.every(Boolean) && unique(localIds), "DUPLICATE_LOCAL_ID", { entity: "evidence" });
+  const allowedEvidence = new Set([...context.allowedEvidence, ...localIds]);
+  invariant(typeof candidate.code === "string" && String(candidate.code).length > 0, "POC_CODE_REQUIRED");
+  invariant(typeof candidate.expected_observation === "string" && String(candidate.expected_observation).length > 0, "POC_EXPECTED_OBSERVATION_REQUIRED");
+  const trigger = (candidate.trigger as Row | undefined) ?? {};
+  invariant(typeof trigger.kind === "string" && String(trigger.kind).length > 0, "POC_TRIGGER_KIND_REQUIRED");
+  invariant(typeof trigger.payload !== "undefined", "POC_TRIGGER_PAYLOAD_REQUIRED");
+  for (const ref of refs(candidate)) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
 }

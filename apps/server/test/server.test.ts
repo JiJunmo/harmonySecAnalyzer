@@ -32,6 +32,23 @@ describe("generic plugin host web API", () => {
       ...dummyPlugin,
       manifest: { ...dummyPlugin.manifest, contributes: ["runs", "web"] },
       web: [{ id: "console", title: "Dummy Console", entry: "index.html", assetsRoot: contributionRoot }],
+      activate(context) {
+        const runtime = dummyPlugin.activate(context);
+        const html = new TextEncoder().encode("<!doctype html><button id='tab'>Tab</button><script>document.querySelector('#tab').dataset.ready='true'</script>");
+        return new Proxy(runtime, {
+          get(target, property) {
+            if (property === "artifacts") return async (run: Parameters<typeof target.artifacts>[0]) => [
+              ...await target.artifacts(run),
+              { id: "report", name: "report.html", mediaType: "text/html; charset=utf-8", size: html.byteLength },
+            ];
+            if (property === "openArtifact") return async (run: Parameters<typeof target.openArtifact>[0], artifactId: string) => artifactId === "report" ? {
+              descriptor: { id: "report", name: "report.html", mediaType: "text/html; charset=utf-8", size: html.byteLength }, body: html,
+            } : target.openArtifact(run, artifactId);
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      },
     };
     const host = await PluginHostService.create({ plugins: [pluginWithWeb], configs: { dummy: { prefix: "web" } } });
     const reliability = { diagnostics: async () => ({ status: "ok", hostRuns: 1, subagentRuns: 2 }), prune: () => ({ hostRuns: 0, subagentRuns: 1 }) };
@@ -61,11 +78,15 @@ describe("generic plugin host web API", () => {
     })).json();
     expect(completed).toMatchObject({ pluginId: "dummy", status: "succeeded", pluginRun: { id: "web-1" } });
     expect(await (await fetch(`${origin}/api/runs`, { headers })).json()).toMatchObject({ runs: [{ id: accepted.id }] });
-    expect(await (await fetch(`${origin}/api/runs/${accepted.id}/artifacts`, { headers })).json()).toMatchObject({ artifacts: [{ id: "result" }] });
+    const artifactList = await (await fetch(`${origin}/api/runs/${accepted.id}/artifacts`, { headers })).json() as { artifacts: { id: string }[] };
+    expect(artifactList.artifacts.map((artifact) => artifact.id)).toEqual(["result", "report"]);
     expect(await (await fetch(`${origin}/api/runs/${accepted.id}/executions`, { headers })).json()).toEqual({ executions: [] });
     expect(await (await fetch(`${origin}/api/runs/${accepted.id}/artifacts/result?token=test-token`)).json()).toEqual({
       prefix: "web", payload: { value: 42 }, status: "succeeded",
     });
+    const htmlReport = await fetch(`${origin}/api/runs/${accepted.id}/artifacts/report?token=test-token`);
+    expect(htmlReport.headers.get("content-security-policy")).toContain("script-src 'unsafe-inline'");
+    expect(await htmlReport.text()).toContain("document.querySelector('#tab')");
     const staleEvents = await fetch(`${origin}/api/runs/JOB-stale/events`, { headers });
     expect(staleEvents.status).toBe(404);
     expect(await staleEvents.json()).toEqual({ ok: false, error: "host_run_not_found:JOB-stale" });

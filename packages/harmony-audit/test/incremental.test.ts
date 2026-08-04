@@ -27,6 +27,13 @@ const operationGroup = {
   evidence_refs: [],
 };
 
+const pocArtifact = (task: Record<string, any>) => ({
+  task_id: task.task_id, finding_id: String(task.input.finding.finding_id), entry_type: "want",
+  trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.QUERY", uri: "demo://record?owned=1" } },
+  language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://record?owned=1' } })",
+  prerequisites: ["安装 debug 包"], expected_observation: "返回本人记录", limitations: "未在真机验证", evidence: [], evidence_refs: [],
+});
+
 function protectedValidation(task: Record<string, any>) {
   const group = task.input.operation_groups[0];
   return {
@@ -117,6 +124,41 @@ describe("incremental audit migration", () => {
     const db = new Database(incremental.paths.db);
     expect(db.prepare("SELECT status,attempts FROM tasks WHERE kind='exploitability_validation'").get()).toEqual({ status: "completed", attempts: 0 });
     expect((db.prepare("SELECT COUNT(*) n FROM validation_results").get() as { n: number }).n).toBe(1);
+    db.close();
+  });
+
+  it("reuses confirmed findings and their PoC artifacts from the baseline", async () => {
+    const root = await project(); const capabilities = await resolveCapabilities([]);
+    const full = await AuditStore.create(root, await profileProject(root), { mode: "full", capabilities });
+    for (const task of (await full.claim(5)).tasks) {
+      const result = semantic(task as Record<string, any>);
+      if (task.input.entry.component_name === "A") result.operation_groups = [operationGroup] as never;
+      expect(full.reconcile(task.task_id, task.attempt, result)).toMatchObject({ accepted: true });
+    }
+    const [validation] = (await full.claim(5)).tasks;
+    const confirmed = protectedValidation(validation as Record<string, any>);
+    const group = (validation!.input.operation_groups as Record<string, any>[])[0];
+    (confirmed.validations as Record<string, any>[])[0] = {
+      group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "受保护的数据查询",
+      security_check_outcome: "bypassable",
+      business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence_refs: [] },
+      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: true, reason: "owner check can be bypassed", evidence_refs: [] },
+      exploitability: { externally_reachable: true, attacker_controlled: true, sink_reached: true, security_check_bypassed_or_absent: true, boundary_violated: true, concrete_impact: true },
+      counter_evidence: [], impact: "读取他人记录", severity: "high", cwe: "CWE-89", poc: "demo://record?owned=1", evidence_refs: [],
+    };
+    expect(full.reconcile(validation!.task_id, validation!.attempt, confirmed)).toMatchObject({ accepted: true });
+    const [poc] = (await full.claim(5)).tasks;
+    expect(poc!.kind).toBe("poc_generation");
+    expect(full.reconcile(poc!.task_id, poc!.attempt, pocArtifact(poc as Record<string, any>))).toMatchObject({ accepted: true });
+    await full.finalize();
+
+    const model = await profileProject(root); const plan = await planIncremental(root, model);
+    expect(plan.impactPlan.affected_entries).toEqual([]);
+    const incremental = await AuditStore.create(root, model, { mode: "incremental", capabilities }, plan);
+    expect((await incremental.claim(5)).tasks).toEqual([]);
+    const db = new Database(incremental.paths.db);
+    expect(db.prepare("SELECT status,attempts FROM tasks WHERE kind='poc_generation'").get()).toEqual({ status: "completed", attempts: 0 });
+    expect((db.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(1);
     db.close();
   });
 });

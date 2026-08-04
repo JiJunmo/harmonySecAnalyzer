@@ -5,6 +5,7 @@ import { AuditInvariantError } from "./invariant-errors.js";
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const semantic = compile("component-semantic-result.schema.json");
 const exploitability = compile("exploitability-validation-result.schema.json");
+const poc = compile("poc-result.schema.json");
 
 function compile(name: string): ValidateFunction {
   const schema = JSON.parse(readFileSync(new URL(`../../resources/schemas/${name}`, import.meta.url), "utf8"));
@@ -12,6 +13,6 @@ function compile(name: string): ValidateFunction {
 }
 
 export function validateSubmissionSchema(kind: string, candidate: unknown): void {
-  const validate = kind === "component_semantic_analysis" ? semantic : exploitability;
+  const validate = kind === "component_semantic_analysis" ? semantic : kind === "exploitability_validation" ? exploitability : poc;
   if (!validate(candidate)) throw new AuditInvariantError("SCHEMA_INVALID", validate.errors?.map((error) => ({ path: error.instancePath, keyword: error.keyword, message: error.message })));
 }

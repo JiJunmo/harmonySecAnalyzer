@@ -47,6 +47,40 @@ function evidenceFor(refs: unknown, evidence: Row[]): Row[] {
   return evidence.filter((item) => wanted.has(String(item.evidence_id)) || wanted.has(String(item.local_evidence_id)));
 }
 
+function pocArtifact(finding: Row): Row {
+  const artifact = obj(finding.poc_artifact);
+  return Object.keys(obj(artifact.payload)).length ? obj(artifact.payload) : artifact;
+}
+
+function pocCode(finding: Row): string {
+  const artifact = pocArtifact(finding); const code = String(artifact.code ?? "");
+  if (code) return `入口类型：${String(artifact.entry_type ?? "-")}\n触发方式：${String(obj(artifact.trigger).kind ?? "-")}\n\n${code}`;
+  return String(finding.poc || "");
+}
+
+function pocMarkdown(finding: Row): string {
+  const artifact = pocArtifact(finding);
+  const preamble: string[] = [];
+  const trigger = obj(artifact.trigger); const payload = trigger.payload;
+  if (String(artifact.entry_type ?? "")) preamble.push(`- 入口类型：\`${codeMd(artifact.entry_type)}\``);
+  if (String(trigger.kind ?? "")) preamble.push(`- 触发方式：\`${codeMd(trigger.kind)}\``);
+  const payloadText = typeof payload === "string" ? payload : JSON.stringify(payload);
+  if (payloadText && payloadText !== "{}") preamble.push(`- 触发载荷：\`${codeMd(payloadText)}\``);
+  if (String(artifact.language ?? "")) preamble.push(`- 语言：\`${codeMd(artifact.language)}\``);
+  const prerequisites = strings(artifact.prerequisites);
+  if (prerequisites.length) preamble.push(`- 前置条件：${prerequisites.map((item) => `\`${codeMd(item)}\``).join("、")}`);
+  if (preamble.length) preamble.push("");
+  const expected = String(artifact.expected_observation ?? "");
+  const limitations = String(artifact.limitations ?? "");
+  const body = [
+    ...preamble,
+    expected ? `**预期现象**：${inlineMd(expected)}` : "",
+    limitations ? `> 复现限制：${inlineMd(limitations)}` : "",
+  ].filter((line) => line.length);
+  const code = String(artifact.code ?? "") || String(finding.poc || "");
+  return [...body, code ? `\`\`\`${codeMd(artifact.language || "typescript")}\n${code}\n\`\`\`` : "未提供 PoC"].join("\n");
+}
+
 function recommendations(finding: Row, group: Row): string[] {
   const category = String(group.category ?? ""); const cwe = String(finding.cwe ?? "");
   const common = ["在修复后增加针对外部入口、边界条件和绕过路径的自动化回归测试。"];
@@ -139,7 +173,7 @@ export function renderMarkdown(report: Row): string {
       lines.push("");
     }
     lines.push("#### 修复建议", "", ...fixes.map((item) => `- ${inlineMd(item)}`), "");
-    lines.push("#### 验证方式 / PoC", "", "```typescript", String(finding.poc || "未提供 PoC"), "```", "");
+    lines.push("#### 验证方式 / PoC", "", pocMarkdown(finding), "");
   });
 
   lines.push("## 3. 组件审计结果", "", "本节覆盖所有进入审计目录的组件，包括未发现漏洞、已有有效防护和未完成验证的组件。", "");
@@ -207,7 +241,12 @@ export function renderHtml(report: Row): string {
     const referenced = evidenceFor(assessment.evidence_refs, evidence); const facts = rows(payload.facts);
     const evidenceHtml = [...facts.map((fact) => `<div class="fact"><strong>${escapeHtml(label(fact.type))}</strong><p>${escapeHtml(fact.body)}</p><small>${escapeHtml(fact.location || "-")}</small></div>`), ...referenced.map((item) => `<div class="fact"><strong>${escapeHtml(label(item.kind))}</strong><p>${escapeHtml(obj(item.payload).summary || item.source)}</p><small>${escapeHtml(item.location || item.source || "-")}</small></div>`)].join("");
     const fixes = recommendations(finding, group).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-    return `<article class="finding" data-search="${escapeHtml([finding.title, finding.severity, finding.cwe, group.capability_id].join(" ").toLowerCase())}"><header><span class="finding-index">${String(index + 1).padStart(2, "0")}</span><div><p>${badge(finding.classification || validation.classification)} ${badge(finding.severity)}</p><h3>${escapeHtml(finding.title)}</h3><small>${escapeHtml(finding.finding_id)} · ${escapeHtml(finding.cwe)} · ${escapeHtml(group.capability_id || validation.capability_id)}</small></div></header><div class="finding-body"><div class="callout danger"><b>安全影响</b><p>${escapeHtml(finding.impact)}</p></div><div class="grid-2"><section><h4>根因与敏感操作</h4><dl class="kv"><dt>敏感操作</dt><dd><code>${escapeHtml(operation.body || "-")}</code></dd><dt>源码位置</dt><dd><code>${escapeHtml(operation.location || "-")}</code></dd><dt>业务用途</dt><dd>${escapeHtml(intent.declared_or_inferred_purpose || obj(payload.context).intended_behavior || "-")}</dd><dt>防护判定</dt><dd>${escapeHtml(label(assessment.security_check_outcome))}</dd></dl></section><section><h4>安全边界</h4><dl class="kv"><dt>预期边界</dt><dd>${escapeHtml(boundary.expected_boundary || "-")}</dd><dt>突破原因</dt><dd>${escapeHtml(boundary.reason || "-")}</dd><dt>来源主体</dt><dd>${escapeHtml(principal.origin_principal || "-")}</dd><dt>权限使用</dt><dd>${escapeHtml(principal.authority_used || "-")}</dd></dl></section></div><h4>六维有效性验证</h4><div class="dimensions">${dimensions}</div>${checks ? `<h4>已识别防护事实</h4><div class="facts">${checks}</div>` : ""}${evidenceHtml ? `<h4>源码证据链</h4><div class="facts">${evidenceHtml}</div>` : ""}<h4>修复建议</h4><ul class="notes">${fixes}</ul><details><summary>查看验证方式 / PoC</summary><pre><code>${escapeHtml(finding.poc || "未提供 PoC")}</code></pre></details></div></article>`;
+    const poc = pocArtifact(finding); const pocTrigger = obj(poc.trigger);
+    const pocMeta = [String(poc.entry_type ?? ""), String(pocTrigger.kind ?? ""), String(poc.language ?? "")].filter(Boolean).map((item) => `<code>${escapeHtml(item)}</code>`).join(" ");
+    const pocPrereqs = strings(poc.prerequisites).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+    const pocExpected = String(poc.expected_observation ?? ""); const pocLimitations = String(poc.limitations ?? "");
+    const pocHtml = Object.keys(poc).length ? `<details open><summary>查看验证方式 / PoC <b class="badge ${escapeHtml(finding.severity)}">${escapeHtml(poc.entry_type || "PoC")}</b></summary><dl class="kv">${pocMeta ? `<dt>入口 / 触发 / 语言</dt><dd>${pocMeta}</dd>` : ""}${pocExpected ? `<dt>预期现象</dt><dd>${escapeHtml(pocExpected)}</dd>` : ""}${pocLimitations ? `<dt>复现限制</dt><dd>${escapeHtml(pocLimitations)}</dd>` : ""}</dl>${pocPrereqs ? `<h5>前置条件</h5><ul class="notes">${pocPrereqs}</ul>` : ""}<pre><code>${escapeHtml(pocCode(finding))}</code></pre></details>` : `<details><summary>查看验证方式 / PoC</summary><pre><code>${escapeHtml(finding.poc || "未提供 PoC")}</code></pre></details>`;
+    return `<article class="finding" data-search="${escapeHtml([finding.title, finding.severity, finding.cwe, group.capability_id].join(" ").toLowerCase())}"><header><span class="finding-index">${String(index + 1).padStart(2, "0")}</span><div><p>${badge(finding.classification || validation.classification)} ${badge(finding.severity)}</p><h3>${escapeHtml(finding.title)}</h3><small>${escapeHtml(finding.finding_id)} · ${escapeHtml(finding.cwe)} · ${escapeHtml(group.capability_id || validation.capability_id)}</small></div></header><div class="finding-body"><div class="callout danger"><b>安全影响</b><p>${escapeHtml(finding.impact)}</p></div><div class="grid-2"><section><h4>根因与敏感操作</h4><dl class="kv"><dt>敏感操作</dt><dd><code>${escapeHtml(operation.body || "-")}</code></dd><dt>源码位置</dt><dd><code>${escapeHtml(operation.location || "-")}</code></dd><dt>业务用途</dt><dd>${escapeHtml(intent.declared_or_inferred_purpose || obj(payload.context).intended_behavior || "-")}</dd><dt>防护判定</dt><dd>${escapeHtml(label(assessment.security_check_outcome))}</dd></dl></section><section><h4>安全边界</h4><dl class="kv"><dt>预期边界</dt><dd>${escapeHtml(boundary.expected_boundary || "-")}</dd><dt>突破原因</dt><dd>${escapeHtml(boundary.reason || "-")}</dd><dt>来源主体</dt><dd>${escapeHtml(principal.origin_principal || "-")}</dd><dt>权限使用</dt><dd>${escapeHtml(principal.authority_used || "-")}</dd></dl></section></div><h4>六维有效性验证</h4><div class="dimensions">${dimensions}</div>${checks ? `<h4>已识别防护事实</h4><div class="facts">${checks}</div>` : ""}${evidenceHtml ? `<h4>源码证据链</h4><div class="facts">${evidenceHtml}</div>` : ""}<h4>修复建议</h4><ul class="notes">${fixes}</ul>${pocHtml}</div></article>`;
   }).join("") : '<div class="empty"><strong>未发现需要处置的安全问题</strong><p>请同时查看组件审计结果和覆盖缺口。</p></div>';
 
   const componentHtml = components.map((component) => { const c = obj(component.coverage); const operationGroups = rows(component.operation_groups);

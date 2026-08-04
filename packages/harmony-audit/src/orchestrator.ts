@@ -5,7 +5,7 @@ import {
   type McpPolicyConfig, type SkillConfigDocument,
   type Orchestrator, type OrchestratorContext,
 } from "@agent-platform/core";
-import { AtlasProfile, prepareAtlasIndex, SEMANTIC_TOOLS, VALIDATION_TOOLS } from "./atlas.js";
+import { AtlasProfile, POC_TOOLS, prepareAtlasIndex, SEMANTIC_TOOLS, VALIDATION_TOOLS } from "./atlas.js";
 import { resolveCapabilities } from "./capabilities.js";
 import { HarmonyAuditGraphPlugin } from "./graph.js";
 import { planIncremental } from "./incremental.js";
@@ -33,10 +33,11 @@ export async function createHarmonyAuditSessions(options: HarmonyAuditOptions): 
 export async function createHarmonyAuditSkills(options: HarmonyAuditOptions): Promise<SkillManager> {
   const bundledRoot = fileURLToPath(new URL("../resources/skills", import.meta.url));
   const skills = await new SkillManager().discover([bundledRoot, ...(options.skills?.roots ?? [])]);
-  const assignments = { component_semantic_analysis: "harmony-component-analysis", exploitability_validation: "harmony-exploitability-validation", ...(options.skills?.tasks ?? {}) };
+  const assignments = { component_semantic_analysis: "harmony-component-analysis", exploitability_validation: "harmony-exploitability-validation", poc_generation: "harmony-poc-generation", ...(options.skills?.tasks ?? {}) };
   for (const [task, skill] of Object.entries(assignments)) skills.assign(task, skill);
   skills.activate("component_semantic_analysis", SEMANTIC_TOOLS);
   skills.activate("exploitability_validation", VALIDATION_TOOLS);
+  skills.activate("poc_generation", POC_TOOLS);
   return skills;
 }
 

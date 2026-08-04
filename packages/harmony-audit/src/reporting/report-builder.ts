@@ -6,21 +6,39 @@ const object = (value: unknown): Row => value && typeof value === "object" && !A
 
 export interface CoverageGap { readonly kind: string; readonly subject_id: string; readonly details: unknown; }
 
+function operationGroups(inputJson: string): Row[] {
+  const input = object(parse(inputJson));
+  return Array.isArray(input.operation_groups) ? input.operation_groups as Row[] : [];
+}
+
+export function pendingValidationGroupCount(db: Database.Database): number {
+  const validated = new Set((db.prepare("SELECT group_id FROM validation_results").all() as { group_id: string }[]).map((row) => row.group_id));
+  const active = db.prepare("SELECT input_json FROM tasks WHERE kind='exploitability_validation' AND status IN ('queued','running')").all() as { input_json: string }[];
+  return active.flatMap((task) => operationGroups(task.input_json)).filter((group) => group.group_id && !validated.has(String(group.group_id))).length;
+}
+
 export function collectCoverageGaps(db: Database.Database): CoverageGap[] {
   const gaps: CoverageGap[] = [];
-  for (const task of db.prepare("SELECT task_id,kind,subject_id,attempts,error FROM tasks WHERE status='exhausted' ORDER BY task_id").all() as Row[]) gaps.push({ kind: "exhausted_task", subject_id: String(task.task_id), details: task });
+  // A terminal validation task is represented by its missing operation group(s)
+  // below. Counting the task as well would report the same root cause twice.
+  for (const task of db.prepare("SELECT task_id,kind,subject_id,attempts,error FROM tasks WHERE status='exhausted' AND kind!='exploitability_validation' ORDER BY task_id").all() as Row[]) gaps.push({ kind: "exhausted_task", subject_id: String(task.task_id), details: task });
   for (const row of db.prepare("SELECT s.entry_id,s.coverage_json FROM semantic_analyses s ORDER BY s.entry_id").all() as { entry_id: string; coverage_json: string }[]) {
     const coverage = object(parse(row.coverage_json)); const unresolved = Array.isArray(coverage.unresolved_targets) ? coverage.unresolved_targets : [];
     if (coverage.entry_status === "uncertain") gaps.push({ kind: "uncertain_entry", subject_id: row.entry_id, details: coverage.entry_notes ?? [] });
     if (unresolved.length) gaps.push({ kind: "unresolved_targets", subject_id: row.entry_id, details: unresolved });
   }
-  const requiredGroups = new Set<string>();
-  for (const task of db.prepare("SELECT input_json FROM tasks WHERE kind='exploitability_validation'").all() as { input_json: string }[]) {
-    const input = object(parse(task.input_json));
-    for (const group of Array.isArray(input.operation_groups) ? input.operation_groups as Row[] : []) if (group.group_id) requiredGroups.add(String(group.group_id));
+  const requiredGroups = new Map<string, Row>();
+  const terminalTasks = db.prepare(`SELECT task_id,status,attempts,error,input_json FROM tasks
+    WHERE kind='exploitability_validation' AND status NOT IN ('queued','running')
+      AND NOT (status='cancelled' AND error='superseded_by_group_validation_tasks')
+    ORDER BY task_id`).all() as Row[];
+  for (const task of terminalTasks) {
+    for (const group of operationGroups(String(task.input_json))) if (group.group_id) requiredGroups.set(String(group.group_id), {
+      task_id: task.task_id, task_status: task.status, attempts: task.attempts, error: task.error,
+    });
   }
   const validated = new Set((db.prepare("SELECT group_id FROM validation_results").all() as { group_id: string }[]).map((row) => row.group_id));
-  for (const groupId of [...requiredGroups].filter((id) => !validated.has(id)).sort()) gaps.push({ kind: "unvalidated_operation_group", subject_id: groupId, details: {} });
+  for (const [groupId, details] of [...requiredGroups].filter(([id]) => !validated.has(id)).sort(([left], [right]) => left.localeCompare(right))) gaps.push({ kind: "unvalidated_operation_group", subject_id: groupId, details });
   return gaps;
 }
 
@@ -59,6 +77,10 @@ export function buildReportModel(db: Database.Database, status: "complete" | "co
     const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson),
       causes: (db.prepare("SELECT validation_id FROM finding_causes WHERE finding_id=? ORDER BY validation_id").all(row.finding_id) as { validation_id: string }[]).map((cause) => cause.validation_id) };
   });
+  const pocArtifacts: Row[] = (db.prepare("SELECT poc_id,finding_id,entry_type,payload_json FROM poc_artifacts ORDER BY poc_id").all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson) }; });
+  const pocByFinding = new Map<string, Row>();
+  for (const poc of pocArtifacts) if (!pocByFinding.has(String(poc.finding_id))) pocByFinding.set(String(poc.finding_id), poc);
+  for (const finding of findings) { const poc = pocByFinding.get(String(finding.finding_id)); finding.poc_artifact = poc ?? null; }
   const paths: Row[] = (db.prepare("SELECT path_id,root_entry_id,target_entry_id,fingerprint,cycle,payload_json FROM component_paths ORDER BY path_id").all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, cycle: Boolean(row.cycle), payload: parse(payloadJson) }; });
   const componentCalls: Row[] = (db.prepare(`SELECT c.component_call_id,c.semantic_analysis_id,c.target_component_id,c.payload_json,s.entry_id source_entry_id
     FROM component_calls c JOIN semantic_analyses s ON s.semantic_analysis_id=c.semantic_analysis_id ORDER BY c.component_call_id`).all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson) }; });
@@ -97,9 +119,9 @@ export function buildReportModel(db: Database.Database, status: "complete" | "co
     schema_version: 2,
     run: { run_id: run.run_id, target_repo: run.target_repo, status, project_model_version: run.project_model_version, audit_scope: parse(run.audit_scope_json), created_at: run.created_at },
     project: projectModel,
-    summary: { entries: entries.length, analyzed_components: entries.filter((entry) => entry.semantic_analysis_id).length, paths: paths.length, component_calls: componentCalls.length, operation_groups: groups.length, validations: validations.length, findings: findings.length, coverage_gaps: gaps.length, evidence: evidence.length, classifications: classificationCounts, severities: severityCounts },
+    summary: { entries: entries.length, analyzed_components: entries.filter((entry) => entry.semantic_analysis_id).length, paths: paths.length, component_calls: componentCalls.length, operation_groups: groups.length, validations: validations.length, findings: findings.length, poc_artifacts: pocArtifacts.length, coverage_gaps: gaps.length, evidence: evidence.length, classifications: classificationCounts, severities: severityCounts },
     task_counts: taskCounts, coverage: { status: gaps.length ? "partial" : "complete", entries, gaps }, component_results: componentResults,
-    component_calls: componentCalls, paths, operation_groups: groups, validations, findings, evidence, attack_matrix: attackMatrix,
+    component_calls: componentCalls, paths, operation_groups: groups, validations, findings, evidence, pocs: pocArtifacts, attack_matrix: attackMatrix,
   };
 }
 

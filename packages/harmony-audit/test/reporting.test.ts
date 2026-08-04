@@ -45,11 +45,30 @@ describe("deterministic reporting", () => {
     const [validationTask] = (await store.claim(5)).tasks.filter((task) => task.kind === "exploitability_validation");
     const groups = validationTask!.input.operation_groups as Record<string, any>[];
     expect(groups.map((item) => item.scope ?? "local").sort()).toEqual(["cross_component"]);
-    const result = { task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "confirmed", validations: groups.map(confirmed), evidence: [] };
+    const submittedValidations = groups.map(confirmed) as Record<string, any>[];
+    submittedValidations[0]!.principal_analysis.origin_principal = "model-guessed-principal";
+    submittedValidations[0]!.principal_analysis.origin_bound_to_observed_principal = true;
+    submittedValidations[0]!.principal_analysis.delegation_risk = false;
+    const result = { task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "confirmed", validations: submittedValidations, evidence: [] };
     expect(store.reconcile(validationTask!.task_id, validationTask!.attempt, result)).toMatchObject({ accepted: true });
+    const [pocTask] = (await store.claim(5)).tasks;
+    expect(pocTask!.kind).toBe("poc_generation");
+    expect(store.reconcile(pocTask!.task_id, pocTask!.attempt, {
+      task_id: pocTask!.task_id, finding_id: String(pocTask!.input.finding.finding_id), entry_type: "want",
+      trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.QUERY", uri: "demo://query?q=x" } },
+      language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://query?q=x' } })",
+      prerequisites: [], expected_observation: "返回私有记录", limitations: "未在真机验证", evidence: [], evidence_refs: [],
+    })).toMatchObject({ accepted: true });
     const db = new Database(store.paths.db);
     expect((db.prepare("SELECT COUNT(*) n FROM findings").get() as { n: number }).n).toBe(1);
-    expect((db.prepare("SELECT COUNT(*) n FROM finding_causes").get() as { n: number }).n).toBe(1); db.close();
+    expect((db.prepare("SELECT COUNT(*) n FROM finding_causes").get() as { n: number }).n).toBe(1);
+    const storedValidation = JSON.parse((db.prepare("SELECT payload_json FROM validation_results").get() as { payload_json: string }).payload_json) as Record<string, any>;
+    expect(storedValidation.principal_analysis).toMatchObject({
+      origin_principal: groups[0]!.principal_state.origin_principal,
+      origin_bound_to_observed_principal: false,
+      delegation_risk: true,
+    });
+    db.close();
 
     const report = await store.finalize();
     expect((report.summary as Record<string, unknown>)).toMatchObject({ findings: 1, operation_groups: 2, validations: 1, coverage_gaps: 0 });
@@ -77,5 +96,58 @@ describe("deterministic reporting", () => {
     const report = await store.finalize(); const gaps = (report.coverage as Record<string, unknown>).gaps as Record<string, unknown>[];
     expect((report.run as Record<string, unknown>).status).toBe("complete_with_gaps");
     expect(gaps.map((gap) => gap.kind)).toEqual(["uncertain_entry", "unresolved_targets"]);
+  });
+
+  it("isolates validation failures per operation group and keeps active groups out of coverage gaps", async () => {
+    const { store } = await twoComponentStore(); const [semanticTask] = (await store.claim(1)).tasks;
+    const secondGroup = structuredClone(group); secondGroup.group_key = "query-secondary"; secondGroup.title = "第二个查询";
+    secondGroup.operation = { body: "querySecondary", location: "A.ets:30" };
+    expect(store.reconcile(semanticTask!.task_id, semanticTask!.attempt, semantic(semanticTask as Record<string, any>, [], [group, secondGroup]))).toMatchObject({ accepted: true });
+
+    const validationTasks = (await store.claim(5)).tasks.filter((task) => task.kind === "exploitability_validation");
+    expect(validationTasks).toHaveLength(2);
+    expect(validationTasks.every((task) => (task.input.operation_groups as unknown[]).length === 1)).toBe(true);
+    expect(store.status()).toMatchObject({ coverage_gaps: [], pending_validation_groups: 2 });
+
+    const [failedTask, successfulTask] = validationTasks;
+    expect(store.reconcile(failedTask!.task_id, failedTask!.attempt, undefined, "model_failed")).toMatchObject({ status: "queued" });
+    for (let retry = 0; retry < 2; retry += 1) {
+      const [task] = (await store.claim(1)).tasks;
+      expect(task!.task_id).toBe(failedTask!.task_id);
+      store.reconcile(task!.task_id, task!.attempt, undefined, "model_failed");
+    }
+    const successfulGroup = (successfulTask!.input.operation_groups as Record<string, any>[])[0]!;
+    expect(store.reconcile(successfulTask!.task_id, successfulTask!.attempt, {
+      task_id: successfulTask!.task_id, entry_id: successfulTask!.input.entry_id, summary: "confirmed", validations: [confirmed(successfulGroup)], evidence: [],
+    })).toMatchObject({ accepted: true });
+
+    const status = store.status(); const gaps = status.coverage_gaps as Record<string, unknown>[];
+    expect(status.pending_validation_groups).toBe(0);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]).toMatchObject({ kind: "unvalidated_operation_group", details: { task_status: "exhausted", attempts: 3, error: "model_failed" } });
+  });
+
+  it("splits a resumed legacy batch validation task into group-scoped tasks", async () => {
+    const { store } = await twoComponentStore(); const [semanticTask] = (await store.claim(1)).tasks;
+    const secondGroup = structuredClone(group); secondGroup.group_key = "query-secondary"; secondGroup.operation = { body: "querySecondary", location: "A.ets:30" };
+    store.reconcile(semanticTask!.task_id, semanticTask!.attempt, semantic(semanticTask as Record<string, any>, [], [group, secondGroup]));
+
+    const db = new Database(store.paths.db); const stamp = new Date().toISOString(); const entryId = String(semanticTask!.input.entry.candidate_id);
+    const groups = (db.prepare("SELECT payload_json FROM operation_groups ORDER BY group_id").all() as { payload_json: string }[]).map((row) => JSON.parse(row.payload_json));
+    db.prepare(`INSERT INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,error,created_at,updated_at)
+      VALUES (?,?,?,?,?,'exhausted',3,?,'legacy_batch_failed',?,?)`).run(
+      "TASK-legacy-validation", store.runId(), `validation:${entryId}`, "exploitability_validation", entryId,
+      JSON.stringify({ verification_scope: { target_repo: store.paths.root }, entry_id: entryId, operation_groups: groups }), stamp, stamp,
+    );
+    db.close();
+
+    expect(store.resume()).toMatchObject({ retried_tasks: 1 });
+    const validationTasks = (await store.claim(5)).tasks.filter((task) => task.kind === "exploitability_validation");
+    expect(validationTasks).toHaveLength(2);
+    expect(validationTasks.every((task) => (task.input.operation_groups as unknown[]).length === 1)).toBe(true);
+    const check = new Database(store.paths.db);
+    expect(check.prepare("SELECT status,error FROM tasks WHERE task_id='TASK-legacy-validation'").get()).toEqual({ status: "cancelled", error: "superseded_by_group_validation_tasks" });
+    check.close();
+    expect(store.status()).toMatchObject({ coverage_gaps: [], pending_validation_groups: 2 });
   });
 });

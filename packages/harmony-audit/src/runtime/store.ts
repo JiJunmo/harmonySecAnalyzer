@@ -24,15 +24,15 @@ import {
   type IncrementalPlan,
 } from "../incremental.js";
 import { HARMONY_MAX_AGENT_CAPACITY } from "../pool-policy.js";
-import { attackMatrixDocument, buildReportModel, collectCoverageGaps } from "../reporting/report-builder.js";
+import { attackMatrixDocument, buildReportModel, collectCoverageGaps, pendingValidationGroupCount } from "../reporting/report-builder.js";
 import { renderHtml, renderMarkdown } from "../reporting/renderers.js";
 import type { ProjectModel } from "../project/profiler.js";
 import { AuditInvariantError } from "../validation/invariant-errors.js";
 import { validateSubmissionSchema } from "../validation/schema-validator.js";
-import { validateExploitabilitySubmission, validateSemanticSubmission } from "../validation/submission-validator.js";
-import { normalizeSemanticSubmission, normalizeValidationSubmission } from "../validation/submission-normalizer.js";
+import { validateExploitabilitySubmission, validatePocSubmission, validateSemanticSubmission } from "../validation/submission-validator.js";
+import { normalizePocSubmission, normalizeSemanticSubmission, normalizeValidationSubmission } from "../validation/submission-normalizer.js";
 import { canonicalJson, contentHash, stableId } from "./identity.js";
-import { semanticTaskInput, validationTaskInput } from "./task-context.js";
+import { pocTaskInput, semanticTaskInput, validationTaskInput } from "./task-context.js";
 
 const now = () => new Date().toISOString();
 const rows = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
@@ -40,12 +40,13 @@ const refs = (value: Record<string, unknown>): string[] => Array.isArray(value.e
 const executionStatus = (status: string): PluginExecutionStatus => ({
   queued: "queued", running: "running", completed: "succeeded", exhausted: "failed", cancelled: "cancelled",
 }[status] as PluginExecutionStatus | undefined) ?? "failed";
+const executionTitle = (kind: string): string => kind === "component_semantic_analysis" ? "路径发现" : kind === "exploitability_validation" ? "六维验证" : "PoC 生成";
 
 const schema = `
 PRAGMA foreign_keys=ON;
 CREATE TABLE schema_meta(version INTEGER PRIMARY KEY CHECK(version=2),contract_version TEXT NOT NULL,migrated_at TEXT NOT NULL);
 CREATE TABLE runs(run_id TEXT PRIMARY KEY,target_repo TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('created','running','complete','complete_with_gaps','failed','cancelled')),error TEXT,project_model_version TEXT NOT NULL,audit_scope_json TEXT NOT NULL,resume_generation INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finalized_at TEXT);
-CREATE TABLE tasks(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),semantic_key TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('component_semantic_analysis','exploitability_validation')),subject_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','completed','exhausted','cancelled')),attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0),input_json TEXT NOT NULL,result_json TEXT,error TEXT,claimed_at TEXT,lease_expires_at TEXT,worker_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(run_id,semantic_key));
+CREATE TABLE tasks(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),semantic_key TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('component_semantic_analysis','exploitability_validation','poc_generation')),subject_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','completed','exhausted','cancelled')),attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0),input_json TEXT NOT NULL,result_json TEXT,error TEXT,claimed_at TEXT,lease_expires_at TEXT,worker_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(run_id,semantic_key));
 CREATE TABLE analysis_units(component_id TEXT PRIMARY KEY,entry_id TEXT NOT NULL,input_json TEXT NOT NULL);
 CREATE TABLE entries(entry_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),component_id TEXT NOT NULL,candidate_key TEXT NOT NULL,payload_json TEXT NOT NULL,UNIQUE(run_id,candidate_key));
 CREATE TABLE entry_facets(facet_id TEXT PRIMARY KEY,entry_id TEXT NOT NULL REFERENCES entries(entry_id),facet_type TEXT NOT NULL,payload_sha256 TEXT NOT NULL,payload_json TEXT NOT NULL,UNIQUE(entry_id,facet_type,payload_sha256));
@@ -62,6 +63,7 @@ CREATE TABLE security_checks(security_check_id TEXT PRIMARY KEY,group_id TEXT RE
 CREATE TABLE validation_results(validation_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),group_id TEXT NOT NULL UNIQUE REFERENCES operation_groups(group_id),classification TEXT NOT NULL,capability_id TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE validation_counter_evidence(counter_evidence_id TEXT PRIMARY KEY,validation_id TEXT NOT NULL REFERENCES validation_results(validation_id),kind TEXT NOT NULL,reason TEXT NOT NULL,payload_json TEXT NOT NULL);
 CREATE TABLE findings(finding_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),root_cause_key TEXT NOT NULL,title TEXT NOT NULL,classification TEXT NOT NULL,severity TEXT NOT NULL,cwe TEXT NOT NULL,impact TEXT NOT NULL,poc TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(run_id,root_cause_key));
+CREATE TABLE poc_artifacts(poc_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),finding_id TEXT NOT NULL REFERENCES findings(finding_id),producer_task_id TEXT NOT NULL REFERENCES tasks(task_id),entry_type TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(run_id,finding_id));
 CREATE TABLE finding_causes(finding_id TEXT NOT NULL REFERENCES findings(finding_id),validation_id TEXT NOT NULL UNIQUE REFERENCES validation_results(validation_id),PRIMARY KEY(finding_id,validation_id));
 CREATE TABLE evidence_refs(owner_type TEXT NOT NULL,owner_id TEXT NOT NULL,evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),PRIMARY KEY(owner_type,owner_id,evidence_id));
 CREATE TABLE events(event_id INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL REFERENCES runs(run_id),event_type TEXT NOT NULL,subject_id TEXT,payload_json TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -70,6 +72,10 @@ CREATE INDEX idx_tasks_status ON tasks(run_id,status,created_at);
 
 export interface RunPaths { root: string; db: string; tasks: string; reportJson: string; reportMarkdown: string; reportHtml: string; attackMatrixJson: string; incremental: ReturnType<typeof incrementalRunFiles>; }
 export interface AuditScope { readonly mode?: "full" | "capability" | "incremental"; readonly capabilities?: readonly string[]; readonly components?: readonly string[]; }
+interface PocFindingRow {
+  finding_id: string; root_cause_key: string; title: string; severity: string; cwe: string; impact: string; finding_payload: string;
+  entry_id: string; coverage_json: string; entry_payload: string; group_payload: string; validation_payload: string | null; validation_task_id: string | null;
+}
 export interface AuditStoredEvent {
   readonly event_id: number;
   readonly event_type: string;
@@ -211,7 +217,7 @@ export class AuditStore {
       const tasks = db.transaction(() => {
         const running = (db.prepare("SELECT COUNT(*) n FROM tasks WHERE status='running'").get() as { n: number }).n;
         const queued = (db.prepare("SELECT COUNT(*) n FROM tasks WHERE status='queued'").get() as { n: number }).n;
-        if (running === 0 && queued === 0) this.ensureValidationTasks(db);
+        if (running === 0 && queued === 0) { this.ensureValidationTasks(db); this.ensurePocTasks(db); }
         const available = Math.max(0, Math.min(limit, HARMONY_MAX_AGENT_CAPACITY - running));
         const selected = db.prepare("SELECT * FROM tasks WHERE status='queued' ORDER BY created_at,task_id LIMIT ?").all(available) as Record<string, unknown>[];
         return selected.map((row) => {
@@ -226,13 +232,15 @@ export class AuditStore {
   }
 
   async taskDocument(handle: PoolTaskHandle): Promise<Record<string, unknown>> {
-    const schemaName = handle.kind === "component_semantic_analysis" ? "component-semantic-result.schema.json" : "exploitability-validation-result.schema.json";
+    const schemaName = handle.kind === "component_semantic_analysis" ? "component-semantic-result.schema.json" : handle.kind === "exploitability_validation" ? "exploitability-validation-result.schema.json" : "poc-result.schema.json";
     const db = this.open();
     try {
       const task = db.prepare("SELECT error,subject_id FROM tasks WHERE task_id=?").get(handle.task_id) as { error: string | null; subject_id: string };
       const input = handle.kind === "component_semantic_analysis"
         ? semanticTaskInput(handle.input as Record<string, unknown>, await listCapabilities())
-        : validationTaskInput(db, handle.input as Record<string, unknown>, task.subject_id);
+        : handle.kind === "exploitability_validation"
+          ? validationTaskInput(db, handle.input as Record<string, unknown>, task.subject_id)
+          : pocTaskInput(db, handle.input as Record<string, unknown>, task.subject_id);
       return { task_id: handle.task_id, kind: handle.kind, attempt: handle.attempt, previous_error: task.error, input, result_schema: JSON.parse(await readFile(new URL(`../../resources/schemas/${schemaName}`, import.meta.url), "utf8")) };
     } finally { db.close(); }
   }
@@ -245,10 +253,12 @@ export class AuditStore {
         if (!task || task.status !== "running") return { accepted: false, ignored: true, error_code: "TASK_NOT_RUNNING" };
         if (Number(task.attempts) !== attempt) return { accepted: false, ignored: true, error_code: "STALE_TASK_ATTEMPT" };
         if (!candidate) return this.rejectAttempt(db, task, attempt, error ?? "missing_submission");
-        const normalized = task.kind === "component_semantic_analysis" ? this.normalizeSemantic(candidate, task) : normalizeValidationSubmission(candidate, String(task.subject_id));
+        const normalized = task.kind === "component_semantic_analysis" ? this.normalizeSemantic(candidate, task)
+          : task.kind === "exploitability_validation" ? this.normalizeValidation(candidate, task) : normalizePocSubmission(candidate);
         validateSubmissionSchema(String(task.kind), normalized);
         if (task.kind === "component_semantic_analysis") this.ingestSemantic(db, task, attempt, normalized);
-        else this.ingestValidation(db, task, attempt, normalized);
+        else if (task.kind === "exploitability_validation") this.ingestValidation(db, task, attempt, normalized);
+        else this.ingestPoc(db, task, attempt, normalized);
         db.prepare("UPDATE tasks SET status='completed',result_json=?,error=NULL,claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE task_id=?").run(canonicalJson(normalized), now(), taskId);
         this.event(db, "task_completed", taskId, { attempt, kind: task.kind });
         return { accepted: true, status: "completed" };
@@ -295,6 +305,27 @@ export class AuditStore {
     const input = JSON.parse(String(task.input_json)) as Record<string, unknown>;
     const domains = new Map(Object.entries((input.capability_domains as Record<string, string> | undefined) ?? {}));
     return normalizeSemanticSubmission(candidate, String(task.subject_id), domains);
+  }
+
+  private normalizeValidation(candidate: Record<string, unknown>, task: Record<string, unknown>): Record<string, unknown> {
+    const normalized = normalizeValidationSubmission(candidate, String(task.subject_id));
+    const input = JSON.parse(String(task.input_json)) as Record<string, unknown>;
+    const groups = new Map(rows(input.operation_groups).map((group) => [String(group.group_id), group]));
+    for (const validation of rows(normalized.validations)) {
+      const group = groups.get(String(validation.group_id));
+      if (group?.scope !== "cross_component") continue;
+      const expected = (group.principal_state as Record<string, unknown> | undefined) ?? {};
+      const principal = (validation.principal_analysis as Record<string, unknown> | undefined) ?? {};
+      validation.principal_analysis = {
+        ...principal,
+        origin_principal: expected.origin_principal,
+        target_observed_principal: expected.target_observed_principal,
+        authority_used: expected.authority_used,
+        origin_bound_to_observed_principal: expected.origin_binding === "preserved",
+        delegation_risk: expected.origin_binding === "replaced_by_caller",
+      };
+    }
+    return normalized;
   }
 
   private pathsToEntry(db: Database.Database, entryId: string): ComponentPath[] {
@@ -367,7 +398,7 @@ export class AuditStore {
       JOIN semantic_analyses s ON s.semantic_analysis_id=g.semantic_analysis_id
       LEFT JOIN cross_component_groups c ON c.group_id=g.group_id
       ORDER BY s.entry_id,g.group_id`).all() as { group_id: string; payload_json: string; entry_id: string; task_id: string; coverage_json: string; path_id: string | null }[];
-    const byEntry = new Map<string, { groups: Record<string, unknown>[]; producerTaskIds: Set<string> }>();
+    const eligible: { entryId: string; group: Record<string, unknown>; producerTaskIds: string[] }[] = [];
     for (const row of candidates) {
       const coverage = JSON.parse(row.coverage_json) as Record<string, unknown>;
       if (coverage.entry_status !== "confirmed") continue;
@@ -376,24 +407,156 @@ export class AuditStore {
         if ((JSON.parse(entry.payload_json) as Record<string, unknown>).root_eligible !== true) continue;
       }
       const group = JSON.parse(row.payload_json) as Record<string, unknown>;
-      const current = byEntry.get(row.entry_id) ?? { groups: [], producerTaskIds: new Set<string>() };
-      current.groups.push(group);
-      current.producerTaskIds.add(row.task_id);
+      const producerTaskIds = new Set<string>([row.task_id]);
       const path = group.path_context as ComponentPath | undefined;
-      for (const producer of path?.producer_task_ids ?? []) current.producerTaskIds.add(producer);
-      byEntry.set(row.entry_id, current);
+      for (const producer of path?.producer_task_ids ?? []) producerTaskIds.add(producer);
+      eligible.push({ entryId: row.entry_id, group, producerTaskIds: [...producerTaskIds] });
+    }
+    const entries = new Set(eligible.map((item) => item.entryId));
+    const splitLegacyEntries = new Set<string>();
+    for (const entryId of entries) {
+      const key = `validation:${entryId}`;
+      const legacy = db.prepare("SELECT task_id,status,error FROM tasks WHERE semantic_key=?").get(key) as { task_id: string; status: string; error: string | null } | undefined;
+      if (!legacy) continue;
+      const alreadySplit = legacy.status === "cancelled" && legacy.error === "superseded_by_group_validation_tasks";
+      const canSplit = ["queued", "exhausted"].includes(legacy.status);
+      if (!canSplit && !alreadySplit) continue;
+      if (canSplit) db.prepare("UPDATE tasks SET status='cancelled',error='superseded_by_group_validation_tasks',claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE task_id=?").run(now(), legacy.task_id);
+      splitLegacyEntries.add(entryId);
     }
     let reused = 0;
-    for (const [entryId, value] of byEntry) {
-      const key = `validation:${entryId}`;
-      this.scheduleValidation(db, key, entryId, value.groups, targetRepo, [...value.producerTaskIds]);
+    let scheduled = 0;
+    for (const item of eligible) {
+      const legacy = db.prepare("SELECT status,error FROM tasks WHERE semantic_key=?").get(`validation:${item.entryId}`) as { status: string; error: string | null } | undefined;
+      if (legacy && !splitLegacyEntries.has(item.entryId)) continue;
+      const groupId = String(item.group.group_id);
+      const key = `validation:${item.entryId}:${groupId}`;
+      this.scheduleValidation(db, key, item.entryId, [item.group], targetRepo, item.producerTaskIds);
       const task = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
-      if (task && this.tryReuseValidation(db, task, value.groups)) reused += 1;
+      if (task && this.tryReuseValidation(db, task, [item.group])) reused += 1;
+      scheduled += 1;
     }
-    if (byEntry.size) this.event(db, "validation_phase_planned", this.runIdFrom(db), { entries: byEntry.size, operation_groups: [...byEntry.values()].reduce((sum, item) => sum + item.groups.length, 0), reused });
+    if (eligible.length) this.event(db, "validation_phase_planned", this.runIdFrom(db), { entries: entries.size, operation_groups: eligible.length, tasks: scheduled, reused });
+  }
+
+  /** v3.2: PoC tasks are scheduled per-finding as soon as the confirming validation lands; this drain-time reconciler fills gaps and repairs stale artifacts whose representative validation changed. */
+  private ensurePocTasks(db: Database.Database): void {
+    const unfinishedValidation = (db.prepare("SELECT COUNT(*) n FROM tasks WHERE kind='exploitability_validation' AND status IN ('queued','running')").get() as { n: number }).n;
+    if (unfinishedValidation) return;
+    const findings = this.pocFindingRows(db);
+    if (!findings.length) return;
+    let scheduled = 0; let reused = 0; let repaired = 0;
+    for (const row of findings) {
+      const outcome = this.schedulePocForFinding(db, row.finding_id);
+      scheduled += outcome.scheduled ? 1 : 0;
+      reused += outcome.reused ? 1 : 0;
+      repaired += outcome.repaired ? 1 : 0;
+    }
+    this.event(db, "poc_phase_planned", this.runIdFrom(db), { findings: findings.length, scheduled, reused, repaired });
+  }
+
+  private pocFindingRows(db: Database.Database): PocFindingRow[] {
+    return db.prepare(`SELECT f.finding_id,f.root_cause_key,f.title,f.severity,f.cwe,f.impact,f.payload_json finding_payload,
+      s.entry_id,s.coverage_json,COALESCE(root_e.payload_json,e.payload_json) entry_payload,g.payload_json group_payload,
+      v.payload_json validation_payload,v.task_id validation_task_id
+      FROM findings f
+      JOIN operation_groups g ON g.group_id=f.root_cause_key
+      JOIN semantic_analyses s ON s.semantic_analysis_id=g.semantic_analysis_id
+      JOIN entries e ON e.entry_id=s.entry_id
+      LEFT JOIN cross_component_groups cg ON cg.local_group_id=g.group_id
+      LEFT JOIN component_paths cp ON cp.path_id=cg.path_id
+      LEFT JOIN entries root_e ON root_e.entry_id=cp.root_entry_id
+      LEFT JOIN validation_results v ON v.validation_id=json_extract(f.payload_json,'$.representative_validation_id')
+      WHERE f.classification='confirmed_vulnerability' ORDER BY f.finding_id`).all() as PocFindingRow[];
+  }
+
+  private pocTaskInput(db: Database.Database, row: PocFindingRow, targetRepo: string): Record<string, unknown> {
+    const coverage = JSON.parse(row.coverage_json) as Record<string, unknown>;
+    const findingPayload = JSON.parse(row.finding_payload) as Record<string, unknown>;
+    const validation = row.validation_payload ? JSON.parse(row.validation_payload) as Record<string, unknown> : {};
+    const producers = new Set<string>();
+    if (row.validation_task_id) {
+      producers.add(row.validation_task_id);
+      const validationInput = db.prepare("SELECT input_json FROM tasks WHERE task_id=?").get(row.validation_task_id) as { input_json: string } | undefined;
+      const validationInputDocument = validationInput ? JSON.parse(validationInput.input_json) as Record<string, unknown> : {};
+      const inherited = Array.isArray(validationInputDocument.inherited_evidence_task_ids) ? validationInputDocument.inherited_evidence_task_ids.map(String) : [];
+      for (const id of inherited) producers.add(id);
+    }
+    const producerTaskIds = [...producers];
+    const evidenceIds = producerTaskIds.length ? db.prepare(`SELECT DISTINCT local_evidence_id FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string }[] : [];
+    return {
+      verification_scope: { target_repo: targetRepo, seed_symbols: Array.isArray(coverage.entry_symbols_checked) ? coverage.entry_symbols_checked : [] },
+      finding: { finding_id: row.finding_id, root_cause_key: row.root_cause_key, title: row.title, severity: row.severity, cwe: row.cwe, impact: row.impact, representative_validation_id: findingPayload.representative_validation_id ?? null },
+      validation, operation_group: JSON.parse(row.group_payload), entry: JSON.parse(row.entry_payload),
+      inherited_evidence_ids: evidenceIds.map((item) => item.local_evidence_id), inherited_evidence_task_ids: producerTaskIds,
+    };
+  }
+
+  /** Insert or refresh the PoC task for one finding; a completed artifact whose representative validation changed is requeued for regeneration. */
+  private schedulePocForFinding(db: Database.Database, findingId: string): { scheduled: boolean; reused: boolean; repaired: boolean } {
+    const row = this.pocFindingRows(db).find((item) => item.finding_id === findingId);
+    if (!row) return { scheduled: false, reused: false, repaired: false };
+    const key = `poc:${findingId}`;
+    const targetRepo = (db.prepare("SELECT target_repo FROM runs").get() as { target_repo: string }).target_repo;
+    const input = this.pocTaskInput(db, row, targetRepo);
+    const existing = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
+    let repaired = false;
+    if (existing?.status === "completed") {
+      const storedInput = JSON.parse(String(existing.input_json)) as Record<string, unknown>;
+      const storedRepresentative = String(((storedInput.finding as Record<string, unknown> | undefined) ?? {}).representative_validation_id ?? "");
+      const currentRepresentative = String((JSON.parse(row.finding_payload) as Record<string, unknown>).representative_validation_id ?? "");
+      if (storedRepresentative === currentRepresentative) return { scheduled: false, reused: false, repaired: false };
+      const pocs = db.prepare("SELECT poc_id FROM poc_artifacts WHERE finding_id=?").all(findingId) as { poc_id: string }[];
+      for (const poc of pocs) db.prepare("DELETE FROM evidence_refs WHERE owner_type='poc_artifact' AND owner_id=?").run(poc.poc_id);
+      db.prepare("DELETE FROM poc_artifacts WHERE finding_id=?").run(findingId);
+      db.prepare("UPDATE tasks SET status='queued',attempts=0,error='poc_representative_changed',result_json=NULL,input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
+      this.event(db, "poc_artifact_repair", String(existing.task_id), { finding_id: findingId });
+      repaired = true;
+    } else if (!existing) {
+      db.prepare("INSERT INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,created_at,updated_at) VALUES (?,?,?,?,?,'queued',0,?,?,?)").run(stableId("TASK", this.runIdFrom(db), key), this.runIdFrom(db), key, "poc_generation", row.entry_id, canonicalJson(input), now(), now());
+    } else if (existing.status === "queued") {
+      db.prepare("UPDATE tasks SET input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
+    }
+    const current = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
+    const reused = current && current.status === "queued" ? this.tryReusePoc(db, current, input) : false;
+    return { scheduled: !existing, reused, repaired };
+  }
+
+  private tryReusePoc(db: Database.Database, task: Record<string, unknown>, input: Record<string, unknown>): boolean {
+    const run = db.prepare("SELECT audit_scope_json FROM runs").get() as { audit_scope_json: string };
+    const scope = JSON.parse(run.audit_scope_json) as Record<string, unknown>;
+    if (scope.mode !== "incremental") return false;
+    const entry = db.prepare("SELECT candidate_key,payload_json FROM entries WHERE entry_id=?").get(task.subject_id) as { candidate_key: string; payload_json: string } | undefined;
+    if (!entry || (JSON.parse(entry.payload_json) as Record<string, unknown>).incremental_reused !== true) return false;
+    let document: Record<string, unknown>;
+    try { document = JSON.parse(readFileSync(this.paths.incremental.baselinePocs, "utf8")) as Record<string, unknown>; }
+    catch { return false; }
+    const items = Array.isArray(document.items) ? document.items as Record<string, unknown>[] : [];
+    const rootCauseKey = String((input.finding as Record<string, unknown>).root_cause_key);
+    const group = db.prepare("SELECT payload_json FROM operation_groups WHERE group_id=?").get(rootCauseKey) as { payload_json: string } | undefined;
+    if (!group) return false;
+    const currentFingerprint = validationGroupFingerprint(JSON.parse(group.payload_json));
+    const snapshot = items.find((item) => String(item.group_fingerprint) === currentFingerprint);
+    if (!snapshot || !snapshot.result || typeof snapshot.result !== "object") return false;
+    try {
+      db.transaction(() => {
+        const candidate = structuredClone(snapshot.result as Record<string, unknown>);
+        candidate.task_id = task.task_id; candidate.finding_id = String((input.finding as Record<string, unknown>).finding_id);
+        const normalized = normalizePocSubmission(candidate);
+        validateSubmissionSchema("poc_generation", normalized);
+        this.ingestPoc(db, task, 0, normalized);
+        db.prepare("UPDATE tasks SET status='completed',attempts=0,result_json=?,error=NULL,updated_at=? WHERE task_id=?").run(canonicalJson(normalized), now(), task.task_id);
+        this.event(db, "poc_result_reused", String(task.task_id), { root_cause_key: rootCauseKey });
+      })();
+      return true;
+    } catch (error) {
+      this.event(db, "poc_reuse_rejected", String(task.task_id), { root_cause_key: rootCauseKey, error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
   }
 
   private tryReuseValidation(db: Database.Database, task: Record<string, unknown>, groups: Record<string, unknown>[]): boolean {
+    if (task.status !== "queued") return false;
     const run = db.prepare("SELECT audit_scope_json FROM runs").get() as { audit_scope_json: string };
     const scope = JSON.parse(run.audit_scope_json) as Record<string, unknown>;
     if (scope.mode !== "incremental") return false;
@@ -407,12 +570,16 @@ export class AuditStore {
     if (!snapshot || !snapshot.result || typeof snapshot.result !== "object" || !snapshot.group_fingerprints || typeof snapshot.group_fingerprints !== "object") return false;
     const oldFingerprints = snapshot.group_fingerprints as Record<string, string>;
     const currentByFingerprint = new Map(groups.map((group) => [validationGroupFingerprint(group), String(group.group_id)]));
-    const expected = Object.values(oldFingerprints).sort(); const actual = [...currentByFingerprint.keys()].sort();
-    if (canonicalJson(expected) !== canonicalJson(actual)) return false;
+    const reusableValidations = rows((snapshot.result as Record<string, unknown>).validations).filter((validation) => {
+      const fingerprint = oldFingerprints[String(validation.group_id)];
+      return !!fingerprint && currentByFingerprint.has(fingerprint);
+    });
+    if (reusableValidations.length !== groups.length) return false;
     try {
       db.transaction(() => {
         const candidate = structuredClone(snapshot.result as Record<string, unknown>);
         candidate.task_id = task.task_id; candidate.entry_id = task.subject_id;
+        candidate.validations = reusableValidations.map((validation) => structuredClone(validation));
         for (const validation of rows(candidate.validations)) {
           const fingerprint = oldFingerprints[String(validation.group_id)];
           const currentId = fingerprint ? currentByFingerprint.get(fingerprint) : undefined;
@@ -516,25 +683,54 @@ export class AuditStore {
         affectedRoots.add(cross?.local_group_id ?? String(validation.group_id));
       }
     }
-    for (const root of affectedRoots) this.rebuildFinding(db, root);
+    for (const root of affectedRoots) {
+      const finding = this.rebuildFinding(db, root);
+      if (finding) this.schedulePocForFinding(db, finding.finding_id);
+    }
   }
 
-  private rebuildFinding(db: Database.Database, rootCause: string): void {
+  private ingestPoc(db: Database.Database, task: Record<string, unknown>, attempt: number, candidate: Record<string, unknown>): void {
+    const input = JSON.parse(String(task.input_json)) as Record<string, unknown>;
+    const finding = (input.finding as Record<string, unknown> | undefined) ?? {};
+    const allowedEntryTypes = new Set(Array.isArray(input.allowed_entry_types) ? input.allowed_entry_types.map(String) : []);
+    if (!allowedEntryTypes.size) {
+      const entryDocument = (input.entry as Record<string, unknown> | undefined) ?? {};
+      const candidates = Array.isArray(entryDocument.project_candidates) ? entryDocument.project_candidates as Record<string, unknown>[] : Array.isArray(entryDocument.facets) ? entryDocument.facets as Record<string, unknown>[] : [];
+      for (const candidate of candidates) {
+        const type = String(candidate.type ?? candidate.entry_type ?? "");
+        ({ exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], common_event_candidate: ["common_event"], project_scope: ["project"] } as Record<string, string[]>)[type]?.forEach((item) => allowedEntryTypes.add(item));
+      }
+    }
+    const localEvidence = this.insertEvidence(db, task, rows(candidate.evidence));
+    const producerTaskIds = Array.isArray(input.inherited_evidence_task_ids) ? input.inherited_evidence_task_ids.map(String) : [];
+    const inheritedRows = producerTaskIds.length ? db.prepare(`SELECT local_evidence_id,evidence_id FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string; evidence_id: string }[] : [];
+    const evidence = new Map(inheritedRows.map((row) => [row.local_evidence_id, row.evidence_id])); for (const [key, value] of localEvidence) evidence.set(key, value);
+    validatePocSubmission(candidate, {
+      taskId: String(task.task_id), entryId: String(task.subject_id),
+      findingId: String(finding.finding_id), allowedEntryTypes, allowedEvidence: new Set(evidence.keys()),
+    });
+    const pocId = stableId("POC", task.task_id);
+    db.prepare("INSERT INTO poc_artifacts VALUES (?,?,?,?,?,?,?)").run(pocId, this.runIdFrom(db), String(finding.finding_id), task.task_id, String(candidate.entry_type), canonicalJson(candidate), now());
+    this.addRefs(db, "poc_artifact", pocId, [...refs(candidate), ...(Array.isArray(candidate.prerequisites) ? [] : [])], evidence);
+  }
+
+  private rebuildFinding(db: Database.Database, rootCause: string): { finding_id: string; representative_validation_id: string } | undefined {
     const candidates = db.prepare(`SELECT v.validation_id,v.payload_json FROM validation_results v
       JOIN operation_groups g ON g.group_id=v.group_id LEFT JOIN cross_component_groups c ON c.group_id=g.group_id
       WHERE v.classification='confirmed_vulnerability' AND COALESCE(c.local_group_id,g.group_id)=? ORDER BY v.validation_id`).all(rootCause) as { validation_id: string; payload_json: string }[];
-    if (!candidates.length) return;
+    if (!candidates.length) return undefined;
     const rank: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
     const parsed = candidates.map((row) => ({ id: row.validation_id, value: JSON.parse(row.payload_json) as Record<string, unknown> }));
     parsed.sort((left, right) => (rank[String(right.value.severity)] ?? 0) - (rank[String(left.value.severity)] ?? 0) || left.id.localeCompare(right.id));
     const representative = parsed[0]!; const group = db.prepare("SELECT title FROM operation_groups WHERE group_id=?").get(rootCause) as { title: string };
     const findingId = stableId("FIND", this.runIdFrom(db), rootCause);
-    const payload = { root_cause_key: rootCause, title: group.title, severity: representative.value.severity, cwe: representative.value.cwe, impact: representative.value.impact, poc: representative.value.poc, validation_ids: candidates.map((row) => row.validation_id) };
+    const payload = { root_cause_key: rootCause, title: group.title, severity: representative.value.severity, cwe: representative.value.cwe, impact: representative.value.impact, poc: representative.value.poc, representative_validation_id: representative.id, validation_ids: candidates.map((row) => row.validation_id) };
     db.prepare(`INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,root_cause_key) DO UPDATE SET
       title=excluded.title,classification=excluded.classification,severity=excluded.severity,cwe=excluded.cwe,impact=excluded.impact,poc=excluded.poc,payload_json=excluded.payload_json`).run(
       findingId, this.runIdFrom(db), rootCause, group.title, "confirmed_vulnerability", representative.value.severity, representative.value.cwe, representative.value.impact, representative.value.poc, canonicalJson(payload), now(),
     );
     const insertCause = db.prepare("INSERT OR IGNORE INTO finding_causes VALUES (?,?)"); for (const candidate of candidates) insertCause.run(findingId, candidate.validation_id);
+    return { finding_id: findingId, representative_validation_id: representative.id };
   }
 
   private runIdFrom(db: Database.Database): string { return String((db.prepare("SELECT run_id FROM runs").get() as { run_id: string }).run_id); }
@@ -544,7 +740,7 @@ export class AuditStore {
     const db = this.open();
     try {
       const tasks = Object.fromEntries((db.prepare("SELECT status,COUNT(*) n FROM tasks GROUP BY status").all() as { status: string; n: number }[]).map((row) => [row.status, row.n]));
-      return { run: db.prepare("SELECT * FROM runs").get(), tasks, findings: (db.prepare("SELECT COUNT(*) n FROM findings").get() as { n: number }).n };
+      return { run: db.prepare("SELECT * FROM runs").get(), tasks, findings: (db.prepare("SELECT COUNT(*) n FROM findings").get() as { n: number }).n, poc_artifacts: (db.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n };
     } finally { db.close(); }
   }
 
@@ -555,7 +751,7 @@ export class AuditStore {
       const taskCounts = Object.fromEntries((db.prepare("SELECT status,COUNT(*) count FROM tasks GROUP BY status ORDER BY status").all() as { status: string; count: number }[]).map((row) => [row.status, row.count]));
       const tasks = db.prepare("SELECT task_id,kind,subject_id,status,attempts,worker_id,claimed_at,lease_expires_at,updated_at,error FROM tasks ORDER BY created_at,task_id").all();
       const findings = db.prepare("SELECT finding_id,title,severity,cwe,classification,created_at FROM findings ORDER BY severity DESC,finding_id").all();
-      return { run, task_counts: taskCounts, tasks, findings, coverage_gaps: collectCoverageGaps(db), paths: this.paths, recoverable: ["running", "failed", "complete_with_gaps"].includes(String(run.status)) };
+      return { run, task_counts: taskCounts, tasks, findings, coverage_gaps: collectCoverageGaps(db), pending_validation_groups: pendingValidationGroupCount(db), paths: this.paths, recoverable: ["running", "failed", "complete_with_gaps"].includes(String(run.status)) };
     } finally { db.close(); }
   }
 
@@ -585,7 +781,7 @@ export class AuditStore {
       return Object.freeze(values.map((task) => Object.freeze({
         id: String(task.task_id),
         kind: String(task.kind),
-        title: task.kind === "component_semantic_analysis" ? "路径发现" : "六维验证",
+        title: executionTitle(String(task.kind)),
         status: executionStatus(String(task.status)),
         subject: String(task.subject_id),
         attempt: Number(task.attempts),
@@ -603,7 +799,7 @@ export class AuditStore {
       if (!task) throw new Error(`audit_task_not_found:${taskId}`);
       const unit: PluginExecutionUnit = Object.freeze({
         id: String(task.task_id), kind: String(task.kind),
-        title: task.kind === "component_semantic_analysis" ? "路径发现" : "六维验证",
+        title: executionTitle(String(task.kind)),
         status: executionStatus(String(task.status)), subject: String(task.subject_id), attempt: Number(task.attempts),
         createdAt: String(task.created_at), updatedAt: String(task.updated_at),
         ...(task.error ? { error: String(task.error) } : {}),
@@ -688,6 +884,9 @@ export class AuditStore {
         if (options.reclaimRunning ?? true) reclaimed = db.prepare("UPDATE tasks SET status='queued',error='process_recovered',claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE status='running'").run(now()).changes;
         if (options.retryExhausted ?? true) retried = db.prepare("UPDATE tasks SET status='queued',attempts=0,error=NULL,claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE status='exhausted'").run(now()).changes;
         db.prepare("UPDATE runs SET status='running',error=NULL,resume_generation=resume_generation+1,updated_at=?,finalized_at=NULL").run(now());
+        // Resuming a database created by an older build must migrate a queued
+        // entry-wide validation batch before claim() can pick it up again.
+        this.ensureValidationTasks(db);
         this.event(db, "run_resumed", this.runIdFrom(db), { previous_status: status, reclaimed, retried });
         return { run_id: this.runIdFrom(db), previous_status: status, status: "running", reclaimed_tasks: reclaimed, retried_tasks: retried };
       })();
@@ -701,6 +900,13 @@ export class AuditStore {
       for (const id of evidenceIds) db.prepare("DELETE FROM evidence_refs WHERE evidence_id=?").run(id);
       db.prepare("DELETE FROM evidence WHERE producer_task_id=?").run(taskId);
     };
+    if (kind === "poc_generation") {
+      const pocs = (db.prepare("SELECT poc_id FROM poc_artifacts WHERE producer_task_id=?").all(taskId) as { poc_id: string }[]).map((row) => row.poc_id);
+      for (const id of pocs) db.prepare("DELETE FROM evidence_refs WHERE owner_type='poc_artifact' AND owner_id=?").run(id);
+      db.prepare("DELETE FROM poc_artifacts WHERE producer_task_id=?").run(taskId);
+      deleteEvidence();
+      return;
+    }
     if (kind === "exploitability_validation") {
       const validations = (db.prepare("SELECT validation_id FROM validation_results WHERE task_id=?").all(taskId) as { validation_id: string }[]).map((row) => row.validation_id);
       for (const id of validations) {

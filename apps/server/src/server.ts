@@ -189,7 +189,10 @@ export function createPluginWebServer(host: PluginHostService, options: WebServe
             "cache-control": "no-store",
             "x-content-type-options": "nosniff",
             "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(artifact.descriptor.name)}`,
-            ...(artifact.descriptor.mediaType.startsWith("text/html") ? { "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'" } : {}),
+            // HTML reports are deliberately self-contained and use inline CSS/JS
+            // for offline portability. Keep network and embedding capabilities
+            // denied while allowing their local presentation controls to run.
+            ...(artifact.descriptor.mediaType.startsWith("text/html") ? { "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'" } : {}),
           });
           if (artifact.body instanceof Uint8Array) response.end(Buffer.from(artifact.body));
           else { for await (const chunk of artifact.body) response.write(Buffer.from(chunk)); response.end(); }

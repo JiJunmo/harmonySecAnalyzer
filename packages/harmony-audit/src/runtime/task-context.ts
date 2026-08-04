@@ -88,11 +88,59 @@ export function validationTaskInput(db: Database.Database, raw: Row, entryId: st
   const targetRepo = String(((raw.verification_scope as Row | undefined) ?? {}).target_repo ?? "");
   return {
     semantic_analysis: { summary: analysis?.summary ?? "", coverage: selectedCoverage, operation_groups: groups },
+    principal_contracts: groups.filter((group) => group.scope === "cross_component").map((group) => {
+      const state = (group.principal_state as Row | undefined) ?? {};
+      return {
+        group_id: group.group_id,
+        origin_principal: state.origin_principal,
+        target_observed_principal: state.target_observed_principal,
+        authority_used: state.authority_used,
+        origin_bound_to_observed_principal: state.origin_binding === "preserved",
+        delegation_risk: state.origin_binding === "replaced_by_caller",
+      };
+    }),
     verification_scope: {
       target_repo: targetRepo,
       seed_locations: [...locations].sort(),
       seed_files: [...new Set([...locations].map(sourceFile))].sort(),
       seed_symbols: strings(coverage.entry_symbols_checked),
+    },
+  };
+}
+
+export function pocTaskInput(db: Database.Database, raw: Row, entryId: string): Row {
+  const finding = (raw.finding as Row | undefined) ?? {};
+  const validation = (raw.validation as Row | undefined) ?? {};
+  const group = (raw.operation_group as Row | undefined) ?? {};
+  const entry = (raw.entry as Row | undefined) ?? {};
+  const facets = rows(entry.facets ?? (entry.project_candidates as unknown)).map(facet);
+  const locations = new Set<string>();
+  const operation = (group.operation as Row | undefined) ?? {};
+  if (typeof operation.location === "string") locations.add(operation.location);
+  for (const fact of rows(group.facts)) if (typeof fact.location === "string") locations.add(fact.location);
+  for (const check of rows(group.security_checks)) if (typeof check.location === "string") locations.add(check.location);
+  for (const branch of rows(group.branches)) for (const location of strings(branch.locations)) locations.add(location);
+  const allowedEntryTypes = new Set([...facets.flatMap((item) => {
+    const type = String(item.entry_type ?? "");
+    return { exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], common_event_candidate: ["common_event"], project_scope: ["project"] }[type] ?? [type];
+  })]);
+  return {
+    finding,
+    validation,
+    operation_group: group,
+    entry: { ...entry, facets },
+    allowed_entry_types: [...allowedEntryTypes].sort(),
+    verification_scope: {
+      target_repo: String(((raw.verification_scope as Row | undefined) ?? {}).target_repo ?? ""),
+      seed_locations: [...locations].sort(),
+      seed_files: [...new Set([...locations].map(sourceFile))].sort(),
+      seed_symbols: strings((raw.verification_scope as Row | undefined)?.seed_symbols),
+    },
+    output_contract: {
+      task_unit: "one deterministic PoC generation unit for one confirmed finding",
+      entry_type_constraint: "entry_type 必须来自 allowed_entry_types",
+      trigger_kind: ["adb_shell", "ability_want", "common_event", "ipc_client", "provider_query", "web_navigation", "jsbridge_call", "network", "crypto", "archive", "distributed", "generic"],
+      forbidden_outputs: ["classification", "exploitability", "severity", "cwe"],
     },
   };
 }

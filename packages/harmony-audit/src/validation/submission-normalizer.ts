@@ -82,4 +82,15 @@ export function normalizeValidationSubmission(candidate: Row, entryId: string): 
   }
   return normalized;
 }
+
+export function normalizePocSubmission(candidate: Row): Row {
+  const normalized = structuredClone(candidate);
+  for (const key of ["code", "expected_observation", "limitations", "prerequisites"] as const) {
+    if (key === "prerequisites") {
+      normalized.prerequisites = unique(strings(normalized.prerequisites));
+    } else if (typeof normalized[key] === "string" && !String(normalized[key]).trim()) delete normalized[key];
+  }
+  normalized.evidence_refs = unique(strings(normalized.evidence_refs));
+  return normalized;
+}
 import { canonicalJson } from "../runtime/identity.js";

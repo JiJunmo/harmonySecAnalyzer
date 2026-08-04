@@ -29,6 +29,7 @@ export interface IncrementalBaseline {
   readonly semanticResults: Readonly<Record<string, Row>>;
   readonly validationResults: Row;
   readonly findings: readonly Row[];
+  readonly pocs: readonly Row[];
 }
 
 export interface IncrementalPlan {
@@ -46,6 +47,7 @@ export interface IncrementalRunFiles {
   readonly baselineSemantics: string;
   readonly baselineValidations: string;
   readonly baselineFindings: string;
+  readonly baselinePocs: string;
 }
 
 export function incrementalRunFiles(runDirectory: string): IncrementalRunFiles {
@@ -57,6 +59,7 @@ export function incrementalRunFiles(runDirectory: string): IncrementalRunFiles {
     baselineSemantics: join(root, "baseline-semantic-results.json"),
     baselineValidations: join(root, "baseline-validation-results.json"),
     baselineFindings: join(root, "baseline-findings.json"),
+    baselinePocs: join(root, "baseline-poc-results.json"),
   };
 }
 
@@ -69,6 +72,7 @@ export function incrementalBaselineFiles(targetRepository: string) {
     semanticResults: join(root, "semantic-results.json"),
     validationResults: join(root, "validation-results.json"),
     findings: join(root, "findings.json"),
+    pocs: join(root, "poc-results.json"),
   };
 }
 
@@ -148,8 +152,10 @@ export async function auditContractHash(): Promise<string> {
     new URL("../resources/audit_capabilities.json", import.meta.url),
     new URL("../resources/schemas/component-semantic-result.schema.json", import.meta.url),
     new URL("../resources/schemas/exploitability-validation-result.schema.json", import.meta.url),
+    new URL("../resources/schemas/poc-result.schema.json", import.meta.url),
     new URL("../resources/skills/harmony-component-analysis/SKILL.md", import.meta.url),
     new URL("../resources/skills/harmony-exploitability-validation/SKILL.md", import.meta.url),
+    new URL("../resources/skills/harmony-poc-generation/SKILL.md", import.meta.url),
   ];
   const digest = createHash("sha256");
   for (const file of files) { digest.update(basename(file.pathname)); digest.update(await readFile(file)); }
@@ -165,7 +171,8 @@ export async function loadIncrementalBaseline(targetRepository: string): Promise
   if (!metadata || metadata.schema_version !== INCREMENTAL_BASELINE_SCHEMA_VERSION || !projectModel || projectModel.status !== "complete" || !semanticResults) return null;
   if (!validationResults || validationResults.schema_version !== 1 || typeof validationResults.entries !== "object") throw new Error("incremental_validation_baseline_missing_full_audit_required");
   const findingDocument = await jsonFile(files.findings, { schema_version: 1, items: [] }) as Row;
-  return { metadata, projectModel, semanticResults, validationResults, findings: Array.isArray(findingDocument.items) ? findingDocument.items as Row[] : [] };
+  const pocDocument = await jsonFile(files.pocs, { schema_version: 1, items: [] }) as Row;
+  return { metadata, projectModel, semanticResults, validationResults, findings: Array.isArray(findingDocument.items) ? findingDocument.items as Row[] : [], pocs: Array.isArray(pocDocument.items) ? pocDocument.items as Row[] : [] };
 }
 
 export function projectEntryGroups(model: ProjectModel): Readonly<Record<string, Row>> {
@@ -292,6 +299,7 @@ export async function persistIncrementalPlan(runDirectory: string, plan: Increme
     writeJsonAtomic(files.changeSet, plan.changeSet), writeJsonAtomic(files.impactPlan, plan.impactPlan),
     writeJsonAtomic(files.baselineSemantics, plan.baseline.semanticResults), writeJsonAtomic(files.baselineValidations, plan.baseline.validationResults),
     writeJsonAtomic(files.baselineFindings, { schema_version: 1, items: plan.baseline.findings }),
+    writeJsonAtomic(files.baselinePocs, { schema_version: 1, items: plan.baseline.pocs }),
   ]);
 }
 
@@ -307,9 +315,11 @@ export function validationGroupFingerprint(group: Row): string { return contentH
 
 function riskSnapshot(report: Row): Row[] {
   const groups = new Map((Array.isArray(report.operation_groups) ? report.operation_groups as Row[] : []).map((group) => [String(group.group_id), group]));
+  const pocs = new Map((Array.isArray(report.pocs) ? report.pocs as Row[] : []).map((poc) => [String(poc.finding_id), poc]));
   return (Array.isArray(report.findings) ? report.findings as Row[] : []).map((finding) => {
     const group = groups.get(String(finding.root_cause_key));
-    return { ...finding, risk_key: contentHash(stableGroup(group?.payload ?? group ?? finding.root_cause_key)) };
+    const poc = pocs.get(String(finding.finding_id));
+    return { ...finding, risk_key: contentHash(stableGroup(group?.payload ?? group ?? finding.root_cause_key)), poc: poc ? String((poc.payload as Row | undefined)?.code ?? "") : "" };
   }).sort((left, right) => String(left.risk_key).localeCompare(String(right.risk_key)));
 }
 
@@ -356,12 +366,17 @@ export async function saveIncrementalBaseline(runDirectory: string, report: Row)
     }
     const target = resolve(run.target_repo); const model = await jsonFile(resolve(runDirectory, "project-model.json")) as ProjectModel;
     const currentGit = await gitState(target); const manifest = await fileManifest(target); const findings = riskSnapshot(report);
-    const metadata = { schema_version: INCREMENTAL_BASELINE_SCHEMA_VERSION, run_id: run.run_id, completed_at: new Date().toISOString(), source_type: currentGit ? "git" : "snapshot", git: currentGit, file_manifest: manifest, semantic_results: Object.keys(semanticResults).length, validation_results: Object.keys(validationEntries).length, audit_contract_hash: await auditContractHash(), findings: findings.length };
+    const pocs = (db.prepare("SELECT p.finding_id,f.root_cause_key,p.entry_type,p.payload_json FROM poc_artifacts p JOIN findings f ON f.finding_id=p.finding_id ORDER BY p.poc_id").all() as { finding_id: string; root_cause_key: string; entry_type: string; payload_json: string }[]).map((row) => {
+      const group = db.prepare("SELECT payload_json FROM operation_groups WHERE group_id=?").get(row.root_cause_key) as { payload_json: string } | undefined;
+      return { finding_id: row.finding_id, root_cause_key: row.root_cause_key, group_fingerprint: group ? validationGroupFingerprint(JSON.parse(group.payload_json)) : "", entry_type: row.entry_type, result: JSON.parse(row.payload_json) };
+    });
+    const metadata = { schema_version: INCREMENTAL_BASELINE_SCHEMA_VERSION, run_id: run.run_id, completed_at: new Date().toISOString(), source_type: currentGit ? "git" : "snapshot", git: currentGit, file_manifest: manifest, semantic_results: Object.keys(semanticResults).length, validation_results: Object.keys(validationEntries).length, audit_contract_hash: await auditContractHash(), findings: findings.length, pocs: pocs.length };
     const files = incrementalBaselineFiles(target); await mkdir(files.root, { recursive: true });
     await Promise.all([
       writeJsonAtomic(files.projectModel, model), writeJsonAtomic(files.semanticResults, semanticResults),
       writeJsonAtomic(files.validationResults, { schema_version: 1, entries: validationEntries }),
       writeJsonAtomic(files.findings, { schema_version: 1, items: findings }),
+      writeJsonAtomic(files.pocs, { schema_version: 1, items: pocs }),
     ]);
     // Metadata is the commit marker. Readers never observe a new baseline until
     // all fact snapshots have been replaced successfully.
