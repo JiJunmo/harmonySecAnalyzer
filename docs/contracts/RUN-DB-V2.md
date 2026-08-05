@@ -24,6 +24,8 @@ erDiagram
     VALIDATION_RESULTS ||--o{ VALIDATION_COUNTER_EVIDENCE : cites
     VALIDATION_RESULTS ||--o| FINDING_CAUSES : confirms
     FINDINGS ||--o{ FINDING_CAUSES : aggregates
+    TASKS ||--o| POC_ARTIFACTS : produces
+    FINDINGS ||--o| POC_ARTIFACTS : owns
     RUNS ||--o{ EVENTS : emits
 ```
 
@@ -35,9 +37,9 @@ erDiagram
 
 | 表 | 主键 | 必要字段与约束 |
 |---|---|---|
-| `schema_meta` | `version` | 单行；`version=2`，含 `contract_version`、`migrated_at` |
+| `schema_meta` | `version` | 单行；`version=3`，含 `contract_version`、`migrated_at` |
 | `runs` | `run_id` | `status` 受枚举约束；记录 Project Model 版本、范围快照、恢复代次、错误和完成时间 |
-| `tasks` | `task_id` | `(run_id, semantic_key)` 唯一；kind/status 枚举；attempts 非负；租约字段成组出现 |
+| `tasks` | `task_id` | `(run_id, semantic_key)` 唯一；`kind` 枚举 `component_semantic_analysis`/`exploitability_validation`/`poc_generation`；status 枚举；attempts 非负；租约字段成组出现 |
 | `events` | `event_id` | `run_id` 外键；事件类型、主体、无秘密 payload、时间 |
 
 ### 项目和入口事实
@@ -87,10 +89,11 @@ counter_evidence_refs
 |---|---|---|
 | `validation_results` | `validation_id` | `group_id` 唯一；`task_id`；分类、六维、边界、主体、DoS 专项字段 |
 | `validation_counter_evidence` | `counter_evidence_id` | `validation_id`；kind/reason |
-| `findings` | `finding_id` | `(run_id, root_cause_key)` 唯一；title/severity/CWE/impact/PoC |
+| `findings` | `finding_id` | `(run_id, root_cause_key)` 唯一；title/severity/CWE/impact |
 | `finding_causes` | `(finding_id, validation_id)` | validation 必须是 confirmed；一个 validation 最多属于一个 Finding |
+| `poc_artifacts` | `poc_id` | `finding_id` 唯一；`run_id`；`producer_task_id`；entry_type；payload_json |
 
-`findings` 只能由 Finding Builder 生成。Agent 提交中不得接受 `finding_id` 或根因归并结果。
+`findings` 只能由 Finding Builder 生成。Agent 提交中不得接受 `finding_id` 或根因归并结果。PoC 工件由 `poc_generation` 任务独立产出，一个 Finding 至多一个 Artifact（`finding_id` 唯一）；`findings` 表不含 PoC 字段，报告层通过 `poc_artifacts` 关联渲染。
 
 ## 3. 事务边界
 

@@ -5,7 +5,7 @@
 
 ## 边界
 
-Agent Trace 是通用助手骨架能力。Core 只记录可观察的执行事实，不理解 HarmonyOS、路径发现、六维验证、Finding 或 Atlas。插件把自己的领域任务映射为 `Execution Unit`，并自行选择持久化方式。
+Agent Trace 是通用助手骨架能力。Core 只记录可观察的执行事实，不理解 HarmonyOS、路径发现、六维验证、PoC 生成、Finding 或 Atlas。插件把自己的领域任务映射为 `Execution Unit`，并自行选择持久化方式。
 
 ```text
 Plugin Run

@@ -14,14 +14,14 @@ v3.2 已完成平台迁移、Harmony 审计插件接入、全量/增量审计和
 | Plugin Contract 与 Host | 已完成 | 动态发现、激活、Run、事件、动作、执行过程、Artifact、CLI/Web contribution |
 | 通用子 Agent | 已完成 | 隔离 Session、并发、取消、过程展示和本地状态恢复 |
 | Harmony Project Model | 已完成 | JSON5/Manifest、模块、组件、入口、依赖和项目级上下文 |
-| 全量审计 | 已完成 | 路径发现、确定性关联、六维验证、Finding 和覆盖缺口 |
+| 全量审计 | 已完成 | 路径发现、确定性关联、六维验证、PoC 生成、Finding 和覆盖缺口 |
 | 审计能力目录 | 已完成 | 原 6 项 planned 与 2 项 deferred 已进入组件或项目级分析 |
 | 增量审计 | 已完成 | 内容哈希、影响计划、事实重验收、验证复用和风险变化 |
 | 五槽任务运行 | 已完成 | 滚动补槽、三次尝试、单任务失败隔离和状态恢复 |
 | 报告 | 已完成 | JSON、详细 Markdown、详细 HTML 和 Attack Matrix |
 | 本地可靠性 | 已完成 | gateway SQLite、历史发现、重启中断语义、保留清理、日志和诊断 |
 
-历史里程碑的详细验收证据保留在 `docs/contracts/MILESTONE-0.md` 至 `MILESTONE-6.md`。Harmony 与 v3.1 的细粒度比较见 [V31-PARITY.md](packages/harmony-audit/V31-PARITY.md)。
+历史里程碑的验收记录已从工作区移除，追溯见 git 历史。Harmony 与 v3.1 的细粒度比较见 [V31-PARITY.md](packages/harmony-audit/V31-PARITY.md)。
 
 ## 非阻塞增强项
 

@@ -26,13 +26,14 @@
   -> 未受影响语义结果经当前 Schema/领域不变量重新验收后导入 run.db
   -> 重新执行确定性跨组件关联
   -> 操作组安全指纹一致时复用六维验证，否则进入原验证 Agent 队列
+  -> 确认漏洞的操作组指纹一致时复用 PoC 工件，否则进入原 PoC Agent 队列
   -> 生成完整报告和风险新增/变化/消失/未变化对比
   -> 仅在 complete 且无过滤时推进下一版基线
 ```
 
 ## 基线有效性
 
-基线记录所有可追踪源码和配置文件的 SHA-256、Project Model、语义提交、验证提交、风险快照、Git 根与提交以及审计契约哈希。审计契约哈希覆盖 Capability Registry、两份提交 Schema 和两份内置 Skill。
+基线记录所有可追踪源码和配置文件的 SHA-256、Project Model、语义提交、验证提交、PoC 工件、风险快照、Git 根与提交以及审计契约哈希。审计契约哈希覆盖 Capability Registry、三份提交 Schema 和三份内置 Skill。
 
 以下情况拒绝增量执行并要求重新全量审计：
 
@@ -49,10 +50,12 @@
 
 六维验证复用要求当前入口语义来自已验收的基线，并且本次所有待验证 Operation Group 的安全相关指纹与基线完全一致。复用提交同样重写当前 Group ID，再经过六维双射、证据、边界、主体、DoS 和 Finding 规则校验。
 
-复用任务使用 `attempts=0` 并产生 `semantic_result_reused` 或 `validation_result_reused` 事件。验收失败会产生 `*_reuse_rejected` 事件并自动回退到正常 Agent 队列，不会静默丢失覆盖。
+PoC 工件复用要求增量入口来自已验收基线，且对应操作组的安全相关指纹与基线 PoC 快照完全一致；复用的工件重写当前 `task_id/finding_id` 后经当前 Schema 与 PoC 领域校验入库。
+
+复用任务使用 `attempts=0` 并产生 `semantic_result_reused`、`validation_result_reused` 或 `poc_result_reused` 事件。验收失败会产生 `*_reuse_rejected` 事件并自动回退到正常 Agent 队列，不会静默丢失覆盖。
 
 ## 报告与恢复
 
-每个增量 Run 的 `incremental/` 目录保存冻结的 `change-set.json`、`impact-plan.json` 和本次使用的三类基线快照，恢复时不重新计算变化范围。Report Model、Markdown 和 HTML 同步展示变化文件数量、受影响/复用入口和风险路径变化。
+每个增量 Run 的 `incremental/` 目录保存冻结的 `change-set.json`、`impact-plan.json` 和本次使用的四类基线快照（语义、验证、风险快照、PoC 工件），恢复时不重新计算变化范围。Report Model、Markdown 和 HTML 同步展示变化文件数量、受影响/复用入口和风险路径变化。
 
 `run.db` 仍是本次 Run 的唯一事实源；全局增量基线只是下一次 Run 的只读输入。失败、取消、范围过滤或 `complete_with_gaps` 不推进基线。

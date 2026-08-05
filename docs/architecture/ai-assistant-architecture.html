@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 助手整体架构 · Agent Platform v3.2</title>
+<style>
+  :root {
+    --bg-0: #070d0a; --bg-1: #0c1810; --bg-2: #11241a;
+    --panel: rgba(20, 38, 28, .55); --panel-line: rgba(196, 223, 112, .16);
+    --ink: #e8f5ec; --ink-dim: rgba(232, 245, 236, .55); --ink-faint: rgba(232, 245, 236, .32);
+    --lime: #c4df70; --lime-soft: rgba(196, 223, 112, .35);
+    --green: #174d3b; --green-2: #24644e; --cyan: #6fd8d0; --blue: #396b82;
+    --warn: #e5c39f; --amber: #b86c32;
+    --glow-lime: 0 0 18px rgba(196, 223, 112, .25), 0 0 42px rgba(196, 223, 112, .10);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg-0);
+    background-image:
+      radial-gradient(1100px 500px at 50% -8%, rgba(36, 100, 78, .35), transparent 65%),
+      radial-gradient(900px 600px at 88% 108%, rgba(57, 107, 130, .18), transparent 60%),
+      linear-gradient(rgba(196, 223, 112, .045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(196, 223, 112, .045) 1px, transparent 1px);
+    background-size: auto, auto, 44px 44px, 44px 44px;
+    color: var(--ink); font: 13px/1.5 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    min-height: 100vh; overflow-x: auto; padding: 28px 20px 60px;
+  }
+  /* 背景光点粒子 */
+  .particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+  .particles i { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: var(--lime);
+    box-shadow: 0 0 8px var(--lime); opacity: .5; animation: drift linear infinite; }
+  @keyframes drift { from { transform: translateY(0); opacity: 0; } 12% { opacity: .55; } to { transform: translateY(-120vh); opacity: 0; } }
+
+  .title { position: relative; z-index: 1; text-align: center; margin-bottom: 22px; }
+  .title .eyebrow { letter-spacing: .42em; font-size: 11px; color: var(--cyan); text-shadow: 0 0 14px rgba(111, 216, 208, .6); margin-bottom: 8px; }
+  .title h1 { font-size: 40px; font-weight: 800; letter-spacing: .12em;
+    background: linear-gradient(100deg, #e8f5ec 20%, var(--lime) 55%, var(--cyan) 90%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 0 22px rgba(196, 223, 112, .35)); }
+  .title .sub { color: var(--ink-dim); font-size: 13px; margin-top: 6px; }
+  .title .sub b { color: var(--lime); font-weight: 600; }
+
+  .canvas { position: relative; z-index: 1; width: 1920px; height: 1400px; margin: 0 auto; }
+  #links { position: absolute; inset: 0; width: 1920px; height: 1400px; pointer-events: none; z-index: 2; }
+  #links path { fill: none; stroke: rgba(196, 223, 112, .28); stroke-width: 1.4;
+    stroke-dasharray: 5 7; animation: flow 1.6s linear infinite; }
+  #links path.major { stroke: rgba(196, 223, 112, .55); stroke-width: 1.8; }
+  #links path.lit { stroke: var(--lime); stroke-width: 2.4; filter: drop-shadow(0 0 6px var(--lime)); animation-duration: .7s; }
+  #links .lbl { font: 10px/1 "PingFang SC", sans-serif; fill: rgba(232, 245, 236, .45); paint-order: stroke; stroke: rgba(7, 13, 10, .85); stroke-width: 3px; }
+  @keyframes flow { to { stroke-dashoffset: -24; } }
+
+  .layer { position: absolute; border: 1px solid var(--panel-line); border-radius: 14px;
+    background: linear-gradient(160deg, rgba(20, 38, 28, .5), rgba(12, 24, 16, .38));
+    backdrop-filter: blur(6px); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04), 0 8px 30px rgba(0, 0, 0, .35); }
+  .layer .tag { position: absolute; top: -9px; left: 14px; padding: 1px 12px; border-radius: 20px;
+    font-size: 11px; letter-spacing: .2em; color: var(--lime); background: var(--bg-1);
+    border: 1px solid var(--panel-line); box-shadow: 0 0 14px rgba(196, 223, 112, .15); }
+
+  .node { position: absolute; border-radius: 10px; border: 1px solid rgba(196, 223, 112, .28);
+    background: linear-gradient(150deg, rgba(24, 44, 33, .85), rgba(13, 26, 18, .85));
+    padding: 8px 12px; cursor: default; z-index: 3; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .35); }
+  .node::before { content: ""; position: absolute; top: 7px; left: 8px; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--lime); box-shadow: 0 0 8px var(--lime); animation: pulse 2.4s ease-in-out infinite; }
+  .node.cyan::before { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .node.warn::before { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+  @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
+  .node b { display: block; font-size: 13.5px; color: var(--ink); letter-spacing: .03em; }
+  .node .d { margin-top: 3px; font-size: 10.5px; color: var(--ink-faint); line-height: 1.45; }
+  .node .d b { display: inline; font-size: inherit; color: var(--ink-dim); font-weight: 600; }
+  .node:hover { transform: translateY(-3px); border-color: var(--lime); box-shadow: var(--glow-lime), 0 12px 26px rgba(0, 0, 0, .5); z-index: 6; }
+
+  .node.hero { background: linear-gradient(150deg, var(--green-2), var(--green) 70%); border-color: rgba(196, 223, 112, .55); }
+  .node.hero b { color: #fff; }
+  .node.hero .d { color: rgba(213, 227, 220, .8); }
+  .node.hero .d b { color: var(--lime); }
+  .node.hero::before { background: var(--lime); }
+  .node.hot { border-color: rgba(111, 216, 208, .6); background: linear-gradient(150deg, rgba(26, 52, 42, .9), rgba(15, 34, 26, .9)); }
+  .node.hot b { color: var(--cyan); }
+  .node.contract { border-style: dashed; border-color: rgba(196, 223, 112, .5); background: rgba(196, 223, 112, .07); }
+  .node.contract b { color: var(--lime); }
+
+  .node.phase { border-radius: 12px; }
+  .node.phase .tagp { display: inline-block; margin-right: 6px; padding: 0 7px; border-radius: 6px; font-size: 10px; color: #0c1810;
+    background: linear-gradient(100deg, var(--lime), #d9f0a2); font-weight: 700; }
+  .node.ext { border-style: dashed; border-color: rgba(111, 216, 208, .35); background: rgba(10, 20, 30, .55); }
+  .node.ext b { color: var(--cyan); }
+
+  .note { position: absolute; border: 1px solid rgba(229, 195, 159, .3); border-radius: 12px;
+    background: rgba(60, 40, 20, .28); backdrop-filter: blur(6px); padding: 12px 16px; z-index: 3; }
+  .note h4 { font-size: 12px; letter-spacing: .18em; color: var(--warn); margin-bottom: 8px; }
+  .note ul { list-style: none; }
+  .note li { font-size: 11px; color: var(--ink-dim); padding: 3px 0 3px 14px; position: relative; }
+  .note li::before { content: "▸"; position: absolute; left: 0; color: var(--lime-soft); }
+
+  .scale { position: fixed; right: 22px; bottom: 22px; z-index: 20; display: flex; gap: 6px; }
+  .scale button { border: 1px solid var(--panel-line); background: rgba(12, 24, 16, .8); color: var(--ink-dim);
+    width: 34px; height: 34px; border-radius: 9px; cursor: pointer; font-size: 16px; backdrop-filter: blur(4px); }
+  .scale button:hover { color: var(--lime); border-color: var(--lime); box-shadow: var(--glow-lime); }
+
+  #tip { position: fixed; pointer-events: none; z-index: 40; max-width: 320px; padding: 10px 14px; border-radius: 10px;
+    background: rgba(8, 16, 11, .94); border: 1px solid var(--lime-soft); box-shadow: var(--glow-lime), 0 10px 24px rgba(0,0,0,.5);
+    font-size: 11.5px; color: var(--ink-dim); opacity: 0; transition: opacity .15s ease; }
+  #tip b { color: var(--lime); display: block; margin-bottom: 3px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="particles" id="particles"></div>
+
+<header class="title">
+  <div class="eyebrow">AGENT PLATFORM · V3.2</div>
+  <h1>AI ASSISTANT 整体架构</h1>
+  <div class="sub">通用 AI 助手框架（复用 Pi Coding Agent）· 插件化接入安全审计 · <b>路径发现 → 六维验证 → PoC 生成</b></div>
+</header>
+
+<div class="canvas" id="canvas">
+  <svg id="links" width="1920" height="1400"><defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="rgba(196,223,112,.65)"/>
+    </marker>
+  </defs></svg>
+
+  <!-- ================= 用户层 ================= -->
+  <section class="layer" style="left:20px;top:18px;width:1460px;height:88px"><span class="tag">用户入口</span></section>
+  <div class="node" id="web" data-desc="浏览器端 Web Shell：内置对话助手、插件目录、审计任务过程与报告查看。" style="left:70px;top:44px;width:250px;height:46px">
+    <b>🌐 Web Shell</b><div class="d">内置助手 · 插件目录 · 过程视图</div></div>
+  <div class="node" id="cli" data-desc="通用 CLI：解析平台配置与参数，调用插件贡献的命令（audit/status/resume/report…）。" style="left:370px;top:44px;width:250px;height:46px">
+    <b>⌨️ Generic CLI</b><div class="d">平台参数 + 插件贡献命令</div></div>
+
+  <!-- ================= 传输层 ================= -->
+  <section class="layer" style="left:20px;top:116px;width:1460px;height:76px"><span class="tag">传输层 · apps/server</span></section>
+  <div class="node hot" id="server" data-desc="只负责本地 HTTP/SSE、Bearer Token、静态资源、错误映射与文件传输，不解释领域语义。" style="left:280px;top:132px;width:640px;height:44px">
+    <b>Server — HTTP / SSE · Bearer Token · 静态资源 · 文件传输</b></div>
+
+  <!-- ================= 应用层 ================= -->
+  <section class="layer" style="left:20px;top:202px;width:1460px;height:132px"><span class="tag">应用层 · packages/interface（零领域 import）</span></section>
+  <div class="node" id="assistant" data-desc="对话 Session、能力管理、MCP 注入与子 Agent 委派。普通对话不经过 Plugin Host，可独立运行。" style="left:60px;top:232px;width:430px;height:88px">
+    <b>AssistantSessionService</b><div class="d">对话 Session · 能力管理 · MCP 注入 · 子 Agent</div></div>
+  <div class="node" id="pluginHost" data-desc="插件激活、Run 发现与收养、事件流、动作、执行过程与 Artifact，只持通用 PluginRuntime 引用。" style="left:540px;top:232px;width:430px;height:88px">
+    <b>PluginHostService</b><div class="d">插件激活 · Run 收养 · 事件 · 动作 · Artifact</div></div>
+  <div class="node" id="state" data-desc="平台 SQLite（gateway.db Job 索引）、重启恢复、保留清理与 JSONL 日志。" style="left:1020px;top:232px;width:430px;height:88px">
+    <b>LocalGatewayState</b><div class="d">gateway.db · 重启恢复 · JSONL 日志</div></div>
+
+  <!-- ================= 核心层 ================= -->
+  <section class="layer" style="left:20px;top:344px;width:1460px;height:232px"><span class="tag">核心层 · packages/core（领域无关 · 复用 Pi 不造轮子）</span></section>
+  <div class="node" id="piFactory" data-desc="创建交互助手 Session 与结构化 Worker Session，模型、认证、重试、压缩复用 Pi 官方实现。" style="left:60px;top:376px;width:430px;height:58px">
+    <b>PiSessionFactory</b><div class="d">交互 / 结构化 Worker Session · 复用 Pi</div></div>
+  <div class="node" id="mcp" data-desc="管理 stdio MCP 生命周期、并发上限、工具过滤与 setup call。" style="left:540px;top:376px;width:430px;height:58px">
+    <b>McpManager</b><div class="d">stdio MCP · 并发上限 · 工具过滤</div></div>
+  <div class="node" id="subagents" data-desc="通用助手子 Agent：隔离委派、并发控制、取消与过程事件。" style="left:1020px;top:376px;width:430px;height:58px">
+    <b>SubagentRuntime</b><div class="d">通用子 Agent · 取消 · 过程事件</div></div>
+  <div class="node" id="pool" data-desc="领域无关的即时补槽调度：任务结束后立即补充下一个，容量由插件决定。" style="left:60px;top:462px;width:430px;height:58px">
+    <b>RollingAgentPool</b><div class="d">滚动补槽 · 即补即跑</div></div>
+  <div class="node" id="skills" data-desc="为结构化插件 Worker 装载插件自带的任务 Skill。" style="left:540px;top:462px;width:430px;height:58px">
+    <b>SkillManager</b><div class="d">插件任务 Skill 装载</div></div>
+  <div class="node" id="graphApp" data-desc="LangGraph checkpoint 的薄启动适配，不解释领域节点。" style="left:1020px;top:462px;width:430px;height:58px">
+    <b>GraphApplication</b><div class="d">LangGraph checkpoint 适配</div></div>
+  <div class="node contract" id="contract" data-desc="版本化 Plugin Contract v1：Manifest + configSchema 校验 + PluginRuntime（operation/run/events/actions/artifacts/executions/discoverRuns/dispose）+ Registry。平台与插件唯一的耦合面。" style="left:60px;top:544px;width:1380px;height:34px">
+    <b>Plugin Contract v1 — Manifest · configSchema · PluginRuntime · Registry</b></div>
+
+  <!-- ================= 插件层 ================= -->
+  <section class="layer" style="left:20px;top:586px;width:1460px;height:640px"><span class="tag">领域插件 · packages/harmony-audit（完全自包含）</span></section>
+  <div class="node hero" id="adapter" data-desc="插件适配器：CLI 命令（audit/status/resume/cancel/report/capabilities/components）、Web contribution、Run/Artifact、allowedRoots 路径授权。" style="left:60px;top:624px;width:430px;height:58px">
+    <b>Plugin Adapter</b><div class="d">CLI · Web contribution · Run/Artifact · 授权</div></div>
+  <div class="node hero" id="orchestrator" data-desc="创建会话/Skill、Atlas 索引与 MCP Profile、项目解析、run 创建与恢复。" style="left:60px;top:712px;width:430px;height:58px">
+    <b>HarmonyAuditOrchestrator</b><div class="d">项目解析 · Atlas 索引 · run 创建/恢复</div></div>
+  <div class="node hero" id="graphPlugin" data-desc="LangGraph 主图：load → pool → finalize，graph.db 保存控制游标。图本身不知道三大阶段存在——阶段推进由 claim 的 drain 逻辑驱动。" style="left:540px;top:624px;width:430px;height:58px">
+    <b>LangGraph 审计状态机</b><div class="d">load → pool → finalize · graph.db 游标</div></div>
+  <div class="node hero" id="poolPolicy" data-desc="五槽并发策略：容量 1..5，任务结束立即补槽，不等待整批完成。" style="left:540px;top:712px;width:430px;height:58px">
+    <b>五槽并发策略</b><div class="d">容量 1..5 · 即时补槽</div></div>
+  <div class="node hero phase" id="phase1" data-desc="组件语义路径发现：只产事实（operation groups / facts / component calls），禁止判断性输出。skill: harmony-component-analysis · SEMANTIC_TOOLS(8) · component-semantic schema。" style="left:60px;top:806px;width:430px;height:100px">
+    <b><span class="tagp">PHASE 1</span>路径发现</b><div class="d">harmony-component-analysis · SEMANTIC_TOOLS(8)<br>只产事实，不判断</div></div>
+  <div class="node hero phase" id="phase2" data-desc="六维有效性验证：反证优先，六维全真 + effect_chain + impact/severity/cwe 才确认漏洞。skill: harmony-exploitability-validation · VALIDATION_TOOLS(5)。" style="left:540px;top:806px;width:430px;height:100px">
+    <b><span class="tagp">PHASE 2</span>六维验证</b><div class="d">harmony-exploitability-validation · VALIDATION_TOOLS(5)<br>反证 · effect_chain · 结论</div></div>
+  <div class="node hero phase" id="phase3" data-desc="PoC 生成：为确认漏洞产出可复现触发套件，形态决策（shell/arkts）、符号核验、三道运行时防线，禁止重新判定。skill: harmony-poc-generation · POC_TOOLS(4)。" style="left:1020px;top:806px;width:430px;height:100px">
+    <b><span class="tagp">PHASE 3</span>PoC 生成</b><div class="d">harmony-poc-generation · POC_TOOLS(4)<br>触发套件 · 引用核验</div></div>
+  <div class="node" id="store" data-desc="run.db：审计状态与结论的唯一事实源（schema v3）。语义表 / validation_results / findings / poc_artifacts / evidence / events，全部外键 + 事务原子提交。" style="left:60px;top:938px;width:430px;height:86px">
+    <b>run.db — 审计事实唯一源</b><div class="d">语义表 · 验证表 · findings · poc_artifacts<br>schema v3 · 事务原子提交</div></div>
+  <div class="node" id="reports" data-desc="从事实库确定性生成：JSON / Markdown / HTML / Attack Matrix。" style="left:540px;top:938px;width:430px;height:86px">
+    <b>报告产物</b><div class="d">JSON · Markdown · HTML · Attack Matrix<br>确定性生成</div></div>
+  <div class="node" id="baseline" data-desc="增量基线：四类快照（语义/验证/风险/PoC）、group_fingerprint、审计契约哈希；complete 且无过滤时推进。" style="left:1020px;top:938px;width:430px;height:86px">
+    <b>增量基线</b><div class="d">四类快照 · group_fingerprint · 契约哈希</div></div>
+
+  <!-- ================= 外部依赖 ================= -->
+  <section class="layer" style="left:1500px;top:18px;width:400px;height:1080px;border-style:dashed"><span class="tag">外部依赖</span></section>
+  <div class="node ext" id="pi" data-desc="Pi Coding Agent：模型、认证、基础工具、Settings、Skills、Packages——平台不自研任何重复能力。" style="left:1520px;top:60px;width:360px;height:86px">
+    <b>Pi Coding Agent</b><div class="d">模型 · Auth · 基础工具 · Settings · Packages</div></div>
+  <div class="node ext" id="atlas" data-desc="Atlas 图数据库：索引、符号解析与调用图查询（symbol/explore/path/trace/impact），按阶段白名单注入工具。" style="left:1520px;top:180px;width:360px;height:86px">
+    <b>Atlas CLI / MCP</b><div class="d">图数据库 · symbol/explore/path/trace</div></div>
+  <div class="node ext" id="langgraph" data-desc="LangGraphJS 状态图 + SQLite checkpoint（graph.db 控制游标）。" style="left:1520px;top:300px;width:360px;height:86px">
+    <b>LangGraphJS</b><div class="d">StateGraph · graph.db 控制游标</div></div>
+  <div class="node ext" id="sqlite" data-desc="better-sqlite3：gateway.db（平台）、run.db（插件事实）、graph.db（LangGraph 游标）。" style="left:1520px;top:420px;width:360px;height:86px">
+    <b>SQLite（better-sqlite3）</b><div class="d">gateway.db · run.db · graph.db</div></div>
+  <div class="node ext" id="config" data-desc="config/pi-agent（models.json · settings.json · auth.json）+ config/agent-platform.json（MCP、子 Agent、插件装配）。" style="left:1520px;top:540px;width:360px;height:100px">
+    <b>配置</b><div class="d">pi-agent（models/settings/auth）<br>agent-platform.json（MCP · 插件装配）</div></div>
+
+  <!-- ================= 注解 ================= -->
+  <div class="note" style="left:60px;top:1260px;width:700px;height:122px">
+    <h4>解耦要点</h4><ul>
+      <li>平台 ↔ 插件仅经 Plugin Contract，无领域分支；卸载插件平台仍可运行</li>
+      <li>三阶段单向数据流：路径发现 → 六维验证 → PoC，只读前序、只写自有表</li>
+      <li>提交必须过 Schema → 领域不变量 → 事务；PoC 非门禁，失败不阻塞完成</li>
+      <li>编排图（load→pool→finalize）无阶段知识，阶段推进由 drain 调度驱动</li>
+    </ul></div>
+  <div class="note" style="left:800px;top:1260px;width:700px;height:122px">
+    <h4>数据所有权</h4><ul>
+      <li>gateway.db / gateway.log：平台 Job 索引与脱敏日志；Pi Session JSONL 归 Pi</li>
+      <li>run.db：插件审计事实唯一源（schema v3）；graph.db：可重建的控制游标</li>
+      <li>report.*：从事实库确定性生成的展示产物；保留清理不删插件事实</li>
+      <li>增量基线是下次 Run 的只读输入，失败/取消/缺口不推进</li>
+    </ul></div>
+</div>
+
+<div class="scale">
+  <button id="zoomin" title="放大">＋</button>
+  <button id="zoomout" title="缩小">－</button>
+  <button id="reset" title="重置">⟲</button>
+</div>
+<div id="tip"></div>
+
+<script>
+  // 连线数据：[from, to, label?, major?]
+  const LINKS = [
+    ["web", "server", null], ["cli", "server", "HTTP / SSE"], ["cli", "pluginHost", "CLI 调用插件"],
+    ["server", "assistant", null], ["server", "pluginHost", null], ["server", "state", null],
+    ["assistant", "piFactory", "Pi 会话"], ["assistant", "mcp", null], ["assistant", "subagents", null],
+    ["pluginHost", "contract", "通用合同", true], ["contract", "adapter", "activate / runtime", true],
+    ["adapter", "orchestrator", null], ["orchestrator", "graphPlugin", null], ["graphPlugin", "poolPolicy", null],
+    ["poolPolicy", "phase1", "claim 任务"], ["poolPolicy", "phase2", null], ["poolPolicy", "phase3", null],
+    ["phase1", "store", "Schema + 不变量 + 事务"], ["phase2", "store", null], ["phase3", "store", null],
+    ["store", "reports", "确定性生成"], ["store", "baseline", "complete 时推进"],
+    ["piFactory", "pi", null], ["mcp", "atlas", "Atlas MCP"], ["graphPlugin", "langgraph", null],
+    ["graphPlugin", "sqlite", "graph.db"], ["state", "sqlite", "gateway.db"],
+    ["phase2", "piFactory", "worker 会话（Pi）"], ["phase1", "atlas", "按阶段工具集"],
+  ];
+
+  const canvas = document.getElementById("canvas");
+  const svg = document.getElementById("links");
+  const svgNS = "http://www.w3.org/2000/svg";
+  const nodes = new Map();
+
+  function center(id) {
+    const el = document.getElementById(id);
+    const r = el.getBoundingClientRect(), c = canvas.getBoundingClientRect();
+    // getBoundingClientRect 反映 CSS transform 缩放，SVG 内部坐标系是未缩放的 1920×1400
+    return { x: (r.left - c.left + r.width / 2) / scale, y: (r.top - c.top + r.height / 2) / scale, w: r.width / scale, h: r.height / scale };
+  }
+
+  // 收集节点位置（首次 + 缩放后）
+  function refresh() {
+    nodes.clear();
+    document.querySelectorAll(".node").forEach((el) => nodes.set(el.id, el));
+  }
+  refresh();
+
+  function renderLinks() {
+    svg.querySelectorAll("path,text").forEach((n) => n.remove());
+    LINKS.forEach(([from, to, label, major], index) => {
+      const a = center(from), b = center(to);
+      const y1 = a.y + a.h / 2, y2 = b.y - b.h / 2, mid = (y1 + y2) / 2;
+      const d = `M ${a.x} ${y1} C ${a.x} ${mid}, ${b.x} ${mid}, ${b.x} ${y2}`;
+      const path = document.createElementNS(svgNS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("marker-end", "url(#arrow)");
+      if (major) path.classList.add("major");
+      path.dataset.link = String(index);
+      svg.appendChild(path);
+      if (label) {
+        const text = document.createElementNS(svgNS, "text");
+        text.setAttribute("x", (a.x + b.x) / 2); text.setAttribute("y", mid - 6);
+        text.setAttribute("text-anchor", "middle"); text.classList.add("lbl");
+        text.textContent = label; text.dataset.link = String(index);
+        svg.appendChild(text);
+      }
+    });
+  }
+
+  // 节点 hover → 关联连线点亮
+  const byNode = new Map();
+  const linksOf = (id) => { if (!byNode.has(id)) byNode.set(id, []); return byNode.get(id); };
+  LINKS.forEach(([from, to], index) => { linksOf(from).push(index); linksOf(to).push(index); });
+  document.querySelectorAll(".node").forEach((el) => {
+    el.addEventListener("mouseenter", () => {
+      const ids = byNode.get(el.id) ?? [];
+      svg.querySelectorAll("path,text").forEach((n) => n.classList.toggle("lit", ids.includes(Number(n.dataset.link))));
+    });
+    el.addEventListener("mouseleave", () => svg.querySelectorAll("path,text").forEach((n) => n.classList.remove("lit")));
+    el.addEventListener("mousemove", (e) => showTip(e, el));
+    el.addEventListener("mouseleave", () => { const t = document.getElementById("tip"); t.style.opacity = 0; });
+  });
+
+  function showTip(e, el) {
+    const tip = document.getElementById("tip");
+    const desc = el.dataset.desc || el.querySelector("b")?.textContent || "";
+    tip.innerHTML = `<b>${el.querySelector("b").innerHTML}</b>${desc}`;
+    tip.style.opacity = 1;
+    const x = e.clientX + 16, y = e.clientY + 16;
+    tip.style.left = Math.min(x, innerWidth - 340) + "px";
+    tip.style.top = Math.min(y, innerHeight - 140) + "px";
+  }
+
+  // 粒子背景
+  (function () {
+    const box = document.getElementById("particles");
+    for (let i = 0; i < 26; i += 1) {
+      const dot = document.createElement("i");
+      dot.style.left = Math.random() * 100 + "vw";
+      dot.style.bottom = -(Math.random() * 30 + 10) + "px";
+      dot.style.animationDuration = (Math.random() * 26 + 16) + "s";
+      dot.style.animationDelay = (Math.random() * 20) + "s";
+      box.appendChild(dot);
+    }
+  })();
+
+  // 缩放
+  let scale = 1;
+  function applyScale() {
+    canvas.style.transform = `scale(${scale})`;
+    canvas.style.transformOrigin = "top center";
+    renderLinks();
+  }
+  document.getElementById("zoomin").onclick = () => { scale = Math.min(scale * 1.15, 2); applyScale(); };
+  document.getElementById("zoomout").onclick = () => { scale = Math.max(scale / 1.15, 0.4); applyScale(); };
+  document.getElementById("reset").onclick = () => { scale = 1; applyScale(); };
+
+  renderLinks();
+  window.addEventListener("resize", renderLinks);
+</script>
+</body>
+</html>

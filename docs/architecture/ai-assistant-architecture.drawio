@@ -1,0 +1,235 @@
+<mxfile host="app.diagrams.net" agent="Claude" version="24.0.0" type="device">
+  <diagram id="ai-assistant-architecture" name="AI 助手整体架构">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1960" pageHeight="1240" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ============ 容器：用户层 ============ -->
+        <mxCell id="L1" value="用户入口" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=13;fillColor=#f4f6f3;strokeColor=#dfe4df;spacingTop=8;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="20" width="1560" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="web" value="Web Shell（浏览器）&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;内置助手 · 插件目录 · 任务过程视图&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L1">
+          <mxGeometry x="80" y="45" width="280" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="cli" value="Generic CLI&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;平台参数 + 插件贡献命令&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L1">
+          <mxGeometry x="420" y="45" width="280" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 容器：传输层 ============ -->
+        <mxCell id="L2" value="传输层 · apps/server" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=13;fillColor=#f4f6f3;strokeColor=#dfe4df;spacingTop=8;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="130" width="1560" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="server" value="&lt;b&gt;Server&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;HTTP / SSE · Bearer Token · 静态资源 · 错误映射 · 文件传输&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#396b82;strokeColor=#396b82;fontColor=#ffffff;" vertex="1" parent="L2">
+          <mxGeometry x="300" y="160" width="700" height="45" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 容器：应用层 interface ============ -->
+        <mxCell id="L3" value="应用层 · packages/interface（不解释任何领域语义）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=13;fillColor=#f4f6f3;strokeColor=#dfe4df;spacingTop=8;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="240" width="1560" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="assistant" value="&lt;b&gt;AssistantSessionService&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;对话 Session · 能力管理 · MCP 注入 · 子 Agent 委派&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L3">
+          <mxGeometry x="80" y="280" width="430" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="pluginHost" value="&lt;b&gt;PluginHostService&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;插件激活 · Run 收养/发现 · 事件 · 动作 · 执行过程 · Artifact&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L3">
+          <mxGeometry x="560" y="280" width="430" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="state" value="&lt;b&gt;LocalGatewayState&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;gateway.db（平台 Job 索引）· 重启恢复 · 保留清理 · JSONL 日志&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L3">
+          <mxGeometry x="1040" y="280" width="430" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 容器：核心层 core ============ -->
+        <mxCell id="L4" value="核心层 · packages/core（领域无关，复用 Pi 不造轮子）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=13;fillColor=#f4f6f3;strokeColor=#dfe4df;spacingTop=8;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="430" width="1560" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="piFactory" value="&lt;b&gt;PiSessionFactory&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;交互/结构化 Worker Session · 复用 Pi 模型与认证&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef3ef;strokeColor=#b8d2c5;fontColor=#18211d;" vertex="1" parent="L4">
+          <mxGeometry x="80" y="470" width="430" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="mcp" value="&lt;b&gt;McpManager&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;stdio MCP 生命周期 · 并发上限 · 工具过滤 · setup call&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef3ef;strokeColor=#b8d2c5;fontColor=#18211d;" vertex="1" parent="L4">
+          <mxGeometry x="560" y="470" width="430" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="subagents" value="&lt;b&gt;SubagentRuntime&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;通用助手子 Agent · 隔离委派 · 取消 · 过程事件&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef3ef;strokeColor=#b8d2c5;fontColor=#18211d;" vertex="1" parent="L4">
+          <mxGeometry x="1040" y="470" width="430" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="pool" value="&lt;b&gt;RollingAgentPool&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;领域无关滚动补槽 · 即补即跑&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef3ef;strokeColor=#b8d2c5;fontColor=#18211d;" vertex="1" parent="L4">
+          <mxGeometry x="80" y="570" width="430" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="skills" value="&lt;b&gt;SkillManager&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;插件自带任务 Skill 装载与激活&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef3ef;strokeColor=#b8d2c5;fontColor=#18211d;" vertex="1" parent="L4">
+          <mxGeometry x="560" y="570" width="430" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="graphApp" value="&lt;b&gt;GraphApplication&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;LangGraph checkpoint 薄启动适配&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef3ef;strokeColor=#b8d2c5;fontColor=#18211d;" vertex="1" parent="L4">
+          <mxGeometry x="1040" y="570" width="430" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="contract" value="&lt;b&gt;Plugin Contract v1&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;版本化 Manifest · configSchema 校验 · PluginRuntime（operation/run/events/actions/artifacts/executions/discoverRuns/dispose）· Registry&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f1f8f4;strokeColor=#174d3b;fontColor=#174d3b;fontStyle=1;" vertex="1" parent="L4">
+          <mxGeometry x="80" y="650" width="1390" height="45" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 容器：插件层 harmony-audit ============ -->
+        <mxCell id="L5" value="领域插件 · packages/harmony-audit（完全自包含：契约接入 · 平台零领域分支）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=13;fillColor=#f4f6f3;strokeColor=#dfe4df;spacingTop=8;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="690" width="1560" height="510" as="geometry"/>
+        </mxCell>
+        <mxCell id="adapter" value="&lt;b&gt;Plugin Adapter&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;CLI 命令 · Web contribution · Run/Artifact · allowedRoots 授权&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24644e;strokeColor=#24644e;fontColor=#ffffff;" vertex="1" parent="L5">
+          <mxGeometry x="80" y="740" width="440" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="orchestrator" value="&lt;b&gt;HarmonyAuditOrchestrator&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;项目解析 · Atlas 索引 · 会话/Skill 装配 · run 创建与恢复&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24644e;strokeColor=#24644e;fontColor=#ffffff;" vertex="1" parent="L5">
+          <mxGeometry x="80" y="830" width="440" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="graphPlugin" value="&lt;b&gt;LangGraph 审计状态机&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;load → pool → finalize · graph.db 控制游标&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#174d3b;strokeColor=#174d3b;fontColor=#ffffff;" vertex="1" parent="L5">
+          <mxGeometry x="560" y="740" width="440" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="poolPolicy" value="&lt;b&gt;五槽并发策略&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;容量 1..5 · 即时补槽&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#174d3b;strokeColor=#174d3b;fontColor=#ffffff;" vertex="1" parent="L5">
+          <mxGeometry x="560" y="830" width="440" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="phase1" value="&lt;b&gt;① 路径发现 Path Discovery&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;harmony-component-analysis · SEMANTIC_TOOLS(8) · 组件语义 schema&lt;br&gt;只产事实，不判断&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#174d3b;strokeColor=#174d3b;fontColor=#ffffff;" vertex="1" parent="L5">
+          <mxGeometry x="80" y="930" width="440" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="phase2" value="&lt;b&gt;② 六维验证 Validation&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;harmony-exploitability-validation · VALIDATION_TOOLS(5) · 六维 schema&lt;br&gt;反证 · effect_chain · 结论&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#174d3b;strokeColor=#174d3b;fontColor=#ffffff;" vertex="1" parent="L5">
+          <mxGeometry x="560" y="930" width="440" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="phase3" value="&lt;b&gt;③ PoC 生成 PoC Generation&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#d5e3dc&quot;&gt;harmony-poc-generation · POC_TOOLS(4) · poc-result schema&lt;br&gt;触发套件 · 形态决策 · 引用核验&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#174d3b;strokeColor=#174d3b;fontColor=#ffffff;" vertex="1" parent="L5">
+          <mxGeometry x="1040" y="930" width="440" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="store" value="&lt;b&gt;run.db（审计事实唯一源）&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;语义表 · 验证表 · findings · poc_artifacts · events · schema v3&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L5">
+          <mxGeometry x="80" y="1060" width="440" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="reports" value="&lt;b&gt;报告产物&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;JSON · Markdown · HTML · Attack Matrix&lt;br&gt;从事实库确定性生成&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L5">
+          <mxGeometry x="560" y="1060" width="440" height="95" as="geometry"/>
+        </mxCell>
+        <mxCell id="baseline" value="&lt;b&gt;增量基线&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;四类快照（语义/验证/风险/PoC）· group_fingerprint · 契约哈希&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#dfe4df;fontColor=#18211d;" vertex="1" parent="L5">
+          <mxGeometry x="1040" y="1060" width="440" height="95" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 容器：外部依赖 ============ -->
+        <mxCell id="L6" value="外部依赖（复用 / 基础设施）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontStyle=1;fontSize=13;fillColor=#f5f6f5;strokeColor=#c0c8c3;dashed=1;spacingTop=8;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="1600" y="20" width="340" height="1180" as="geometry"/>
+        </mxCell>
+        <mxCell id="pi" value="&lt;b&gt;Pi Coding Agent&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;模型 · Auth · 基础工具 · Settings · Skills · Packages&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b8d2c5;fontColor=#18211d;dashed=1;" vertex="1" parent="L6">
+          <mxGeometry x="1620" y="60" width="300" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="atlas" value="&lt;b&gt;Atlas CLI / MCP&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;图数据库索引 · symbol/explore/path/trace/impact&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b8d2c5;fontColor=#18211d;dashed=1;" vertex="1" parent="L6">
+          <mxGeometry x="1620" y="200" width="300" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="langgraph" value="&lt;b&gt;LangGraphJS + SQLite Checkpoint&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;StateGraph · graph.db 控制游标&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b8d2c5;fontColor=#18211d;dashed=1;" vertex="1" parent="L6">
+          <mxGeometry x="1620" y="340" width="300" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="sqlite" value="&lt;b&gt;SQLite（better-sqlite3）&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;gateway.db · run.db · graph.db&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b8d2c5;fontColor=#18211d;dashed=1;" vertex="1" parent="L6">
+          <mxGeometry x="1620" y="480" width="300" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="config" value="&lt;b&gt;配置&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;config/pi-agent（models · settings · auth）&lt;br&gt;config/agent-platform.json（MCP · 子 Agent · 插件装配）&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b8d2c5;fontColor=#18211d;dashed=1;" vertex="1" parent="L6">
+          <mxGeometry x="1620" y="620" width="300" height="110" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：用户 → 传输 ============ -->
+        <mxCell id="E1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="web" target="server">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E2" value="HTTP / SSE" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="cli" target="server">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E3" value="CLI 调用插件" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="cli" target="pluginHost">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：传输 → 应用层 ============ -->
+        <mxCell id="E4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="server" target="assistant">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="server" target="pluginHost">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="server" target="state">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：应用层 → 核心层 ============ -->
+        <mxCell id="E7" value="Pi 会话" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="assistant" target="piFactory">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="assistant" target="mcp">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="assistant" target="subagents">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E10" value="通用合同" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#174d3b;fontColor=#174d3b;fontSize=10;strokeWidth=2;" edge="1" parent="1" source="pluginHost" target="contract">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：契约 → 插件 ============ -->
+        <mxCell id="E11" value="activate / runtime" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#174d3b;fontColor=#174d3b;fontSize=10;strokeWidth=2;" edge="1" parent="1" source="contract" target="adapter">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="adapter" target="orchestrator">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E13" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="orchestrator" target="graphPlugin">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="graphPlugin" target="poolPolicy">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：五槽 → 三大阶段 ============ -->
+        <mxCell id="E15" value="claim 任务" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="poolPolicy" target="phase1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E16" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="poolPolicy" target="phase2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="poolPolicy" target="phase3">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：阶段 → 事实库/报告 ============ -->
+        <mxCell id="E18" value="提交（schema + 不变量 + 事务）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="phase1" target="store">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E19" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="phase2" target="store">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="phase3" target="store">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E21" value="确定性生成" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="store" target="reports">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E22" value="complete 时推进" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="store" target="baseline">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：核心层 → 外部 ============ -->
+        <mxCell id="E23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="piFactory" target="pi">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E24" value="Atlas MCP" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="mcp" target="atlas">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E25" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="graphPlugin" target="langgraph">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E26" value="graph.db" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="graphPlugin" target="sqlite">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E27" value="gateway.db" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="state" target="sqlite">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 边：阶段 → 工具/会话（示意） ============ -->
+        <mxCell id="E28" value="worker 会话（Pi）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="phase2" target="piFactory">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="E29" value="Atlas MCP（按阶段工具集）" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#6c7671;fontColor=#6c7671;fontSize=10;" edge="1" parent="1" source="phase1" target="atlas">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ 注解 ============ -->
+        <mxCell id="note1" value="&lt;b&gt;解耦要点&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;· 平台 ↔ 插件仅经 Plugin Contract（无领域分支）&#10;· 三阶段单向数据流：语义 → 验证 → PoC&#10;· 提交必须过 Schema → 领域不变量 → 事务&#10;· 通用助手不经过 Plugin Host，可独立运行&#10;· PoC 非门禁：失败不阻塞 run 完成&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#fff8ef;strokeColor=#e5c39f;fontColor=#18211d;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1240" width="700" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="note2" value="&lt;b&gt;数据所有权&lt;/b&gt;&#10;&#10;&lt;font style=&quot;font-size:10px&quot; color=&quot;#6c7671&quot;&gt;· gateway.db / gateway.log：平台（Job 索引 + 日志）&#10;· run.db：插件审计事实唯一源（schema v3）&#10;· graph.db：插件 LangGraph 控制游标（可重建）&#10;· report.*：从事实库确定性生成的展示产物&#10;· Pi Session JSONL：Pi 拥有的对话历史&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=#fff8ef;strokeColor=#e5c39f;fontColor=#18211d;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="840" y="1240" width="700" height="140" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

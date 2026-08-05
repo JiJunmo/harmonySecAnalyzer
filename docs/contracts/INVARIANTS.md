@@ -21,6 +21,8 @@ stateDiagram-v2
 
 终态写入规则：`complete` 和 `complete_with_gaps` 设置 `finalized_at`；`failed/cancelled` 不伪装为已完成报告。恢复必须产生事件并保留旧错误历史。
 
+PoC 生成任务不是完成门禁：`poc_generation` 达到尝试上限（exhausted）不产生覆盖缺口、不阻塞 `complete`，仅在对应 Finding 的报告中显示「未生成 PoC」占位。
+
 ## 2. Task 状态机
 
 ```mermaid
@@ -62,7 +64,7 @@ stateDiagram-v2
 | `CONFIRMED_EFFECT_NOT_INDEPENDENTLY_VERIFIED` | 效果链没有本轮验证新增的源码证据 |
 | `HYPOTHESIS_BASIS_MISSING` | 效果假设没有候选依据 |
 | `DIRECT_EFFECT_EVIDENCE_MISSING` | 直接效果没有源码证据 |
-| `CONFIRMED_DETAILS_INCOMPLETE` | confirmed 缺 impact/severity/CWE/PoC |
+| `CONFIRMED_DETAILS_INCOMPLETE` | confirmed 缺 impact/severity/CWE |
 | `DEMOTION_REASON_MISSING` | 非 confirmed 缺降级理由 |
 | `EVIDENCE_GAP_MISSING` | residual/insufficient 缺证据缺口 |
 | `PROTECTION_OUTCOME_MISMATCH` | protected 但检查不为 effective |
@@ -71,6 +73,19 @@ stateDiagram-v2
 | `IDENTITY_COLLISION` | 稳定 ID 相同但规范内容不同 |
 | `UNSUPPORTED_SCHEMA_VERSION` | 数据库或 Project Model 版本未知 |
 | `ILLEGAL_STATE_TRANSITION` | 未在状态机中声明的状态迁移 |
+| `FINDING_ID_MISMATCH` | PoC submission finding_id 不等于任务主体 |
+| `POC_ENTRY_TYPE_MISMATCH` | PoC entry_type 不在入口允许集合 |
+| `POC_CODE_REQUIRED` | PoC 缺少可执行代码 |
+| `POC_EXPECTED_OBSERVATION_REQUIRED` | PoC 缺少预期现象 |
+| `POC_TRIGGER_KIND_REQUIRED` | PoC 缺少触发方式 |
+| `POC_TRIGGER_PAYLOAD_REQUIRED` | PoC 缺少触发载荷 |
+| `POC_TRIGGER_PAYLOAD_EMPTY` | 触发载荷为空对象 |
+| `POC_PLACEHOLDER_FOUND` | 代码包含“略/省略/…”等占位符 |
+| `POC_FORBIDDEN_OUTPUT` | 输出验证阶段的判断性字段（classification/severity/cwe/impact 等） |
+| `POC_SHELL_COMMAND_REQUIRED` | 声明 shell 形态但代码不是可执行命令 |
+| `POC_SHELL_TRIGGER_MISMATCH` | shell 形态搭配非命令类触发方式 |
+| `POC_ARKTS_TRIGGER_MISMATCH` | arkts 形态搭配 `adb_shell` 触发 |
+| `POC_ARKTS_API_REQUIRED` | arkts 代码缺少真实触发 API |
 
 Schema 校验错误使用 `SCHEMA_INVALID`，并附 AJV 路径；以上错误发生在 Schema 通过之后。
 
@@ -95,6 +110,8 @@ Schema 校验错误使用 `SCHEMA_INVALID`，并附 AJV 路径；以上错误发
 | 幂等性 | `INV-IDEM-001 replays accepted submission without duplicates` | `INV-IDEM-002 rejects same identity with divergent content` |
 | exhausted 影响 Run 状态 | `INV-RUN-001 completes gap-free run` | `INV-RUN-002 marks exhausted run complete_with_gaps` |
 | 报告只依赖规范事实 | `INV-REPORT-001 rebuilds identical report without graph db` | `INV-REPORT-002 exposes orphan or migration gaps` |
+| PoC 引用与形态一致性 | `INV-POC-001 accepts structured artifact with bound evidence` | `INV-POC-002 rejects placeholder forbidden fields and form mismatch` |
+| PoC 非门禁 | `INV-POC-003 completes the run without a poc artifact` | — |
 
 ## 5. 专项领域规则
 

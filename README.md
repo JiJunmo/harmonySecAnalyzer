@@ -24,7 +24,7 @@ flowchart LR
     Gateway --> State[("gateway.db · JSONL log")]
 ```
 
-平台与插件之间只有通用合同依赖。项目解析、Atlas 调用、路径发现、六维验证、审计事实和报告全部归 Harmony 插件所有，平台代码不解释任何鸿蒙审计语义。
+平台与插件之间只有通用合同依赖。项目解析、Atlas 调用、路径发现、六维验证、PoC 生成、审计事实和报告全部归 Harmony 插件所有，平台代码不解释任何鸿蒙审计语义。
 
 详细设计见 [DESIGN.md](DESIGN.md)，文档入口见 [架构契约索引](docs/architecture/README.md)。
 

@@ -66,7 +66,7 @@ flowchart TB
 
 ### Harmony Audit Plugin
 
-插件独占以下能力：Harmony 项目解析、Atlas 索引和 MCP Profile、审计能力目录、任务 Skill、LangGraph 状态机、五槽并发策略、路径关联、六维验证、不变量、`run.db`、增量基线和报告。
+插件独占以下能力：Harmony 项目解析、Atlas 索引和 MCP Profile、审计能力目录、任务 Skill、LangGraph 状态机、五槽并发策略、路径关联、六维验证、PoC 生成、不变量、`run.db`、增量基线和报告。
 
 ## 4. 通用助手链路
 
@@ -103,10 +103,11 @@ profile project + prepare Atlas index
   -> component semantic analysis
   -> deterministic cross-component correlation
   -> exploitability validation
+  -> PoC generation for confirmed findings
   -> deterministic JSON / Markdown / HTML reports
 ```
 
-LangGraph 主图保存控制游标，`run.db` 保存任务、证据、Operation Group、Fact Edge、验证、Finding 和覆盖缺口。语义 Agent 与验证 Agent 使用独立任务上下文和 Atlas 工具集合；模型提交必须先通过 JSON Schema，再通过领域不变量，最后才能事务入库。
+LangGraph 主图保存控制游标，`run.db` 保存任务、证据、Operation Group、Fact Edge、验证、Finding、PoC Artifact 和覆盖缺口。语义 Agent、验证 Agent 与 PoC Agent 使用独立任务上下文和 Atlas 工具集合；模型提交必须先通过 JSON Schema，再通过领域不变量，最后才能事务入库。三个阶段职责严格分离：路径发现只产事实，六维验证只做判断，PoC 生成只产出可复现触发套件（禁止重新判定），`findings` 表不含验证阶段以外的字段，PoC 工件独立存放于 `poc_artifacts`。
 
 `RollingAgentPool` 实现通用滚动补槽，Harmony 插件把容量限制为最多 5。一个任务结束后立即补充下一个任务，不等待整批完成。
 

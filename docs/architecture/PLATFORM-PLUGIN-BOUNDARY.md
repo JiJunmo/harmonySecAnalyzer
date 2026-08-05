@@ -76,8 +76,9 @@ Host 可以在组合根通过配置或包发现加载插件，但不得在平台
 - Component、Entry Candidate、Capability；
 - 路径发现、参数传播、Principal、权限传播；
 - 六维验证、Operation Group、Evidence、Finding；
+- PoC 生成、`poc_artifacts` 工件与触发套件语义；
 - Attack Matrix、审计覆盖缺口、鸿蒙审计报告；
-- `component_semantic_analysis`、`exploitability_validation` 等领域任务类型；
+- `component_semantic_analysis`、`exploitability_validation`、`poc_generation` 等领域任务类型；
 - 固定的 5 槽审计策略；
 - `run.db` 的鸿蒙审计事实表和领域状态迁移。
 
@@ -93,6 +94,7 @@ Host 可以在组合根通过配置或包发现加载插件，但不得在平台
 | 领域工具 | Atlas CLI、Atlas MCP 配置、setup call 和工具白名单 |
 | 审计分析 | 路径发现、跨组件关联、参数/身份/权限传播 |
 | 有效性判断 | 六维验证、反证、降级、DoS 等专项规则 |
+| 可复现验证 | PoC 触发套件生成、形态选择、引用核验、失败占位 |
 | Agent 资源 | 审计 Task Schema、Result Schema、Skill 和 Prompt |
 | 业务编排 | LangGraph 审计图拓扑、Agent 分工、任务派生、5 槽策略、重试和完成判定 |
 | 事实存储 | `run.db` Schema、事务、不变量、稳定 ID 和恢复语义 |
