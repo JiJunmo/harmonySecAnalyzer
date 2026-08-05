@@ -58,7 +58,7 @@ Finding 根因只使用操作位置、关键受控参数和安全边界。入口
 任务流水线为：
 
 ```text
-component_semantic_analysis -> deterministic_component_correlation -> exploitability_validation
+component_semantic_analysis -> deterministic_component_correlation -> exploitability_validation -> poc_generation
 ```
 
 Python 初始化完整组件目录，并根据命令模式创建起始语义任务。每轮语义提交通过后只原子落库；当前语义任务全部结束时，脚本先检查保持控制性的组件传递，为尚未分析的目标组件补充任务。范围不再扩展后，关联脚本只从命令确定且已确认的外部根入口出发遍历组件；循环通过状态去重终止，每个根入口最多处理固定数量状态，只为命中敏感操作的最短链生成跨组件操作组。然后按根入口创建六维验证任务。

@@ -160,13 +160,18 @@ def readiness(run_dir):
         if counts.get("queued", 0) or counts.get("running", 0): reasons.append("unfinished_tasks")
         if run["status"] == "created": reasons.append("run_not_initialized")
         if run["correlation_status"] != "complete": reasons.append("component_correlation_pending")
+        # PoC generation is a delivery enhancement, not a gate: an exhausted poc
+        # task surfaces as "未生成 PoC" in the report and is not a coverage gap.
+        poc_exhausted = conn.execute(
+            "SELECT COUNT(*) n FROM tasks WHERE status='exhausted' AND kind='poc_generation'"
+        ).fetchone()["n"]
         ready = run["status"] == "running" and not reasons
         return {
             "ok": run["status"] != "failed", "ready": ready,
             "state": "ready" if ready else run["status"], "error": run["error"],
             "reasons": reasons, "task_counts": counts,
             "coverage_gaps": {
-                "exhausted_tasks": counts.get("exhausted", 0),
+                "exhausted_tasks": max(0, counts.get("exhausted", 0) - poc_exhausted),
                 "entries_without_semantics": entries_without_semantics,
                 "groups_without_validation": groups_without_validation,
                 "component_correlation": row_json(run, "correlation_json", {}),

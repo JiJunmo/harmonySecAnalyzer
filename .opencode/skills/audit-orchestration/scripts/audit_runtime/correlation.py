@@ -270,7 +270,7 @@ def _reuse_validation_task(conn, paths, task, snapshot):
     if errors:
         append_event(conn, "validation_reuse_rejected", task["subject_id"], {"errors": errors})
         return False
-    summary = _merge_exploitability_validation(conn, task, result)
+    summary = _merge_exploitability_validation(conn, task, result, paths)
     result_ref = paths["tasks"] / f"{task['task_id']}.result.json"
     write_json(result_ref, result)
     conn.execute(

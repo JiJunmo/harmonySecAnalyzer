@@ -12,6 +12,7 @@ permission:
     "*": deny
     component-semantic-analyzer: allow
     exploitability-validator: allow
+    poc-generator: allow
   skill: allow
   atlas_project: allow
   bash:

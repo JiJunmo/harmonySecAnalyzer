@@ -74,6 +74,9 @@ def prepare_run(target_repo, mode="full", capabilities=None, components=None, at
         write_json(paths["baseline_findings"], {
             "schema_version": 1, "items": incremental["baseline"]["findings"],
         })
+        write_json(paths["baseline_pocs"], {
+            "schema_version": 1, "items": incremental["baseline"]["pocs"],
+        })
     initialized = initialize_run(allocated["run_dir"], paths["project_model"])
     from .reporting import refresh_live_report
     live_report = refresh_live_report(allocated["run_dir"])

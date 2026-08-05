@@ -19,6 +19,7 @@ CAPABILITIES_PATH = CONFIG_DIR / "audit_capabilities.json"
 TASK_AGENTS = {
     "component_semantic_analysis": "component-semantic-analyzer",
     "exploitability_validation": "exploitability-validator",
+    "poc_generation": "poc-generator",
 }
 TERMINAL_TASK_STATES = {"completed", "exhausted"}
 MAX_TASK_ATTEMPTS = 3
@@ -101,6 +102,7 @@ def run_paths(run_dir):
         "baseline_semantics": root / "incremental" / "baseline_semantic_results.json",
         "baseline_validations": root / "incremental" / "baseline_validation_results.json",
         "baseline_findings": root / "incremental" / "baseline_findings.json",
+        "baseline_pocs": root / "incremental" / "baseline_poc_results.json",
         "tasks": root / "tasks",
         "evidence": root / "evidence",
         "exports": root / "exports",

@@ -181,7 +181,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         if confirmed:
             validation.update({
                 "impact": "未授权读取私有记录", "severity": "high",
-                "cwe": "CWE-89", "poc": "demo://query?q=x",
+                "cwe": "CWE-89",
                 "effect_chain": {
                     key: {"description": description, "location": "Db.ets:44", "evidence_refs": [verification_ref]}
                     for key, description in {
@@ -225,6 +225,25 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                   "evidence": [{"evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
                                 "summary": "verified concrete query construction", "location": "Db.ets:44"}]}
         submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        return task, submitted
+
+    def submit_poc(self, run=None):
+        task = self.claim("poc_generation", run)
+        finding_id = task["input"]["finding"]["finding_id"]
+        allowed = task["input"]["allowed_entry_types"]
+        entry_type = allowed[0] if allowed else "want"
+        result = {
+            "task_id": task["task_id"], "finding_id": finding_id,
+            "entry_type": entry_type,
+            "trigger": {"kind": "ability_want", "payload": {"uri": "demo://query?q=1"}},
+            "language": "shell", "code": "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://query?q=1'",
+            "expected_observation": "返回私有记录", "limitations": "未在真机验证",
+            "execution_hint": {"step_by_step": ["安装 debug 包", "执行命令", "观察返回"],
+                               "device_required": "emulator", "network_required": False},
+            "symbol_refs": [], "evidence": [], "evidence_refs": [],
+        }
+        submitted = submit_result(run or self.run, task["task_id"],
+                                  self.write_submission(task, result), task["attempt"])
         return task, submitted
 
     def test_semantics_are_persisted_before_small_validation_task(self):
@@ -290,7 +309,6 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "title": "外部数量参数可耗尽应用任务资源",
             "impact": "三方应用可使目标应用主进程失去可用性",
             "cwe": "CWE-400",
-            "poc": "Repeatedly invoke the exported component with an unbounded count value",
             "availability_analysis": {
                 "single_trigger_fatal_or_repeatable": True,
                 "amplified_consumption_or_fatal_failure": True,
@@ -326,6 +344,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             }), validation_task["attempt"],
         )
         self.assertTrue(accepted["accepted"], accepted)
+        _, poc_submitted = self.submit_poc(run)
+        self.assertTrue(poc_submitted["accepted"], poc_submitted)
         report = build_report_ready(run)
         self.assertTrue(report["ok"], report)
         model = json.loads((run / "report_model.json").read_text(encoding="utf-8"))
@@ -370,10 +390,15 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.submit_semantics([self.semantic_group()])
         _, submitted = self.submit_validation()
         self.assertTrue(submitted["accepted"], submitted)
+        poc_task, poc_submitted = self.submit_poc()
+        self.assertTrue(poc_submitted["accepted"], poc_submitted)
+        self.assertEqual(poc_task["input"]["finding"]["classification"], "confirmed_vulnerability")
         self.assertTrue(readiness(self.run)["ready"])
         report = finalize_run(self.run)
         self.assertEqual(report["summary"]["operation_groups"], 1)
         self.assertEqual(report["summary"]["paths"], 1)
+        self.assertEqual(report["summary"]["poc_artifacts"], 1)
+        self.assertIn("验证方式 / PoC", (self.run / "report.md").read_text(encoding="utf-8"))
         model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
         self.assertEqual(model["paths"][0]["path_id"], model["operation_groups"][0]["group_id"])
         self.assertEqual(model["component_results"][0]["status"], "confirmed_vulnerability")

@@ -32,6 +32,7 @@ python3 deploy.py --global
 | 审计准备与任务生成 | `project-modeling` Skill、Atlas Indexer、Python Runtime | 项目事实、完整索引、组件分析单元与任务 |
 | 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP | 真实入口、数据传播、实际操作组、组件间身份权限变化和防护事实；效果推断与源码事实分层 |
 | 组件关联与六维验证 | Python Correlator、`exploitability-validator` Agent | 跨组件参数与身份链、带证据的三态六维结论、独立效果链核验、反证和漏洞分类 |
+| PoC 生成 | `poc-generator` Agent | 已确认漏洞的可复现触发套件（shell/ArkTS 形态决策、Atlas 符号核验、`poc_artifacts` 落库） |
 | 状态与报告 | `audit-orchestration` Skill | SQLite 状态、根因聚合、漏洞证据路径、JSON/Markdown/HTML |
 
 CAP-DOS-001 用于 ArkTS 可用性安全审计，覆盖外部可触发的崩溃、无界或可放大的 CPU/内存/线程/队列/存储消耗，以及可重复的 IPC 和 CommonEvent 资源耗尽。Native/NAPI 层 DoS 不在当前范围内。

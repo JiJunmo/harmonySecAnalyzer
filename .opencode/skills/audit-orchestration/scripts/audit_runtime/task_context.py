@@ -1,10 +1,21 @@
-"""Build immutable semantic and validation task documents from canonical state."""
+"""Build immutable semantic, validation and poc task documents from canonical state."""
 from __future__ import annotations
 
 import hashlib
 
 from .common import canonical_json, load_capabilities
 from .store import row_json
+
+# Candidate type -> allowed PoC trigger entry types (same mapping as v3.2).
+ENTRY_TYPE_MAP = {
+    "exported_component": ["exported_ability", "want"],
+    "deeplink": ["deeplink"],
+    "implicit_want": ["want"],
+    "extension_uri": ["provider"],
+    "ipc_service_candidate": ["ipc_transaction"],
+    "common_event_candidate": ["common_event"],
+    "project_scope": ["project"],
+}
 
 
 def _source_file(location):
@@ -161,12 +172,59 @@ def task_context(conn, task):
                 "dimensions_require_status_reason_evidence_level_and_refs": True,
                 "confirmed_effect_chain": ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
                 "confirmed_effect_chain_requires_fresh_validation_evidence": True,
+                "poc_produced_by_later_phase": True,
             },
             "verification_scope": {
                 "target_repo": run["target_repo"],
                 "seed_locations": sorted(locations),
                 "seed_files": sorted({_source_file(location) for location in locations}),
                 "seed_symbols": full_coverage.get("entry_symbols_checked", []),
+            },
+        }
+    if task["kind"] == "poc_generation":
+        finding = conn.execute("SELECT * FROM findings WHERE finding_id=?", (task["subject_id"],)).fetchone()
+        if not finding:
+            return payload
+        group = semantic_group_context(conn, finding["group_id"])
+        if not group:
+            return payload
+        validation = validation_context(conn, finding["group_id"]) or {}
+        entry = entry_context(conn, group["entry_id"]) or {}
+        allowed_entry_types = sorted({
+            candidate_type
+            for facet in entry.get("facets", [])
+            for candidate_type in ENTRY_TYPE_MAP.get(facet.get("entry_type"), [facet.get("entry_type")] if facet.get("entry_type") else [])
+        })
+        evidence_rows = conn.execute(
+            """SELECT evidence_id,kind,source,location,summary FROM evidence
+               WHERE task_id IN (
+                 SELECT task_id FROM semantic_analyses WHERE entry_id=?
+                 UNION
+                 SELECT task_id FROM validation_results WHERE group_id=?
+               ) ORDER BY evidence_id""",
+            (group["entry_id"], finding["group_id"]),
+        ).fetchall()
+        inherited_evidence = [dict(row) for row in evidence_rows]
+        return {
+            **payload,
+            "finding": {
+                "finding_id": finding["finding_id"], "root_cause_key": finding["root_cause_key"],
+                "title": finding["title"], "classification": finding["classification"],
+                "severity": finding["severity"], "cwe": finding["cwe"], "impact": finding["impact"],
+            },
+            "validation": validation,
+            "operation_group": group,
+            "entry": entry,
+            "allowed_entry_types": allowed_entry_types,
+            "inherited_evidence": inherited_evidence,
+            "inherited_evidence_ids": [row["evidence_id"] for row in inherited_evidence],
+            "output_contract": {
+                "task_unit": "one deterministic PoC generation unit for one confirmed finding",
+                "entry_type_constraint": "entry_type 必须来自 allowed_entry_types",
+                "trigger_kind": ["adb_shell", "ability_want", "common_event", "ipc_client", "provider_query", "web_navigation", "jsbridge_call", "network", "crypto", "archive", "distributed", "generic"],
+                "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "impact"],
+                "form_selection": "受控值到敏感操作的完整触发链能用 hdc shell aa start 命令行表达时选 shell；需要应用上下文/复杂参数/回调/内部链路时选 arkts 并附最小工程复现步骤",
+                "self_verification_required": "code/trigger.payload 引用的应用内符号必须逐一用 atlas 核验并写回 symbol_refs 与证据",
             },
         }
     return payload

@@ -1,23 +1,28 @@
 """Strict contracts separating source semantics from security judgments."""
 from __future__ import annotations
 
+import re
+
 from jsonschema import Draft202012Validator
 
 from .common import *
 from .store import row_json
-from .task_context import semantic_group_context
+from .task_context import semantic_group_context, task_context
 
 
 SCHEMA_BY_TASK = {
     "component_semantic_analysis": "component-semantic-result.schema.json",
     "exploitability_validation": "exploitability-validation-result.schema.json",
+    "poc_generation": "poc-result.schema.json",
 }
 
 
 def normalize_submission(result, task, conn=None):
     if not isinstance(result, dict):
         return result
-    result["entry_id"] = task["subject_id"]
+    # PoC tasks are scoped to a finding (subject_id=finding_id) and carry no entry_id.
+    if task["kind"] != "poc_generation":
+        result["entry_id"] = task["subject_id"]
     if task["kind"] == "component_semantic_analysis":
         # Edges belong to individual groups and are rebuilt below from ordered facts.
         result.pop("edges", None)
@@ -141,10 +146,21 @@ def normalize_submission(result, task, conn=None):
         for validation in result.get("validations", []):
             if not isinstance(validation, dict):
                 continue
-            for key in ("impact", "severity", "cwe", "poc", "demotion_reason", "evidence_gap"):
+            for key in ("impact", "severity", "cwe", "demotion_reason", "evidence_gap"):
                 value = validation.get(key)
                 if isinstance(value, str) and not value.strip():
                     validation.pop(key)
+    elif task["kind"] == "poc_generation":
+        for key in ("code", "expected_observation", "limitations", "prerequisites"):
+            value = result.get(key)
+            if key == "prerequisites":
+                if isinstance(value, list):
+                    result["prerequisites"] = sorted({str(item) for item in value if isinstance(item, str)})
+            elif isinstance(value, str) and not value.strip():
+                result.pop(key)
+        refs = result.get("evidence_refs", [])
+        if isinstance(refs, list):
+            result["evidence_refs"] = sorted({str(item) for item in refs if isinstance(item, str)})
     return result
 
 
@@ -335,6 +351,68 @@ def validate_exploitability(result, task, conn):
     return errors
 
 
+PLACEHOLDER_PATTERN = re.compile(r"略|省略|\.\.\.|…|TODO|TBD|your[\s_-]?(?:code|command|payload)|[《<](?:填入|替换|your)[^》>]*[》>]")
+FORBIDDEN_POC_OUTPUTS = ("classification", "exploitability", "severity", "cwe", "impact")
+SHELL_PREFIX = re.compile(r"^\s*(?:hdc|adb|curl|aa)\b")
+ARKTS_TRIGGER_API = re.compile(r"startAbility|rpc\.|commonEventManager|dataAbilityHelper|runJavaScript|webview|createChannel|requestSubmitJob|wifiManager")
+
+
+def validate_poc(result, task, conn):
+    """v3.2-aligned PoC contract: evidence integrity, executable code, phase boundary."""
+    errors = []
+    if result.get("task_id") != task["task_id"]:
+        errors.append("task_id_mismatch")
+    if result.get("finding_id") != task["subject_id"]:
+        errors.append("finding_id_mismatch")
+    for field in FORBIDDEN_POC_OUTPUTS:
+        if field in result:
+            errors.append(f"forbidden_output:{field}")
+    # The task seed input carries only a finding hash; the full context is
+    # rebuilt from canonical state, exactly like validation group checks.
+    input_doc = task_context(conn, task)
+    allowed_entry_types = input_doc.get("allowed_entry_types", [])
+    entry_type = result.get("entry_type")
+    if entry_type not in allowed_entry_types:
+        errors.append(f"entry_type_mismatch:{entry_type}:allowed={','.join(sorted(allowed_entry_types))}")
+    evidence_ids = [row.get("evidence_id") for row in result.get("evidence", [])]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        errors.append("duplicate_evidence_id")
+    allowed_evidence = set(evidence_ids) | set(input_doc.get("inherited_evidence_ids", []))
+    code = result.get("code")
+    if not isinstance(code, str) or not code:
+        errors.append("poc_code_required")
+    elif PLACEHOLDER_PATTERN.search(code):
+        errors.append("poc_placeholder_found")
+    if not isinstance(result.get("expected_observation"), str) or not result.get("expected_observation"):
+        errors.append("poc_expected_observation_required")
+    trigger = result.get("trigger") or {}
+    trigger_kind = trigger.get("kind")
+    if not isinstance(trigger_kind, str) or not trigger_kind:
+        errors.append("poc_trigger_kind_required")
+    if "payload" not in trigger:
+        errors.append("poc_trigger_payload_required")
+    elif isinstance(trigger.get("payload"), dict) and not trigger["payload"]:
+        errors.append("poc_trigger_payload_empty")
+    language = result.get("language")
+    if language == "shell":
+        if not SHELL_PREFIX.match(code or ""):
+            errors.append("poc_shell_command_required")
+        if trigger_kind not in ("adb_shell", "ability_want"):
+            errors.append(f"poc_shell_trigger_mismatch:{trigger_kind}")
+    if language == "arkts":
+        if trigger_kind == "adb_shell":
+            errors.append(f"poc_arkts_trigger_mismatch:{trigger_kind}")
+        if not ARKTS_TRIGGER_API.search(code or ""):
+            errors.append("poc_arkts_api_required")
+    refs = list(result.get("evidence_refs", []))
+    for symbol_ref in result.get("symbol_refs", []):
+        refs.append(symbol_ref.get("evidence_id"))
+    missing = set(refs) - allowed_evidence
+    if missing:
+        errors.append("unknown_evidence:" + ",".join(sorted(missing)))
+    return errors
+
+
 def validate_submission(result, task, conn):
     errors = schema_errors(task["kind"], result)
     if errors:
@@ -343,4 +421,6 @@ def validate_submission(result, task, conn):
         errors.extend(validate_semantic_analysis(result, task, conn))
     elif task["kind"] == "exploitability_validation":
         errors.extend(validate_exploitability(result, task, conn))
+    elif task["kind"] == "poc_generation":
+        errors.extend(validate_poc(result, task, conn))
     return errors

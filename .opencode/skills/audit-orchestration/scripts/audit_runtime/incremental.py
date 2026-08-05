@@ -33,6 +33,7 @@ def baseline_paths(target_repo):
         "semantic_results": root / "semantic_results.json",
         "validation_results": root / "validation_results.json",
         "findings": root / "findings.json",
+        "poc_results": root / "poc_results.json",
     }
 
 
@@ -40,7 +41,9 @@ def audit_contract_hash():
     files = (
         CAPABILITIES_PATH,
         SCHEMAS_DIR / "component-semantic-result.schema.json",
+        SCHEMAS_DIR / "poc-result.schema.json",
         SKILL_DIR.parent.parent / "agents" / "component-semantic-analyzer.md",
+        SKILL_DIR.parent.parent / "agents" / "poc-generator.md",
     )
     digest = hashlib.sha256()
     for path in files:
@@ -154,10 +157,13 @@ def load_baseline(target_repo):
         validations = _legacy_validation_snapshot(target_repo, metadata.get("run_id"))
     if not _valid_validation_snapshot(validations):
         raise ValueError("incremental_validation_baseline_missing_full_audit_required")
+    poc_results = read_json(paths["poc_results"], {"items": []})
+    if not isinstance(poc_results, dict) or not isinstance(poc_results.get("items", []), list):
+        poc_results = {"items": []}
     return {
         "metadata": metadata, "project_model": model,
         "semantic_results": semantics, "validation_results": validations,
-        "findings": findings["items"],
+        "findings": findings["items"], "pocs": poc_results["items"],
     }
 
 
@@ -459,6 +465,20 @@ def baseline_eligible(conn):
     return True, None
 
 
+def _poc_snapshot(conn):
+    rows = []
+    for row in conn.execute(
+        "SELECT p.poc_id,p.finding_id,p.entry_type,p.payload_json,f.root_cause_key,f.group_id "
+        "FROM poc_artifacts p JOIN findings f ON f.finding_id=p.finding_id ORDER BY p.poc_id"
+    ):
+        item = dict(row)
+        item["result"] = json.loads(item.pop("payload_json"))
+        fingerprint = validation_group_fingerprint(conn, item["group_id"])
+        item["group_fingerprint"] = fingerprint or ""
+        rows.append(item)
+    return rows
+
+
 def save_baseline(run_dir):
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn:
@@ -469,6 +489,7 @@ def save_baseline(run_dir):
         semantics = _semantic_snapshot(conn)
         validations = _validation_snapshot(conn)
         findings = _finding_snapshot(conn)
+        pocs = _poc_snapshot(conn)
         target_repo = Path(run["target_repo"]).resolve()
         model = read_json(paths["project_model"])
         metadata = {
@@ -476,7 +497,7 @@ def save_baseline(run_dir):
             "completed_at": now(), "source_type": "git" if git_state(target_repo) else "snapshot",
             "git": git_state(target_repo), "file_manifest": file_manifest(target_repo),
             "semantic_results": len(semantics), "audit_contract_hash": audit_contract_hash(),
-            "findings": len(findings),
+            "findings": len(findings), "pocs": len(pocs),
         }
     target = baseline_paths(target_repo)
     target["root"].mkdir(parents=True, exist_ok=True)
@@ -484,5 +505,6 @@ def save_baseline(run_dir):
     write_json(target["semantic_results"], semantics)
     write_json(target["validation_results"], validations)
     write_json(target["findings"], {"schema_version": 1, "items": findings})
+    write_json(target["poc_results"], {"schema_version": 1, "items": pocs})
     write_json(target["metadata"], metadata)
     return {"updated": True, "path": str(target["metadata"]), "source_type": metadata["source_type"]}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["task_id", "finding_id", "entry_type", "trigger", "language", "code", "expected_observation", "execution_hint", "evidence"],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "finding_id": {"type": "string", "minLength": 1},
+    "entry_type": {"enum": ["deeplink", "want", "exported_ability", "provider", "common_event", "ipc_transaction", "project"]},
+    "trigger": {
+      "type": "object", "required": ["kind", "payload"],
+      "properties": {
+        "kind": {"enum": ["adb_shell", "ability_want", "common_event", "ipc_client", "provider_query", "web_navigation", "jsbridge_call", "network", "crypto", "archive", "distributed", "generic"]},
+        "payload": {"type": ["object", "string"]}
+      }, "additionalProperties": false
+    },
+    "language": {"enum": ["arkts", "typescript", "javascript", "shell", "json", "http"]},
+    "code": {"type": "string", "minLength": 1},
+    "prerequisites": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "expected_observation": {"type": "string", "minLength": 1},
+    "limitations": {"type": "string", "minLength": 1},
+    "execution_hint": {
+      "type": "object", "required": ["step_by_step", "device_required"],
+      "properties": {
+        "step_by_step": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+        "device_required": {"enum": ["emulator", "simulator", "physical_device", "none"]},
+        "network_required": {"type": "boolean"}
+      }, "additionalProperties": false
+    },
+    "symbol_refs": {
+      "type": "array", "uniqueItems": true,
+      "items": {
+        "type": "object", "required": ["symbol", "evidence_id", "verified_by"],
+        "properties": {
+          "symbol": {"type": "string", "minLength": 1},
+          "evidence_id": {"type": "string", "minLength": 1},
+          "verified_by": {"enum": ["atlas_symbol", "evidence_location"]}
+        }, "additionalProperties": false
+      }
+    },
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "evidence_refs": {"$ref": "#/$defs/refs"}
+  },
+  "$defs": {
+    "refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "evidence": {
+      "type": "object", "required": ["evidence_id", "kind", "source", "summary"],
+      "properties": {
+        "evidence_id": {"type": "string", "minLength": 1}, "kind": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1}, "summary": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]}, "content_ref": {"type": ["string", "null"]},
+        "sha256": {"type": ["string", "null"]}
+      }, "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -43,7 +43,9 @@ def submit_result(run_dir, task_id, input_path, attempt=None):
             if task["kind"] == "component_semantic_analysis":
                 summary = _merge_semantic_analysis(conn, task, result)
             elif task["kind"] == "exploitability_validation":
-                summary = _merge_exploitability_validation(conn, task, result)
+                summary = _merge_exploitability_validation(conn, task, result, paths)
+            elif task["kind"] == "poc_generation":
+                summary = _merge_poc_artifact(conn, task, result)
             else:
                 raise ValueError(f"unsupported_task_kind:{task['kind']}")
             result_ref = paths["tasks"] / f"{task_id}.result.json"
@@ -140,21 +142,21 @@ def _merge_finding(conn, group_id, group, validation):
             "location", existing["operation_location"]
         )
         conn.execute(
-            """UPDATE findings SET group_id=?,classification=?,title=?,severity=?,cwe=?,impact=?,poc=?,
+            """UPDATE findings SET group_id=?,classification=?,title=?,severity=?,cwe=?,impact=?,
                boundary=?,controlled_properties_json=?,operation_location=?,evidence_json=?,payload_json=?
                WHERE finding_id=?""",
             (chosen_group_id, chosen.get("classification", existing["classification"]),
              chosen.get("title", existing["title"]),
              chosen.get("severity", existing["severity"]), chosen.get("cwe", existing["cwe"]),
-             chosen.get("impact", existing["impact"]), chosen.get("poc", existing["poc"]),
+             chosen.get("impact", existing["impact"]),
              chosen_boundary, canonical_json(chosen_properties), chosen_operation,
              canonical_json(evidence), canonical_json(chosen), existing["finding_id"]),
         )
         return existing["finding_id"]
     conn.execute(
-        "INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (finding_id, root_key, group_id, validation["classification"], validation["title"], validation.get("severity"),
-         validation.get("cwe"), validation.get("impact"), validation.get("poc"), validation["security_boundary"]["expected_boundary"],
+         validation.get("cwe"), validation.get("impact"), validation["security_boundary"]["expected_boundary"],
          canonical_json(group["controlled_properties"]), group["operation"]["location"],
          canonical_json(evidence_refs), canonical_json(payload), now()),
     )
@@ -227,7 +229,7 @@ def _merge_semantic_analysis(conn, task, result):
             "call_ids": call_ids}
 
 
-def _merge_exploitability_validation(conn, task, result):
+def _merge_exploitability_validation(conn, task, result, paths=None):
     evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
     finding_ids = []
     for source in result["validations"]:
@@ -252,20 +254,111 @@ def _merge_exploitability_validation(conn, task, result):
         group_id = validation["group_id"]
         group = group_context(conn, group_id)
         conn.execute(
-            """INSERT INTO validation_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO validation_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (group_id, task["task_id"], validation.get("capability_id"),
              validation["classification"], validation["title"], validation["security_check_outcome"],
              validation["security_boundary"]["expected_boundary"], canonical_json(validation["exploitability"]),
              canonical_json(validation["business_intent"]), canonical_json(validation["security_boundary"]),
              canonical_json(validation["counter_evidence"]), validation.get("severity"), validation.get("cwe"),
-             validation.get("impact"), validation.get("poc"), validation.get("demotion_reason"),
+             validation.get("impact"), validation.get("demotion_reason"),
              validation.get("evidence_gap"), canonical_json(validation), now()),
         )
         finding_id = _merge_finding(conn, group_id, group, validation)
         if finding_id:
             finding_ids.append(finding_id)
+            _ensure_poc_task(conn, finding_id, paths)
     return {"entry_id": task["subject_id"], "validations_created": len(result["validations"]),
             "findings_created_or_merged": len(set(finding_ids))}
+
+
+def _ensure_poc_task(conn, finding_id, paths=None):
+    """Schedule a PoC task per confirmed finding; repair when the finding changes.
+
+    Mirrors v3.2 scheduling: validation landing derives the task immediately,
+    a changed finding requeues a completed task, and incremental runs reuse a
+    fingerprint-matched baseline artifact.
+    """
+    finding = conn.execute("SELECT * FROM findings WHERE finding_id=?", (finding_id,)).fetchone()
+    if not finding or finding["classification"] not in ("confirmed_vulnerability", "residual_risk"):
+        return None
+    key = f"poc:{finding_id}"
+    input_doc = {"_finding_hash": stable_id("POCIN", finding["payload_json"]), "finding_id": finding_id}
+    existing = conn.execute("SELECT * FROM tasks WHERE semantic_key=?", (key,)).fetchone()
+    if existing and existing["status"] == "completed":
+        old = row_json(existing, "input_json", {})
+        if old.get("_finding_hash") == input_doc["_finding_hash"]:
+            return existing["task_id"]
+        conn.execute("DELETE FROM poc_artifacts WHERE finding_id=?", (finding_id,))
+        conn.execute(
+            "UPDATE tasks SET status='queued',attempts=0,error='poc_finding_changed',result_ref=NULL,input_json=?,updated_at=? WHERE task_id=?",
+            (canonical_json(input_doc), now(), existing["task_id"]),
+        )
+        append_event(conn, "poc_artifact_repair", existing["task_id"], {"finding_id": finding_id})
+        return existing["task_id"]
+    if existing and existing["status"] == "queued":
+        conn.execute(
+            "UPDATE tasks SET input_json=?,updated_at=? WHERE task_id=?",
+            (canonical_json(input_doc), now(), existing["task_id"]),
+        )
+        return existing["task_id"]
+    task_id = enqueue_task(conn, key, "poc_generation", subject_id=finding_id, payload=input_doc)
+    if paths:
+        _try_reuse_poc(conn, paths, task_id)
+    return task_id
+
+
+def _try_reuse_poc(conn, paths, task_id):
+    from .task_context import validation_group_fingerprint
+
+    task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    finding = conn.execute("SELECT * FROM findings WHERE finding_id=?", (task["subject_id"],)).fetchone()
+    if not finding:
+        return False
+    fingerprint = validation_group_fingerprint(conn, finding["group_id"])
+    if not fingerprint:
+        return False
+    document = read_json(paths["baseline_pocs"], {})
+    snapshot = next(
+        (item for item in document.get("items", []) if item.get("group_fingerprint") == fingerprint),
+        None,
+    )
+    if not snapshot or not isinstance(snapshot.get("result"), dict):
+        return False
+    try:
+        result = json.loads(json.dumps(snapshot["result"]))
+        result["task_id"] = task["task_id"]
+        result["finding_id"] = task["subject_id"]
+        result = normalize_submission(result, task, conn)
+        errors = validate_submission(result, task, conn)
+    except Exception as exc:
+        return False
+    if errors:
+        append_event(conn, "poc_reuse_rejected", task["subject_id"], {"errors": errors})
+        return False
+    summary = _merge_poc_artifact(conn, task, result)
+    result_ref = paths["tasks"] / f"{task['task_id']}.result.json"
+    write_json(result_ref, result)
+    conn.execute(
+        "UPDATE tasks SET status='completed',result_ref=?,error=NULL,updated_at=? WHERE task_id=?",
+        (str(result_ref), now(), task["task_id"]),
+    )
+    append_event(conn, "poc_result_reused", task["subject_id"], summary)
+    return True
+
+
+def _merge_poc_artifact(conn, task, result):
+    evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
+    poc = json.loads(json.dumps(result))
+    poc["evidence_refs"] = _refs(poc.get("evidence_refs", []), evidence_ids)
+    for symbol_ref in poc.get("symbol_refs", []):
+        if isinstance(symbol_ref, dict) and symbol_ref.get("evidence_id") in evidence_ids:
+            symbol_ref["evidence_id"] = evidence_ids[symbol_ref["evidence_id"]]
+    poc_id = stable_id("POC", task["task_id"])
+    conn.execute(
+        "INSERT OR REPLACE INTO poc_artifacts VALUES (?,?,?,?,?,?)",
+        (poc_id, task["subject_id"], task["task_id"], poc["entry_type"], canonical_json(poc), now()),
+    )
+    return {"finding_id": task["subject_id"], "entry_type": poc["entry_type"]}
 
 
 def export_state(run_dir):

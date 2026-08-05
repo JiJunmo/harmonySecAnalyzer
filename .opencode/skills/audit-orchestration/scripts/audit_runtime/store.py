@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -123,9 +123,16 @@ CREATE TABLE IF NOT EXISTS validation_results(
   severity TEXT,
   cwe TEXT,
   impact TEXT,
-  poc TEXT,
   demotion_reason TEXT,
   evidence_gap TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS poc_artifacts(
+  poc_id TEXT PRIMARY KEY,
+  finding_id TEXT NOT NULL UNIQUE REFERENCES findings(finding_id),
+  task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  entry_type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -161,7 +168,6 @@ CREATE TABLE IF NOT EXISTS findings(
   severity TEXT,
   cwe TEXT,
   impact TEXT,
-  poc TEXT,
   boundary TEXT NOT NULL,
   controlled_properties_json TEXT NOT NULL,
   operation_location TEXT NOT NULL,
@@ -177,6 +183,7 @@ CREATE TABLE IF NOT EXISTS events(
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_poc_finding ON poc_artifacts(finding_id);
 CREATE INDEX IF NOT EXISTS idx_groups_entry ON operation_groups(entry_id, category);
 CREATE INDEX IF NOT EXISTS idx_component_calls_source ON component_calls(source_entry_id, target_component_id);
 CREATE INDEX IF NOT EXISTS idx_groups_validation ON operation_groups(validation_required, entry_id);

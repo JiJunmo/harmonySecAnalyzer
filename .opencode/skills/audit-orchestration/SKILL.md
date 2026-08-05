@@ -25,7 +25,9 @@ python3 .opencode/skills/audit-orchestration/scripts/audit_orchestrator.py statu
 
 增量模式必须已有一次无过滤且无未完成任务的成功基线。脚本将 Git 累计提交差异或非 Git 文件快照统一为 `change_set.json`，对比新旧项目模型，再按模块归属、反向模块依赖和历史组件调用计算 `impact_plan.json`。受影响组件进入原有语义任务；未受影响组件的历史结果必须重新通过当前 Schema 和业务不变量才能复用。组件连接使用当前完整语义状态重新计算；同一入口下的操作组集合及安全语义指纹完全一致时复用六维验证结果，否则重新派发验证任务。
 
-AI 任务严格分成 `component_semantic_analysis` 和 `exploitability_validation`。语义任务使用 Atlas 完成组件输入确认、组件内数据追踪、实际操作归并，以及组件间参数、身份和权限变化记录，不输出安全结论。全量模式初始化全部组件任务；能力模式和组件模式只初始化起始组件，之后按已证明的 `component_calls` 补充尚未分析的下游组件，每个组件最多一个语义任务。没有新的下游组件后，运行时确定性连接组件，只为起始外部入口可达的本地操作和跨组件操作创建验证任务。
+AI 任务严格分成 `component_semantic_analysis`、`exploitability_validation` 和 `poc_generation`。语义任务使用 Atlas 完成组件输入确认、组件内数据追踪、实际操作归并，以及组件间参数、身份和权限变化记录，不输出安全结论。全量模式初始化全部组件任务；能力模式和组件模式只初始化起始组件，之后按已证明的 `component_calls` 补充尚未分析的下游组件，每个组件最多一个语义任务。没有新的下游组件后，运行时确定性连接组件，只为起始外部入口可达的本地操作和跨组件操作创建验证任务。
+
+验证结果落库并生成 confirmed/residual Finding 时，运行时立即为每个 Finding 派生一个 `poc_generation` 任务（`poc:{finding_id}`）。PoC 任务只为该 Finding 生成可复现触发套件，禁止重新判定漏洞；提交必须通过 poc-result Schema 与 PoC 领域校验（证据引用、占位符、禁止越权输出、触发形态一致性）才能落库到 `poc_artifacts`。Finding 内容变化时已完成的任务自动重新排队；增量模式下操作组指纹与基线 PoC 快照一致时直接复用。PoC 任务达到三次尝试上限不阻塞 Run 完成，也不计入覆盖缺口，仅在对应 Finding 报告中显示“未生成 PoC”。
 
 Operation Group 只按操作源码位置和关键受控参数集合拆分，普通分支、防护代码和业务上下文作为组内事实。跨组件关联额外按身份是否保留、下游观察主体、实际权限和 安全检查 约束对象区分安全语义，避免把正常身份透传与代理借权路径合并。运行时验证语义证据后再要求每个组有且只有一个六维结论；验证结果不能引用语义阶段不存在的证据。只有 confirmed vulnerability 和 residual risk 生成 Finding 及报告证据路径。
 
@@ -45,7 +47,7 @@ run 目录：
 run.db
 session.json
 project/project_model.json
-incremental/change_set.json + impact_plan.json + baseline_semantic_results.json + baseline_validation_results.json + baseline_findings.json
+incremental/change_set.json + impact_plan.json + baseline_semantic_results.json + baseline_validation_results.json + baseline_findings.json + baseline_poc_results.json
 tasks/*.json + *.result.json
 exports/entries.json + semantic_analyses.json + component_calls.json + component_graph.json
 exports/operation_groups.json + validation_results.json
