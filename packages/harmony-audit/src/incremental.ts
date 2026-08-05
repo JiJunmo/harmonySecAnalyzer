@@ -315,11 +315,9 @@ export function validationGroupFingerprint(group: Row): string { return contentH
 
 function riskSnapshot(report: Row): Row[] {
   const groups = new Map((Array.isArray(report.operation_groups) ? report.operation_groups as Row[] : []).map((group) => [String(group.group_id), group]));
-  const pocs = new Map((Array.isArray(report.pocs) ? report.pocs as Row[] : []).map((poc) => [String(poc.finding_id), poc]));
   return (Array.isArray(report.findings) ? report.findings as Row[] : []).map((finding) => {
     const group = groups.get(String(finding.root_cause_key));
-    const poc = pocs.get(String(finding.finding_id));
-    return { ...finding, risk_key: contentHash(stableGroup(group?.payload ?? group ?? finding.root_cause_key)), poc: poc ? String((poc.payload as Row | undefined)?.code ?? "") : "" };
+    return { ...finding, risk_key: contentHash(stableGroup(group?.payload ?? group ?? finding.root_cause_key)) };
   }).sort((left, right) => String(left.risk_key).localeCompare(String(right.risk_key)));
 }
 
@@ -331,7 +329,7 @@ export async function attachIncrementalReport(runDirectory: string, report: Row)
   const baseline = await jsonFile(files.baselineFindings, { items: [] }) as Row;
   const previous = new Map((Array.isArray(baseline.items) ? baseline.items as Row[] : []).map((item) => [String(item.risk_key), item]));
   const currentRows = riskSnapshot(report); const current = new Map(currentRows.map((item) => [String(item.risk_key), item]));
-  const comparisonKeys = ["classification", "title", "severity", "cwe", "impact", "poc"];
+  const comparisonKeys = ["classification", "title", "severity", "cwe", "impact"];
   const terminal = ["complete", "complete_with_gaps"].includes(String((report.run as Row | undefined)?.status));
   const changes: Row = { status: terminal ? "complete" : "pending", added: [], removed: [], changed: [], unchanged: [] };
   if (!terminal) {

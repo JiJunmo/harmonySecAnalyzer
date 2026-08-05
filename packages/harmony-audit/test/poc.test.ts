@@ -8,11 +8,11 @@ import { AuditStore } from "../src/runtime/store.js";
 import { validatePocSubmission } from "../src/validation/submission-validator.js";
 import { effectChain, sixDimensions, validationEvidence } from "./p0-fixtures.js";
 
-async function fixture(): Promise<{ root: string; store: AuditStore }> {
+async function fixture(abilities = `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }] } }`, components: string[] = ["A"]): Promise<{ root: string; store: AuditStore }> {
   const root = await mkdtemp(join(tmpdir(), "harmony-poc-"));
   await mkdir(join(root, "entry/src/main"), { recursive: true });
-  await writeFile(join(root, "entry/src/main/module.json5"), `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }] } }`);
-  return { root, store: await AuditStore.create(root, await profileProject(root), { capabilities: ["CAP-INJ-001"], components: ["A"] }) };
+  await writeFile(join(root, "entry/src/main/module.json5"), abilities);
+  return { root, store: await AuditStore.create(root, await profileProject(root), { capabilities: ["CAP-INJ-001"], components }) };
 }
 
 const semantic = (task: Record<string, any>) => ({
@@ -29,8 +29,9 @@ const semantic = (task: Record<string, any>) => ({
   }],
 });
 
-const validation = (task: Record<string, any>) => {
+const validation = (task: Record<string, any>, severity = "high") => {
   const group = task.input.operation_groups[0];
+  const cross = group.scope === "cross_component"; const principal = group.principal_state as Record<string, any> | undefined;
   return {
     task_id: task.task_id, entry_id: task.input.entry_id, summary: "confirmed", evidence: [validationEvidence],
     validations: [{
@@ -38,8 +39,9 @@ const validation = (task: Record<string, any>) => {
       security_check_outcome: "absent",
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence_refs: [] },
       security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence_refs: [] },
+      ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence_refs: [] } } : {}),
       exploitability: sixDimensions(), effect_chain: effectChain(),
-      counter_evidence: [], impact: "private data disclosure", severity: "high", cwe: "CWE-89", poc: "demo://x", evidence_refs: [],
+      counter_evidence: [], impact: "private data disclosure", severity, cwe: "CWE-89", evidence_refs: [],
     }],
   };
 };
@@ -48,8 +50,10 @@ const poc = (task: Record<string, any>, overrides: Record<string, unknown> = {})
   task_id: task.task_id, finding_id: String(task.input.finding.finding_id), entry_type: "want",
   trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.QUERY", uri: "demo://x?q=1" } },
   language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://x?q=1' } })",
-  prerequisites: ["安装 debug 包"], expected_observation: "返回越权数据", limitations: "未在真机验证", evidence: [],
-  evidence_refs: [], ...overrides,
+  prerequisites: ["安装 debug 包"], expected_observation: "返回越权数据", limitations: "未在真机验证",
+  execution_hint: { step_by_step: ["安装 debug 包", "运行代码"], device_required: "emulator", network_required: false },
+  symbol_refs: [], evidence: [], evidence_refs: [],
+  ...overrides,
 });
 
 async function confirmedStore(): Promise<{ store: AuditStore; pocTask: Record<string, any> }> {
@@ -69,6 +73,10 @@ describe("poc generation phase", () => {
     expect(pocTask).toBeDefined();
     expect(pocTask.kind).toBe("poc_generation");
     expect(pocTask.input).toMatchObject({ finding: { finding_id: expect.any(String) }, verification_scope: { target_repo: expect.any(String) } });
+    expect(pocTask.input.inherited_evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidence_id: "EV-V", summary: "六维阶段重新读取并核验完整效果链" }),
+      expect.objectContaining({ evidence_id: "EV-1", summary: "entry reaches query" }),
+    ]));
     expect(store.reconcile(pocTask.task_id, pocTask.attempt, poc(pocTask))).toMatchObject({ accepted: true });
     const report = await store.finalize();
     expect(report.summary).toMatchObject({ findings: 1, poc_artifacts: 1 });
@@ -78,8 +86,10 @@ describe("poc generation phase", () => {
     expect((db.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(1);
     expect((db.pragma("foreign_key_check") as unknown[])).toHaveLength(0);
     db.close();
-    expect(await readFile(store.paths.reportMarkdown, "utf8")).toContain("#### 验证方式 / PoC");
-    expect(await readFile(store.paths.reportMarkdown, "utf8")).toContain("入口类型");
+    const markdown = await readFile(store.paths.reportMarkdown, "utf8");
+    expect(markdown).toContain("#### 验证方式 / PoC");
+    expect(markdown).toContain("入口类型");
+    expect(markdown).toContain("逐步复现");
     expect(await readFile(store.paths.reportHtml, "utf8")).toContain("预期现象");
   });
 
@@ -98,9 +108,42 @@ describe("poc generation phase", () => {
     expect(outcome).toMatchObject({ accepted: false, status: "queued", error_code: "SCHEMA_INVALID" });
   });
 
-  it("rejects unknown evidence refs in poc submissions", () => {
-    const candidate = { task_id: "TASK-1", finding_id: "FIND-1", entry_type: "want", trigger: { kind: "ability_want", payload: {} }, language: "arkts", code: "x()", expected_observation: "x", evidence: [], evidence_refs: ["EV-missing"] };
-    expect(() => validatePocSubmission(candidate, { taskId: "TASK-1", entryId: "PE-1", findingId: "FIND-1", allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
+  it("rejects placeholder code instead of a runnable snippet", async () => {
+    const { store, pocTask } = await confirmedStore();
+    const outcome = store.reconcile(pocTask.task_id, pocTask.attempt, poc(pocTask, { code: "startAbility({ want: { uri: '略' } })" }));
+    expect(outcome).toMatchObject({ accepted: false, status: "queued", error_code: "POC_PLACEHOLDER_FOUND" });
+  });
+
+  it("rejects re-judgement fields that belong to the validation phase", async () => {
+    const { store, pocTask } = await confirmedStore();
+    // schema-level guard fires first on the store path
+    expect(store.reconcile(pocTask.task_id, pocTask.attempt, poc(pocTask, { severity: "critical", classification: "confirmed_vulnerability" })))
+      .toMatchObject({ accepted: false, status: "queued", error_code: "SCHEMA_INVALID" });
+    // validator-level guard remains for direct callers
+    const candidate = poc(pocTask, { severity: "critical", classification: "confirmed_vulnerability" });
+    expect(() => validatePocSubmission(candidate, { taskId: candidate.task_id, entryId: "PE-1", findingId: String(candidate.finding_id), allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
+      .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "POC_FORBIDDEN_OUTPUT" }));
+  });
+
+  it("enforces trigger form consistency: shell must be a real command, arkts must not be adb_shell", async () => {
+    const { store, pocTask } = await confirmedStore();
+    expect(store.reconcile(pocTask.task_id, pocTask.attempt, poc(pocTask, { language: "shell", code: "startAbility({})" })))
+      .toMatchObject({ accepted: false, status: "queued", error_code: "POC_SHELL_COMMAND_REQUIRED" });
+    const [second] = (await store.claim(1)).tasks;
+    expect(store.reconcile(second!.task_id, second!.attempt, poc(second as Record<string, any>, { trigger: { kind: "adb_shell", payload: { command: "ls" } } })))
+      .toMatchObject({ accepted: false, status: "queued", error_code: "POC_ARKTS_TRIGGER_MISMATCH" });
+    const [third] = (await store.claim(1)).tasks;
+    expect(store.reconcile(third!.task_id, third!.attempt, poc(third as Record<string, any>, {
+      language: "shell", trigger: { kind: "ability_want", payload: { uri: "demo://x" } },
+      code: "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://x'",
+    }))).toMatchObject({ accepted: true });
+  });
+
+  it("rejects unknown evidence refs and unbound symbol refs in poc submissions", () => {
+    const base = { task_id: "TASK-1", finding_id: "FIND-1", entry_type: "want", trigger: { kind: "ability_want", payload: { action: "x" } }, language: "arkts", code: "startAbility({})", expected_observation: "x", evidence: [], evidence_refs: ["EV-missing"] };
+    expect(() => validatePocSubmission(base, { taskId: "TASK-1", entryId: "PE-1", findingId: "FIND-1", allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
+      .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "UNKNOWN_EVIDENCE_REF" }));
+    expect(() => validatePocSubmission({ ...base, evidence_refs: [], symbol_refs: [{ symbol: "RecordAbility.onNewWant", evidence_id: "EV-missing", verified_by: "atlas_symbol" }] }, { taskId: "TASK-1", entryId: "PE-1", findingId: "FIND-1", allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
       .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "UNKNOWN_EVIDENCE_REF" }));
   });
 
@@ -128,25 +171,72 @@ describe("poc generation phase", () => {
   });
 
   it("schedules the poc task immediately after its entry's validation, without waiting for other validations to drain", async () => {
-    const root = await mkdtemp(join(tmpdir(), "harmony-poc-early-"));
-    await mkdir(join(root, "entry/src/main"), { recursive: true });
-    await writeFile(join(root, "entry/src/main/module.json5"), `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }, { name: 'B', exported: true }] } }`);
-    const store = await AuditStore.create(root, await profileProject(root), { capabilities: ["CAP-INJ-001"], components: ["A", "B"] });
+    const { store } = await fixture(`{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }, { name: 'B', exported: true }] } }`, ["A", "B"]);
     const [aTask, bTask] = (await store.claim(2)).tasks;
     expect([aTask!.kind, bTask!.kind]).toEqual(["component_semantic_analysis", "component_semantic_analysis"]);
-    for (const task of [aTask, bTask]) {
-      expect(store.reconcile(task!.task_id, task!.attempt, semantic(task as Record<string, any>))).toMatchObject({ accepted: true });
-    }
-    const claimed = (await store.claim(2)).tasks;
-    const validationTasks = claimed.filter((task) => task.kind === "exploitability_validation");
+    for (const task of [aTask, bTask]) expect(store.reconcile(task!.task_id, task!.attempt, semantic(task as Record<string, any>))).toMatchObject({ accepted: true });
+    const validationTasks = (await store.claim(2)).tasks.filter((task) => task.kind === "exploitability_validation");
     expect(validationTasks).toHaveLength(2);
-    const first = validationTasks[0]!;
-    expect(store.reconcile(first.task_id, first.attempt, validation(first as Record<string, any>))).toMatchObject({ accepted: true });
+    expect(store.reconcile(validationTasks[0]!.task_id, validationTasks[0]!.attempt, validation(validationTasks[0] as Record<string, any>))).toMatchObject({ accepted: true });
     const next = (await store.claim(5)).tasks;
     expect(next.filter((task) => task.kind === "poc_generation")).toHaveLength(1);
     const db = new Database(store.paths.db);
     expect((db.prepare("SELECT COUNT(*) n FROM tasks WHERE kind='poc_generation'").get() as { n: number }).n).toBe(1);
     expect((db.prepare("SELECT status FROM tasks WHERE task_id=?").get(validationTasks[1]!.task_id) as { status: string }).status).toBe("running");
     db.close();
+  });
+
+  it("requeues a completed poc task when the representative validation changes", async () => {
+    const { root, store } = await fixture(`{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }, { name: 'B', exported: true }] } }`, ["A", "B"]);
+    const model = await profileProject(root);
+    const candidates = model.entry_candidates as { candidate_id: string; component_name: string }[];
+    const aId = candidates.find((item) => item.component_name === "A")!.candidate_id;
+    const bId = candidates.find((item) => item.component_name === "B")!.candidate_id;
+    const bComponentId = String(model.components.find((item) => item.name === "B")!.component_id);
+    const [firstTask, secondTask] = (await store.claim(2)).tasks;
+    const aTask = String(firstTask!.input.entry.component_name) === "A" ? firstTask! : secondTask!;
+    const bTask = String(firstTask!.input.entry.component_name) === "B" ? firstTask! : secondTask!;
+    const aResult = {
+      ...semantic(aTask as Record<string, any>), operation_groups: [],
+      component_calls: [{ call_key: "a-to-b", target_component_id: bComponentId, target_symbol: "B.onCreate", transport: "startAbility", call_location: "A.ets:10", condition: "always", parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }], principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence_refs: [] }, security_checks: [], evidence_refs: [] }],
+    };
+    expect(store.reconcile(aTask.task_id, aTask.attempt, aResult)).toMatchObject({ accepted: true });
+    const bSemantic = semantic(bTask as Record<string, any>);
+    // controlled property must match the parameter chain carried by the A→B path so a cross-component group forms
+    (bSemantic.operation_groups as Record<string, any>[])[0]!.controlled_properties = ["want.forwarded"];
+    expect(store.reconcile(bTask.task_id, bTask.attempt, bSemantic)).toMatchObject({ accepted: true });
+    const validationTasks = (await store.claim(5)).tasks.filter((task) => task.kind === "exploitability_validation");
+    const bValidation = validationTasks.find((task) => (task.input.operation_groups as Record<string, any>[])[0]!.scope !== "cross_component")!;
+    const aValidation = validationTasks.find((task) => (task.input.operation_groups as Record<string, any>[])[0]!.scope === "cross_component")!;
+    expect(store.reconcile(bValidation.task_id, bValidation.attempt, validation(bValidation as Record<string, any>, "high"))).toMatchObject({ accepted: true });
+    const [firstPoc] = (await store.claim(5)).tasks.filter((task) => task.kind === "poc_generation");
+    expect(store.reconcile(firstPoc!.task_id, firstPoc!.attempt, poc(firstPoc as Record<string, any>))).toMatchObject({ accepted: true });
+    const before = new Database(store.paths.db);
+    expect((before.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(1);
+    before.close();
+    // A cross-component confirmation (critical) supersedes B's local representative → artifact must be repaired.
+    expect(store.reconcile(aValidation.task_id, aValidation.attempt, validation(aValidation as Record<string, any>, "critical"))).toMatchObject({ accepted: true });
+    const db = new Database(store.paths.db);
+    expect(db.prepare("SELECT status,error FROM tasks WHERE kind='poc_generation'").get()).toMatchObject({ status: "queued", error: "poc_representative_changed" });
+    expect((db.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) n FROM events WHERE event_type='poc_artifact_repair'").get() as { n: number }).n).toBe(1);
+    db.close();
+  });
+
+  it("lets the run finalize without a poc artifact after the poc task is exhausted", async () => {
+    const { store, pocTask } = await confirmedStore();
+    store.reconcile(pocTask.task_id, pocTask.attempt, undefined, "model_failed");
+    const [retry] = (await store.claim(1)).tasks;
+    store.reconcile(retry!.task_id, retry!.attempt, undefined, "model_failed");
+    const [last] = (await store.claim(1)).tasks;
+    store.reconcile(last!.task_id, last!.attempt, undefined, "model_failed");
+    expect(store.status().tasks).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "poc_generation", status: "exhausted" })]));
+    const report = await store.finalize();
+    expect((report.run as Record<string, unknown>).status).toBe("complete");
+    expect((report.coverage as Record<string, unknown>).gaps).toEqual([]);
+    expect(report.summary).toMatchObject({ findings: 1, poc_artifacts: 0 });
+    expect((report.findings as Record<string, unknown>[])[0]).toMatchObject({ poc_artifact: null });
+    const markdown = await readFile(store.paths.reportMarkdown, "utf8");
+    expect(markdown).toContain("未生成 PoC");
   });
 });

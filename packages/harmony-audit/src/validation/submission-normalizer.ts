@@ -77,7 +77,7 @@ export function normalizeSemanticSubmission(candidate: Row, entryId: string, cap
 export function normalizeValidationSubmission(candidate: Row, entryId: string): Row {
   const normalized = structuredClone(candidate);
   normalized.entry_id = entryId;
-  for (const validation of rows(normalized.validations)) for (const key of ["impact", "severity", "cwe", "poc", "demotion_reason", "evidence_gap"]) {
+  for (const validation of rows(normalized.validations)) for (const key of ["impact", "severity", "cwe", "demotion_reason", "evidence_gap"]) {
     if (typeof validation[key] === "string" && !String(validation[key]).trim()) delete validation[key];
   }
   return normalized;
@@ -93,4 +93,5 @@ export function normalizePocSubmission(candidate: Row): Row {
   normalized.evidence_refs = unique(strings(normalized.evidence_refs));
   return normalized;
 }
+
 import { canonicalJson } from "../runtime/identity.js";

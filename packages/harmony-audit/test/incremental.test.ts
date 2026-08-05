@@ -28,13 +28,6 @@ const operationGroup = {
   evidence_refs: [],
 };
 
-const pocArtifact = (task: Record<string, any>) => ({
-  task_id: task.task_id, finding_id: String(task.input.finding.finding_id), entry_type: "want",
-  trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.QUERY", uri: "demo://record?owned=1" } },
-  language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://record?owned=1' } })",
-  prerequisites: ["安装 debug 包"], expected_observation: "返回本人记录", limitations: "未在真机验证", evidence: [], evidence_refs: [],
-});
-
 function protectedValidation(task: Record<string, any>) {
   const group = task.input.operation_groups[0];
   return {
@@ -49,6 +42,15 @@ function protectedValidation(task: Record<string, any>) {
     }], evidence: [validationEvidence],
   };
 }
+
+const pocArtifact = (task: Record<string, any>) => ({
+  task_id: task.task_id, finding_id: String(task.input.finding.finding_id), entry_type: "want",
+  trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.QUERY", uri: "demo://record?owned=1" } },
+  language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://record?owned=1' } })",
+  prerequisites: ["安装 debug 包"], expected_observation: "返回本人记录", limitations: "未在真机验证",
+  execution_hint: { step_by_step: ["安装 debug 包", "运行代码"], device_required: "emulator", network_required: false },
+  symbol_refs: [], evidence: [], evidence_refs: [],
+});
 
 async function project() {
   const root = await mkdtemp(join(tmpdir(), "harmony-incremental-"));
@@ -145,7 +147,7 @@ describe("incremental audit migration", () => {
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence_refs: [] },
       security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: true, reason: "owner check can be bypassed", evidence_refs: [] },
       exploitability: sixDimensions(), effect_chain: effectChain(),
-      counter_evidence: [], impact: "读取他人记录", severity: "high", cwe: "CWE-89", poc: "demo://record?owned=1", evidence_refs: [],
+      counter_evidence: [], impact: "读取他人记录", severity: "high", cwe: "CWE-89", evidence_refs: [],
     };
     expect(full.reconcile(validation!.task_id, validation!.attempt, confirmed)).toMatchObject({ accepted: true });
     const [poc] = (await full.claim(5)).tasks;
@@ -162,4 +164,5 @@ describe("incremental audit migration", () => {
     expect((db.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(1);
     db.close();
   });
+
 });

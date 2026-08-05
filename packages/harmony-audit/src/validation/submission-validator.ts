@@ -103,7 +103,7 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
     if (classification === "confirmed_vulnerability") {
       if (context.entryStatus) invariant(context.entryStatus === "confirmed", "CONFIRMED_ENTRY_REQUIRED", { entryStatus: context.entryStatus });
       invariant(DIMENSIONS.every((key) => ((dimensions[key] as Row | undefined) ?? {}).status === "true"), "CONFIRMED_DIMENSIONS_INCOMPLETE");
-      invariant(["impact", "severity", "cwe", "poc"].every((key) => typeof validation[key] === "string" && String(validation[key]).length > 0), "CONFIRMED_DETAILS_INCOMPLETE");
+      invariant(["impact", "severity", "cwe"].every((key) => typeof validation[key] === "string" && String(validation[key]).length > 0), "CONFIRMED_DETAILS_INCOMPLETE");
       const effectChain = (validation.effect_chain as Row | undefined) ?? {};
       for (const key of EFFECT_PROOFS) {
         const proof = (effectChain[key] as Row | undefined) ?? {};
@@ -153,18 +153,40 @@ export interface PocValidationContext {
   allowedEvidence: ReadonlySet<string>;
 }
 
+const PLACEHOLDER_PATTERN = /略|省略|\.\.\.|…|TODO|TBD|your[\s_-]?(code|command|payload)|[《<](?:填入|替换|your)[^》>]*[》>]/;
+const FORBIDDEN_POC_OUTPUTS = ["classification", "exploitability", "severity", "cwe", "impact"] as const;
+const SHELL_PREFIX = /^\s*(hdc|adb|curl|aa)\b/;
+const ARKTS_TRIGGER_API = /startAbility|rpc\.|commonEventManager|dataAbilityHelper|runJavaScript|webview|createChannel|requestSubmitJob|wifiManager/;
+
+/** v3.2 PoC generation contract: evidence integrity, executable code, and phase boundary (no re-judgement). */
 export function validatePocSubmission(candidate: Row, context: PocValidationContext): void {
   invariant(candidate.task_id === context.taskId, "TASK_ID_MISMATCH", { expected: context.taskId, actual: candidate.task_id });
   invariant(candidate.finding_id === context.findingId, "FINDING_ID_MISMATCH", { expected: context.findingId, actual: candidate.finding_id });
+  for (const forbidden of FORBIDDEN_POC_OUTPUTS) invariant(!(forbidden in candidate), "POC_FORBIDDEN_OUTPUT", { field: forbidden });
   const entryType = String(candidate.entry_type ?? "");
   invariant(context.allowedEntryTypes.has(entryType), "POC_ENTRY_TYPE_MISMATCH", { entry_type: entryType, allowed: [...context.allowedEntryTypes].sort() });
   const localIds = rows(candidate.evidence).map((item) => String(item.evidence_id ?? ""));
   invariant(localIds.every(Boolean) && unique(localIds), "DUPLICATE_LOCAL_ID", { entity: "evidence" });
   const allowedEvidence = new Set([...context.allowedEvidence, ...localIds]);
   invariant(typeof candidate.code === "string" && String(candidate.code).length > 0, "POC_CODE_REQUIRED");
+  invariant(!PLACEHOLDER_PATTERN.test(String(candidate.code)), "POC_PLACEHOLDER_FOUND");
   invariant(typeof candidate.expected_observation === "string" && String(candidate.expected_observation).length > 0, "POC_EXPECTED_OBSERVATION_REQUIRED");
   const trigger = (candidate.trigger as Row | undefined) ?? {};
   invariant(typeof trigger.kind === "string" && String(trigger.kind).length > 0, "POC_TRIGGER_KIND_REQUIRED");
   invariant(typeof trigger.payload !== "undefined", "POC_TRIGGER_PAYLOAD_REQUIRED");
+  invariant(!(typeof trigger.payload === "object" && trigger.payload !== null && Object.keys(trigger.payload as Row).length === 0), "POC_TRIGGER_PAYLOAD_EMPTY");
+  const language = String(candidate.language ?? "");
+  const triggerKind = String(trigger.kind ?? "");
+  if (language === "shell") {
+    invariant(SHELL_PREFIX.test(String(candidate.code)), "POC_SHELL_COMMAND_REQUIRED", { code: String(candidate.code).slice(0, 60) });
+    invariant(["adb_shell", "ability_want"].includes(triggerKind), "POC_SHELL_TRIGGER_MISMATCH", { trigger_kind: triggerKind });
+  }
+  if (language === "arkts") {
+    invariant(triggerKind !== "adb_shell", "POC_ARKTS_TRIGGER_MISMATCH", { trigger_kind: triggerKind });
+    invariant(ARKTS_TRIGGER_API.test(String(candidate.code)), "POC_ARKTS_API_REQUIRED", { code: String(candidate.code).slice(0, 60) });
+  }
   for (const ref of refs(candidate)) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
+  for (const symbolRef of rows(candidate.symbol_refs)) {
+    invariant(allowedEvidence.has(String(symbolRef.evidence_id ?? "")), "UNKNOWN_EVIDENCE_REF", { ref: symbolRef.evidence_id, entity: "symbol_ref" });
+  }
 }

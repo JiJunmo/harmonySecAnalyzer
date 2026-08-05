@@ -45,7 +45,7 @@ const executionTitle = (kind: string): string => kind === "component_semantic_an
 
 const schema = `
 PRAGMA foreign_keys=ON;
-CREATE TABLE schema_meta(version INTEGER PRIMARY KEY CHECK(version=2),contract_version TEXT NOT NULL,migrated_at TEXT NOT NULL);
+CREATE TABLE schema_meta(version INTEGER PRIMARY KEY CHECK(version=3),contract_version TEXT NOT NULL,migrated_at TEXT NOT NULL);
 CREATE TABLE runs(run_id TEXT PRIMARY KEY,target_repo TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('created','running','complete','complete_with_gaps','failed','cancelled')),error TEXT,project_model_version TEXT NOT NULL,audit_scope_json TEXT NOT NULL,resume_generation INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finalized_at TEXT);
 CREATE TABLE tasks(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),semantic_key TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('component_semantic_analysis','exploitability_validation','poc_generation')),subject_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','completed','exhausted','cancelled')),attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0),input_json TEXT NOT NULL,result_json TEXT,error TEXT,claimed_at TEXT,lease_expires_at TEXT,worker_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(run_id,semantic_key));
 CREATE TABLE analysis_units(component_id TEXT PRIMARY KEY,entry_id TEXT NOT NULL,input_json TEXT NOT NULL);
@@ -63,8 +63,8 @@ CREATE TABLE group_edges(group_id TEXT NOT NULL,from_fact_key TEXT NOT NULL,to_f
 CREATE TABLE security_checks(security_check_id TEXT PRIMARY KEY,group_id TEXT REFERENCES operation_groups(group_id),component_call_id TEXT REFERENCES component_calls(component_call_id),subject_kind TEXT NOT NULL,validated_property TEXT NOT NULL,payload_json TEXT NOT NULL,CHECK((group_id IS NULL)!=(component_call_id IS NULL)));
 CREATE TABLE validation_results(validation_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),group_id TEXT NOT NULL UNIQUE REFERENCES operation_groups(group_id),classification TEXT NOT NULL,capability_id TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE validation_counter_evidence(counter_evidence_id TEXT PRIMARY KEY,validation_id TEXT NOT NULL REFERENCES validation_results(validation_id),kind TEXT NOT NULL,reason TEXT NOT NULL,payload_json TEXT NOT NULL);
-CREATE TABLE findings(finding_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),root_cause_key TEXT NOT NULL,title TEXT NOT NULL,classification TEXT NOT NULL,severity TEXT NOT NULL,cwe TEXT NOT NULL,impact TEXT NOT NULL,poc TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(run_id,root_cause_key));
-CREATE TABLE poc_artifacts(poc_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),finding_id TEXT NOT NULL REFERENCES findings(finding_id),producer_task_id TEXT NOT NULL REFERENCES tasks(task_id),entry_type TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(run_id,finding_id));
+CREATE TABLE findings(finding_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),root_cause_key TEXT NOT NULL,title TEXT NOT NULL,classification TEXT NOT NULL,severity TEXT NOT NULL,cwe TEXT NOT NULL,impact TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(run_id,root_cause_key));
+CREATE TABLE poc_artifacts(poc_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),finding_id TEXT NOT NULL UNIQUE REFERENCES findings(finding_id),producer_task_id TEXT NOT NULL REFERENCES tasks(task_id),entry_type TEXT NOT NULL,payload_json TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE finding_causes(finding_id TEXT NOT NULL REFERENCES findings(finding_id),validation_id TEXT NOT NULL UNIQUE REFERENCES validation_results(validation_id),PRIMARY KEY(finding_id,validation_id));
 CREATE TABLE evidence_refs(owner_type TEXT NOT NULL,owner_id TEXT NOT NULL,evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),PRIMARY KEY(owner_type,owner_id,evidence_id));
 CREATE TABLE events(event_id INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL REFERENCES runs(run_id),event_type TEXT NOT NULL,subject_id TEXT,payload_json TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -92,7 +92,7 @@ export class AuditStore {
   open(): Database.Database {
     const db = new Database(this.paths.db); db.pragma("foreign_keys = ON"); db.pragma("journal_mode = WAL"); db.pragma("busy_timeout = 30000");
     const version = (db.prepare("SELECT version FROM schema_meta").get() as { version: number } | undefined)?.version;
-    if (version !== 2) { db.close(); throw new AuditInvariantError("UNSUPPORTED_SCHEMA_VERSION", { version }); }
+    if (version !== 3) { db.close(); throw new AuditInvariantError("UNSUPPORTED_SCHEMA_VERSION", { version }); }
     return db;
   }
 
@@ -113,7 +113,7 @@ export class AuditStore {
     try {
       db.exec(schema);
       const stamp = now();
-      db.prepare("INSERT INTO schema_meta VALUES (?,?,?)").run(2, "audit-contract-v1", stamp);
+      db.prepare("INSERT INTO schema_meta VALUES (?,?,?)").run(3, "audit-contract-v1", stamp);
       const normalizedScope = { ...runScope, mode };
       db.prepare("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)").run(runId, resolve(target), "created", null, `project-model-v${model.schema_version}`, canonicalJson(normalizedScope), 0, stamp, stamp, null);
       const units = new Map<string, Record<string, unknown>[]>();
@@ -440,122 +440,6 @@ export class AuditStore {
     if (eligible.length) this.event(db, "validation_phase_planned", this.runIdFrom(db), { entries: entries.size, operation_groups: eligible.length, tasks: scheduled, reused });
   }
 
-  /** v3.2: PoC tasks are scheduled per-finding as soon as the confirming validation lands; this drain-time reconciler fills gaps and repairs stale artifacts whose representative validation changed. */
-  private ensurePocTasks(db: Database.Database): void {
-    const unfinishedValidation = (db.prepare("SELECT COUNT(*) n FROM tasks WHERE kind='exploitability_validation' AND status IN ('queued','running')").get() as { n: number }).n;
-    if (unfinishedValidation) return;
-    const findings = this.pocFindingRows(db);
-    if (!findings.length) return;
-    let scheduled = 0; let reused = 0; let repaired = 0;
-    for (const row of findings) {
-      const outcome = this.schedulePocForFinding(db, row.finding_id);
-      scheduled += outcome.scheduled ? 1 : 0;
-      reused += outcome.reused ? 1 : 0;
-      repaired += outcome.repaired ? 1 : 0;
-    }
-    this.event(db, "poc_phase_planned", this.runIdFrom(db), { findings: findings.length, scheduled, reused, repaired });
-  }
-
-  private pocFindingRows(db: Database.Database): PocFindingRow[] {
-    return db.prepare(`SELECT f.finding_id,f.root_cause_key,f.title,f.severity,f.cwe,f.impact,f.payload_json finding_payload,
-      s.entry_id,s.coverage_json,COALESCE(root_e.payload_json,e.payload_json) entry_payload,g.payload_json group_payload,
-      v.payload_json validation_payload,v.task_id validation_task_id
-      FROM findings f
-      JOIN operation_groups g ON g.group_id=f.root_cause_key
-      JOIN semantic_analyses s ON s.semantic_analysis_id=g.semantic_analysis_id
-      JOIN entries e ON e.entry_id=s.entry_id
-      LEFT JOIN cross_component_groups cg ON cg.local_group_id=g.group_id
-      LEFT JOIN component_paths cp ON cp.path_id=cg.path_id
-      LEFT JOIN entries root_e ON root_e.entry_id=cp.root_entry_id
-      LEFT JOIN validation_results v ON v.validation_id=json_extract(f.payload_json,'$.representative_validation_id')
-      WHERE f.classification='confirmed_vulnerability' ORDER BY f.finding_id`).all() as PocFindingRow[];
-  }
-
-  private pocTaskInput(db: Database.Database, row: PocFindingRow, targetRepo: string): Record<string, unknown> {
-    const coverage = JSON.parse(row.coverage_json) as Record<string, unknown>;
-    const findingPayload = JSON.parse(row.finding_payload) as Record<string, unknown>;
-    const validation = row.validation_payload ? JSON.parse(row.validation_payload) as Record<string, unknown> : {};
-    const producers = new Set<string>();
-    if (row.validation_task_id) {
-      producers.add(row.validation_task_id);
-      const validationInput = db.prepare("SELECT input_json FROM tasks WHERE task_id=?").get(row.validation_task_id) as { input_json: string } | undefined;
-      const validationInputDocument = validationInput ? JSON.parse(validationInput.input_json) as Record<string, unknown> : {};
-      const inherited = Array.isArray(validationInputDocument.inherited_evidence_task_ids) ? validationInputDocument.inherited_evidence_task_ids.map(String) : [];
-      for (const id of inherited) producers.add(id);
-    }
-    const producerTaskIds = [...producers];
-    const evidenceIds = producerTaskIds.length ? db.prepare(`SELECT DISTINCT local_evidence_id FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string }[] : [];
-    return {
-      verification_scope: { target_repo: targetRepo, seed_symbols: Array.isArray(coverage.entry_symbols_checked) ? coverage.entry_symbols_checked : [] },
-      finding: { finding_id: row.finding_id, root_cause_key: row.root_cause_key, title: row.title, severity: row.severity, cwe: row.cwe, impact: row.impact, representative_validation_id: findingPayload.representative_validation_id ?? null },
-      validation, operation_group: JSON.parse(row.group_payload), entry: JSON.parse(row.entry_payload),
-      inherited_evidence_ids: evidenceIds.map((item) => item.local_evidence_id), inherited_evidence_task_ids: producerTaskIds,
-    };
-  }
-
-  /** Insert or refresh the PoC task for one finding; a completed artifact whose representative validation changed is requeued for regeneration. */
-  private schedulePocForFinding(db: Database.Database, findingId: string): { scheduled: boolean; reused: boolean; repaired: boolean } {
-    const row = this.pocFindingRows(db).find((item) => item.finding_id === findingId);
-    if (!row) return { scheduled: false, reused: false, repaired: false };
-    const key = `poc:${findingId}`;
-    const targetRepo = (db.prepare("SELECT target_repo FROM runs").get() as { target_repo: string }).target_repo;
-    const input = this.pocTaskInput(db, row, targetRepo);
-    const existing = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
-    let repaired = false;
-    if (existing?.status === "completed") {
-      const storedInput = JSON.parse(String(existing.input_json)) as Record<string, unknown>;
-      const storedRepresentative = String(((storedInput.finding as Record<string, unknown> | undefined) ?? {}).representative_validation_id ?? "");
-      const currentRepresentative = String((JSON.parse(row.finding_payload) as Record<string, unknown>).representative_validation_id ?? "");
-      if (storedRepresentative === currentRepresentative) return { scheduled: false, reused: false, repaired: false };
-      const pocs = db.prepare("SELECT poc_id FROM poc_artifacts WHERE finding_id=?").all(findingId) as { poc_id: string }[];
-      for (const poc of pocs) db.prepare("DELETE FROM evidence_refs WHERE owner_type='poc_artifact' AND owner_id=?").run(poc.poc_id);
-      db.prepare("DELETE FROM poc_artifacts WHERE finding_id=?").run(findingId);
-      db.prepare("UPDATE tasks SET status='queued',attempts=0,error='poc_representative_changed',result_json=NULL,input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
-      this.event(db, "poc_artifact_repair", String(existing.task_id), { finding_id: findingId });
-      repaired = true;
-    } else if (!existing) {
-      db.prepare("INSERT INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,created_at,updated_at) VALUES (?,?,?,?,?,'queued',0,?,?,?)").run(stableId("TASK", this.runIdFrom(db), key), this.runIdFrom(db), key, "poc_generation", row.entry_id, canonicalJson(input), now(), now());
-    } else if (existing.status === "queued") {
-      db.prepare("UPDATE tasks SET input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
-    }
-    const current = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
-    const reused = current && current.status === "queued" ? this.tryReusePoc(db, current, input) : false;
-    return { scheduled: !existing, reused, repaired };
-  }
-
-  private tryReusePoc(db: Database.Database, task: Record<string, unknown>, input: Record<string, unknown>): boolean {
-    const run = db.prepare("SELECT audit_scope_json FROM runs").get() as { audit_scope_json: string };
-    const scope = JSON.parse(run.audit_scope_json) as Record<string, unknown>;
-    if (scope.mode !== "incremental") return false;
-    const entry = db.prepare("SELECT candidate_key,payload_json FROM entries WHERE entry_id=?").get(task.subject_id) as { candidate_key: string; payload_json: string } | undefined;
-    if (!entry || (JSON.parse(entry.payload_json) as Record<string, unknown>).incremental_reused !== true) return false;
-    let document: Record<string, unknown>;
-    try { document = JSON.parse(readFileSync(this.paths.incremental.baselinePocs, "utf8")) as Record<string, unknown>; }
-    catch { return false; }
-    const items = Array.isArray(document.items) ? document.items as Record<string, unknown>[] : [];
-    const rootCauseKey = String((input.finding as Record<string, unknown>).root_cause_key);
-    const group = db.prepare("SELECT payload_json FROM operation_groups WHERE group_id=?").get(rootCauseKey) as { payload_json: string } | undefined;
-    if (!group) return false;
-    const currentFingerprint = validationGroupFingerprint(JSON.parse(group.payload_json));
-    const snapshot = items.find((item) => String(item.group_fingerprint) === currentFingerprint);
-    if (!snapshot || !snapshot.result || typeof snapshot.result !== "object") return false;
-    try {
-      db.transaction(() => {
-        const candidate = structuredClone(snapshot.result as Record<string, unknown>);
-        candidate.task_id = task.task_id; candidate.finding_id = String((input.finding as Record<string, unknown>).finding_id);
-        const normalized = normalizePocSubmission(candidate);
-        validateSubmissionSchema("poc_generation", normalized);
-        this.ingestPoc(db, task, 0, normalized);
-        db.prepare("UPDATE tasks SET status='completed',attempts=0,result_json=?,error=NULL,updated_at=? WHERE task_id=?").run(canonicalJson(normalized), now(), task.task_id);
-        this.event(db, "poc_result_reused", String(task.task_id), { root_cause_key: rootCauseKey });
-      })();
-      return true;
-    } catch (error) {
-      this.event(db, "poc_reuse_rejected", String(task.task_id), { root_cause_key: rootCauseKey, error: error instanceof Error ? error.message : String(error) });
-      return false;
-    }
-  }
-
   private tryReuseValidation(db: Database.Database, task: Record<string, unknown>, groups: Record<string, unknown>[]): boolean {
     if (task.status !== "queued") return false;
     const run = db.prepare("SELECT audit_scope_json FROM runs").get() as { audit_scope_json: string };
@@ -693,6 +577,124 @@ export class AuditStore {
     }
   }
 
+  /** v3.2: PoC tasks are scheduled per-finding as soon as the confirming validation lands; this drain-time reconciler fills gaps and repairs stale artifacts whose representative validation changed. */
+  private ensurePocTasks(db: Database.Database): void {
+    const unfinishedValidation = (db.prepare("SELECT COUNT(*) n FROM tasks WHERE kind='exploitability_validation' AND status IN ('queued','running')").get() as { n: number }).n;
+    if (unfinishedValidation) return;
+    const findings = this.pocFindingRows(db);
+    if (!findings.length) return;
+    let scheduled = 0; let reused = 0; let repaired = 0;
+    for (const row of findings) {
+      const outcome = this.schedulePocForFinding(db, row.finding_id);
+      scheduled += outcome.scheduled ? 1 : 0;
+      reused += outcome.reused ? 1 : 0;
+      repaired += outcome.repaired ? 1 : 0;
+    }
+    this.event(db, "poc_phase_planned", this.runIdFrom(db), { findings: findings.length, scheduled, reused, repaired });
+  }
+
+  private pocFindingRows(db: Database.Database): PocFindingRow[] {
+    return db.prepare(`SELECT f.finding_id,f.root_cause_key,f.title,f.severity,f.cwe,f.impact,f.payload_json finding_payload,
+      s.entry_id,s.coverage_json,COALESCE(root_e.payload_json,e.payload_json) entry_payload,g.payload_json group_payload,
+      v.payload_json validation_payload,v.task_id validation_task_id
+      FROM findings f
+      JOIN operation_groups g ON g.group_id=f.root_cause_key
+      JOIN semantic_analyses s ON s.semantic_analysis_id=g.semantic_analysis_id
+      JOIN entries e ON e.entry_id=s.entry_id
+      LEFT JOIN cross_component_groups cg ON cg.local_group_id=g.group_id
+      LEFT JOIN component_paths cp ON cp.path_id=cg.path_id
+      LEFT JOIN entries root_e ON root_e.entry_id=cp.root_entry_id
+      LEFT JOIN validation_results v ON v.validation_id=json_extract(f.payload_json,'$.representative_validation_id')
+      WHERE f.classification='confirmed_vulnerability' ORDER BY f.finding_id`).all() as PocFindingRow[];
+  }
+
+  private pocTaskInput(db: Database.Database, row: PocFindingRow, targetRepo: string): Record<string, unknown> {
+    const coverage = JSON.parse(row.coverage_json) as Record<string, unknown>;
+    const findingPayload = JSON.parse(row.finding_payload) as Record<string, unknown>;
+    const validation = row.validation_payload ? JSON.parse(row.validation_payload) as Record<string, unknown> : {};
+    const producers = new Set<string>();
+    if (row.validation_task_id) {
+      producers.add(row.validation_task_id);
+      const validationInput = db.prepare("SELECT input_json FROM tasks WHERE task_id=?").get(row.validation_task_id) as { input_json: string } | undefined;
+      const validationInputDocument = validationInput ? JSON.parse(validationInput.input_json) as Record<string, unknown> : {};
+      const inherited = Array.isArray(validationInputDocument.inherited_evidence_task_ids) ? validationInputDocument.inherited_evidence_task_ids.map(String) : [];
+      for (const id of inherited) producers.add(id);
+    }
+    const producerTaskIds = [...producers];
+    const evidenceRows = producerTaskIds.length ? db.prepare(`SELECT DISTINCT local_evidence_id,kind,source,location,json_extract(payload_json,'$.summary') summary
+      FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string; kind: string; source: string; location: string | null; summary: string | null }[] : [];
+    return {
+      verification_scope: { target_repo: targetRepo, seed_symbols: Array.isArray(coverage.entry_symbols_checked) ? coverage.entry_symbols_checked : [] },
+      finding: { finding_id: row.finding_id, root_cause_key: row.root_cause_key, title: row.title, severity: row.severity, cwe: row.cwe, impact: row.impact, representative_validation_id: findingPayload.representative_validation_id ?? null },
+      validation, operation_group: JSON.parse(row.group_payload), entry: JSON.parse(row.entry_payload),
+      inherited_evidence: evidenceRows.map((item) => ({ evidence_id: item.local_evidence_id, kind: item.kind, source: item.source, summary: item.summary ?? "", location: item.location })),
+      inherited_evidence_ids: evidenceRows.map((item) => item.local_evidence_id), inherited_evidence_task_ids: producerTaskIds,
+    };
+  }
+
+  /** Insert or refresh the PoC task for one finding; a completed artifact whose representative validation changed is requeued for regeneration. */
+  private schedulePocForFinding(db: Database.Database, findingId: string): { scheduled: boolean; reused: boolean; repaired: boolean } {
+    const row = this.pocFindingRows(db).find((item) => item.finding_id === findingId);
+    if (!row) return { scheduled: false, reused: false, repaired: false };
+    const key = `poc:${findingId}`;
+    const targetRepo = (db.prepare("SELECT target_repo FROM runs").get() as { target_repo: string }).target_repo;
+    const input = this.pocTaskInput(db, row, targetRepo);
+    const existing = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
+    let repaired = false;
+    if (existing?.status === "completed") {
+      const storedInput = JSON.parse(String(existing.input_json)) as Record<string, unknown>;
+      const storedRepresentative = String(((storedInput.finding as Record<string, unknown> | undefined) ?? {}).representative_validation_id ?? "");
+      const currentRepresentative = String((JSON.parse(row.finding_payload) as Record<string, unknown>).representative_validation_id ?? "");
+      if (storedRepresentative === currentRepresentative) return { scheduled: false, reused: false, repaired: false };
+      const pocs = db.prepare("SELECT poc_id FROM poc_artifacts WHERE finding_id=?").all(findingId) as { poc_id: string }[];
+      for (const poc of pocs) db.prepare("DELETE FROM evidence_refs WHERE owner_type='poc_artifact' AND owner_id=?").run(poc.poc_id);
+      db.prepare("DELETE FROM poc_artifacts WHERE finding_id=?").run(findingId);
+      db.prepare("UPDATE tasks SET status='queued',attempts=0,error='poc_representative_changed',result_json=NULL,input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
+      this.event(db, "poc_artifact_repair", String(existing.task_id), { finding_id: findingId });
+      repaired = true;
+    } else if (!existing) {
+      db.prepare("INSERT INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,created_at,updated_at) VALUES (?,?,?,?,?,'queued',0,?,?,?)").run(stableId("TASK", this.runIdFrom(db), key), this.runIdFrom(db), key, "poc_generation", row.entry_id, canonicalJson(input), now(), now());
+    } else if (existing.status === "queued") {
+      db.prepare("UPDATE tasks SET input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
+    }
+    const current = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
+    const reused = current && current.status === "queued" ? this.tryReusePoc(db, current, input) : false;
+    return { scheduled: !existing, reused, repaired };
+  }
+
+  private tryReusePoc(db: Database.Database, task: Record<string, unknown>, input: Record<string, unknown>): boolean {
+    const run = db.prepare("SELECT audit_scope_json FROM runs").get() as { audit_scope_json: string };
+    const scope = JSON.parse(run.audit_scope_json) as Record<string, unknown>;
+    if (scope.mode !== "incremental") return false;
+    const entry = db.prepare("SELECT candidate_key,payload_json FROM entries WHERE entry_id=?").get(task.subject_id) as { candidate_key: string; payload_json: string } | undefined;
+    if (!entry || (JSON.parse(entry.payload_json) as Record<string, unknown>).incremental_reused !== true) return false;
+    let document: Record<string, unknown>;
+    try { document = JSON.parse(readFileSync(this.paths.incremental.baselinePocs, "utf8")) as Record<string, unknown>; }
+    catch { return false; }
+    const items = Array.isArray(document.items) ? document.items as Record<string, unknown>[] : [];
+    const rootCauseKey = String((input.finding as Record<string, unknown>).root_cause_key);
+    const group = db.prepare("SELECT payload_json FROM operation_groups WHERE group_id=?").get(rootCauseKey) as { payload_json: string } | undefined;
+    if (!group) return false;
+    const currentFingerprint = validationGroupFingerprint(JSON.parse(group.payload_json));
+    const snapshot = items.find((item) => String(item.group_fingerprint) === currentFingerprint);
+    if (!snapshot || !snapshot.result || typeof snapshot.result !== "object") return false;
+    try {
+      db.transaction(() => {
+        const candidate = structuredClone(snapshot.result as Record<string, unknown>);
+        candidate.task_id = task.task_id; candidate.finding_id = String((input.finding as Record<string, unknown>).finding_id);
+        const normalized = normalizePocSubmission(candidate);
+        validateSubmissionSchema("poc_generation", normalized);
+        this.ingestPoc(db, task, 0, normalized);
+        db.prepare("UPDATE tasks SET status='completed',attempts=0,result_json=?,error=NULL,updated_at=? WHERE task_id=?").run(canonicalJson(normalized), now(), task.task_id);
+        this.event(db, "poc_result_reused", String(task.task_id), { root_cause_key: rootCauseKey });
+      })();
+      return true;
+    } catch (error) {
+      this.event(db, "poc_reuse_rejected", String(task.task_id), { root_cause_key: rootCauseKey, error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  }
+
   private ingestPoc(db: Database.Database, task: Record<string, unknown>, attempt: number, candidate: Record<string, unknown>): void {
     const input = JSON.parse(String(task.input_json)) as Record<string, unknown>;
     const finding = (input.finding as Record<string, unknown> | undefined) ?? {};
@@ -715,7 +717,7 @@ export class AuditStore {
     });
     const pocId = stableId("POC", task.task_id);
     db.prepare("INSERT INTO poc_artifacts VALUES (?,?,?,?,?,?,?)").run(pocId, this.runIdFrom(db), String(finding.finding_id), task.task_id, String(candidate.entry_type), canonicalJson(candidate), now());
-    this.addRefs(db, "poc_artifact", pocId, [...refs(candidate), ...(Array.isArray(candidate.prerequisites) ? [] : [])], evidence);
+    this.addRefs(db, "poc_artifact", pocId, refs(candidate), evidence);
   }
 
   private rebuildFinding(db: Database.Database, rootCause: string): { finding_id: string; representative_validation_id: string } | undefined {
@@ -728,10 +730,10 @@ export class AuditStore {
     parsed.sort((left, right) => (rank[String(right.value.severity)] ?? 0) - (rank[String(left.value.severity)] ?? 0) || left.id.localeCompare(right.id));
     const representative = parsed[0]!; const group = db.prepare("SELECT title FROM operation_groups WHERE group_id=?").get(rootCause) as { title: string };
     const findingId = stableId("FIND", this.runIdFrom(db), rootCause);
-    const payload = { root_cause_key: rootCause, title: group.title, severity: representative.value.severity, cwe: representative.value.cwe, impact: representative.value.impact, poc: representative.value.poc, representative_validation_id: representative.id, validation_ids: candidates.map((row) => row.validation_id) };
-    db.prepare(`INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,root_cause_key) DO UPDATE SET
-      title=excluded.title,classification=excluded.classification,severity=excluded.severity,cwe=excluded.cwe,impact=excluded.impact,poc=excluded.poc,payload_json=excluded.payload_json`).run(
-      findingId, this.runIdFrom(db), rootCause, group.title, "confirmed_vulnerability", representative.value.severity, representative.value.cwe, representative.value.impact, representative.value.poc, canonicalJson(payload), now(),
+    const payload = { root_cause_key: rootCause, title: group.title, severity: representative.value.severity, cwe: representative.value.cwe, impact: representative.value.impact, representative_validation_id: representative.id, validation_ids: candidates.map((row) => row.validation_id) };
+    db.prepare(`INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,root_cause_key) DO UPDATE SET
+      title=excluded.title,classification=excluded.classification,severity=excluded.severity,cwe=excluded.cwe,impact=excluded.impact,payload_json=excluded.payload_json`).run(
+      findingId, this.runIdFrom(db), rootCause, group.title, "confirmed_vulnerability", representative.value.severity, representative.value.cwe, representative.value.impact, canonicalJson(payload), now(),
     );
     const insertCause = db.prepare("INSERT OR IGNORE INTO finding_causes VALUES (?,?)"); for (const candidate of candidates) insertCause.run(findingId, candidate.validation_id);
     return { finding_id: findingId, representative_validation_id: representative.id };
@@ -891,6 +893,7 @@ export class AuditStore {
         // Resuming a database created by an older build must migrate a queued
         // entry-wide validation batch before claim() can pick it up again.
         this.ensureValidationTasks(db);
+        this.ensurePocTasks(db);
         this.event(db, "run_resumed", this.runIdFrom(db), { previous_status: status, reclaimed, retried });
         return { run_id: this.runIdFrom(db), previous_status: status, status: "running", reclaimed_tasks: reclaimed, retried_tasks: retried };
       })();

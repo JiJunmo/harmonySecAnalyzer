@@ -46,7 +46,7 @@ function validation(task: Record<string, any>): Record<string, unknown> {
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence_refs: ["EV-1"] },
       security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence_refs: ["EV-1"] },
       exploitability: sixDimensions(), effect_chain: effectChain(),
-      counter_evidence: [], impact: "private data disclosure", severity: "high", cwe: "CWE-89", poc: "demo://x", evidence_refs: ["EV-1"],
+      counter_evidence: [], impact: "private data disclosure", severity: "high", cwe: "CWE-89", evidence_refs: ["EV-1"],
     }],
   };
 }
@@ -176,7 +176,7 @@ describe("audit domain invariants", () => {
       task_id: "TASK-1", entry_id: "PE-1", evidence: [], validations: [{
         group_id: "GRP-1", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability",
         security_boundary: { violation: true }, exploitability: sixDimensions({}, ["EV-1"]), effect_chain: effectChain(["EV-1"]),
-        impact: "private data disclosure", severity: "high", cwe: "CWE-89", poc: "demo://x",
+        impact: "private data disclosure", severity: "high", cwe: "CWE-89",
       }],
     };
     expect(() => validateExploitabilitySubmission(inheritedOnly, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set(["EV-1"]) }))
@@ -185,13 +185,13 @@ describe("audit domain invariants", () => {
 
   it("rejects DoS confirmations without availability semantics", () => {
     const group = { group_id: "GRP-DOS", capability_id: "CAP-DOS-001" };
-    const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [validationEvidence], validations: [{ group_id: "GRP-DOS", capability_id: "CAP-DOS-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "crash", severity: "high", cwe: "CWE-400", poc: "repeat" }] };
+    const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [validationEvidence], validations: [{ group_id: "GRP-DOS", capability_id: "CAP-DOS-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "crash", severity: "high", cwe: "CWE-400" }] };
     expect(() => validateExploitabilitySubmission(candidate, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() })).toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "DOS_SEMANTIC_MISMATCH" }));
   });
 
   it("INV-PRINCIPAL validates deterministic cross-component identity", () => {
     const group = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", scope: "cross_component", principal_state: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_binding: "replaced_by_caller" } };
-    const validation = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "impact", severity: "high", cwe: "CWE-441", poc: "poc", principal_analysis: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_bound_to_observed_principal: false, delegation_risk: true } };
+    const validation = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "impact", severity: "high", cwe: "CWE-441", principal_analysis: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_bound_to_observed_principal: false, delegation_risk: true } };
     const candidate = { task_id: "TASK-1", entry_id: "PE-1", evidence: [validationEvidence], validations: [validation] };
     expect(() => validateExploitabilitySubmission(candidate, { taskId: "TASK-1", entryId: "PE-1", groups: [group], inheritedEvidence: new Set() })).not.toThrow();
     const invalid = structuredClone(candidate); (invalid.validations[0]!.principal_analysis as Record<string, unknown>).delegation_risk = false;

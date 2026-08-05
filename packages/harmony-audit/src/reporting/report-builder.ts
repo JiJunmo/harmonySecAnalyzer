@@ -21,7 +21,9 @@ export function collectCoverageGaps(db: Database.Database): CoverageGap[] {
   const gaps: CoverageGap[] = [];
   // A terminal validation task is represented by its missing operation group(s)
   // below. Counting the task as well would report the same root cause twice.
-  for (const task of db.prepare("SELECT task_id,kind,subject_id,attempts,error FROM tasks WHERE status='exhausted' AND kind!='exploitability_validation' ORDER BY task_id").all() as Row[]) gaps.push({ kind: "exhausted_task", subject_id: String(task.task_id), details: task });
+  // PoC generation is a delivery enhancement, not a gate: an exhausted poc task
+  // leaves the run complete and surfaces as "未生成 PoC" in the finding report.
+  for (const task of db.prepare("SELECT task_id,kind,subject_id,attempts,error FROM tasks WHERE status='exhausted' AND kind NOT IN ('exploitability_validation','poc_generation') ORDER BY task_id").all() as Row[]) gaps.push({ kind: "exhausted_task", subject_id: String(task.task_id), details: task });
   for (const row of db.prepare("SELECT s.entry_id,s.coverage_json FROM semantic_analyses s ORDER BY s.entry_id").all() as { entry_id: string; coverage_json: string }[]) {
     const coverage = object(parse(row.coverage_json)); const unresolved = Array.isArray(coverage.unresolved_targets) ? coverage.unresolved_targets : [];
     if (coverage.entry_status === "uncertain") gaps.push({ kind: "uncertain_entry", subject_id: row.entry_id, details: coverage.entry_notes ?? [] });
@@ -73,7 +75,7 @@ export function buildReportModel(db: Database.Database, status: "complete" | "co
   const validations: Row[] = (db.prepare("SELECT validation_id,task_id,group_id,classification,capability_id,payload_json FROM validation_results ORDER BY validation_id").all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson) }; });
   const validationByGroup = new Map(validations.map((validation) => [String(validation.group_id), validation]));
   for (const group of groups) { const validation = validationByGroup.get(String(group.group_id)); group.classification = validation?.classification ?? "verification_incomplete"; group.validation = validation ?? null; }
-  const findings: Row[] = (db.prepare("SELECT finding_id,root_cause_key,title,classification,severity,cwe,impact,poc,payload_json FROM findings ORDER BY finding_id").all() as Row[]).map((row) => {
+  const findings: Row[] = (db.prepare("SELECT finding_id,root_cause_key,title,classification,severity,cwe,impact,payload_json FROM findings ORDER BY finding_id").all() as Row[]).map((row) => {
     const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson),
       causes: (db.prepare("SELECT validation_id FROM finding_causes WHERE finding_id=? ORDER BY validation_id").all(row.finding_id) as { validation_id: string }[]).map((cause) => cause.validation_id) };
   });

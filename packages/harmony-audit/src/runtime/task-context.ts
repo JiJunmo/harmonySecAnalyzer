@@ -98,6 +98,7 @@ export function validationTaskInput(db: Database.Database, raw: Row, entryId: st
       dimensions_require_status_reason_evidence_level_and_refs: true,
       confirmed_effect_chain: ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
       confirmed_effect_chain_requires_fresh_validation_evidence: true,
+      poc_produced_by_later_phase: true,
     },
     principal_contracts: groups.filter((group) => group.scope === "cross_component").map((group) => {
       const state = (group.principal_state as Row | undefined) ?? {};
@@ -147,11 +148,14 @@ export function pocTaskInput(db: Database.Database, raw: Row, entryId: string): 
       seed_files: [...new Set([...locations].map(sourceFile))].sort(),
       seed_symbols: strings((raw.verification_scope as Row | undefined)?.seed_symbols),
     },
+    inherited_evidence: Array.isArray(raw.inherited_evidence) ? raw.inherited_evidence as Row[] : [],
     output_contract: {
       task_unit: "one deterministic PoC generation unit for one confirmed finding",
       entry_type_constraint: "entry_type 必须来自 allowed_entry_types",
       trigger_kind: ["adb_shell", "ability_want", "common_event", "ipc_client", "provider_query", "web_navigation", "jsbridge_call", "network", "crypto", "archive", "distributed", "generic"],
-      forbidden_outputs: ["classification", "exploitability", "severity", "cwe"],
+      forbidden_outputs: ["classification", "exploitability", "severity", "cwe", "impact"],
+      form_selection: "受控值到敏感操作的完整触发链能用 hdc shell aa start 命令行表达时选 shell；需要应用上下文/复杂参数/回调/内部链路时选 arkts 并附最小工程复现步骤",
+      self_verification_required: "code/trigger.payload 引用的应用内符号必须逐一用 atlas 核验并写回 symbol_refs 与证据",
     },
   };
 }

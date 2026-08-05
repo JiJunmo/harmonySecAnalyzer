@@ -28,7 +28,7 @@ function confirmed(groupInput: Record<string, any>): Record<string, unknown> {
     security_boundary: { type: "data_owner", expected_boundary: "private records remain isolated", violation: true, reason: "input changes query structure", evidence_refs: [] },
     ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence_refs: [] } } : {}),
     exploitability: sixDimensions(), effect_chain: effectChain(),
-    counter_evidence: [], impact: "读取私有记录", severity: cross ? "critical" : "high", cwe: "CWE-89", poc: "demo://query?q=x", evidence_refs: [],
+    counter_evidence: [], impact: "读取私有记录", severity: cross ? "critical" : "high", cwe: "CWE-89", evidence_refs: [],
   };
 }
 
@@ -52,14 +52,6 @@ describe("deterministic reporting", () => {
     submittedValidations[0]!.principal_analysis.delegation_risk = false;
     const result = { task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "confirmed", validations: submittedValidations, evidence: [validationEvidence] };
     expect(store.reconcile(validationTask!.task_id, validationTask!.attempt, result)).toMatchObject({ accepted: true });
-    const [pocTask] = (await store.claim(5)).tasks;
-    expect(pocTask!.kind).toBe("poc_generation");
-    expect(store.reconcile(pocTask!.task_id, pocTask!.attempt, {
-      task_id: pocTask!.task_id, finding_id: String(pocTask!.input.finding.finding_id), entry_type: "want",
-      trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.QUERY", uri: "demo://query?q=x" } },
-      language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://query?q=x' } })",
-      prerequisites: [], expected_observation: "返回私有记录", limitations: "未在真机验证", evidence: [], evidence_refs: [],
-    })).toMatchObject({ accepted: true });
     const db = new Database(store.paths.db);
     expect((db.prepare("SELECT COUNT(*) n FROM findings").get() as { n: number }).n).toBe(1);
     expect((db.prepare("SELECT COUNT(*) n FROM finding_causes").get() as { n: number }).n).toBe(1);
@@ -71,8 +63,20 @@ describe("deterministic reporting", () => {
     });
     db.close();
 
+    const [pocTask] = (await store.claim(5)).tasks.filter((task) => task.kind === "poc_generation");
+    expect(pocTask!.input.finding).toMatchObject({ severity: "critical", cwe: "CWE-89" });
+    expect(pocTask!.input.inherited_evidence).toEqual([expect.objectContaining({ evidence_id: "EV-V", summary: "六维阶段重新读取并核验完整效果链" })]);
+    expect(store.reconcile(pocTask!.task_id, pocTask!.attempt, {
+      task_id: pocTask!.task_id, finding_id: String((pocTask!.input.finding as Record<string, any>).finding_id),
+      entry_type: "want", trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.VIEW", uri: "demo://query?q=x" } },
+      language: "shell", code: "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://query?q=x'",
+      prerequisites: ["安装 debug 包"], expected_observation: "返回私有记录", limitations: "未在真机验证",
+      execution_hint: { step_by_step: ["安装 debug 包", "执行上述命令", "观察是否返回私有记录"], device_required: "emulator", network_required: false },
+      symbol_refs: [], evidence: [], evidence_refs: [],
+    })).toMatchObject({ accepted: true });
+
     const report = await store.finalize();
-    expect((report.summary as Record<string, unknown>)).toMatchObject({ findings: 1, operation_groups: 2, validations: 1, coverage_gaps: 0 });
+    expect((report.summary as Record<string, unknown>)).toMatchObject({ findings: 1, operation_groups: 2, validations: 1, poc_artifacts: 1, coverage_gaps: 0 });
     expect(report).toMatchObject({ schema_version: 2, project: { schema_version: 2 } });
     expect(report.component_results).toEqual(expect.arrayContaining([expect.objectContaining({ component_name: "A", function_summary: "checked" })]));
     expect((report.findings as Record<string, unknown>[])[0]).toMatchObject({ severity: "critical", causes: [expect.any(String)] });
@@ -84,6 +88,9 @@ describe("deterministic reporting", () => {
     expect(JSON.parse(after[3]!).rows).toHaveLength(2);
     expect(after[1]).toContain("## 2. 需要处置的安全发现");
     expect(after[1]).toContain("#### 六维有效性验证");
+    expect(after[1]).toContain("#### 验证方式 / PoC");
+    expect(after[1]).toContain("逐步复现");
+    expect(after[1]).toContain("hdc shell aa start");
     expect(after[1]).toContain("## 3. 组件审计结果");
     expect(after[2]).toContain("data-view=\"components\"");
     expect(after[2]).toContain("六维有效性验证");

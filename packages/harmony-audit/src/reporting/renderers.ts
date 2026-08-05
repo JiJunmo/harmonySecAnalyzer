@@ -22,6 +22,8 @@ const labels: Record<string, string> = {
   absent: "未发现有效防护", bypassable: "防护可绕过", effective: "防护有效", unknown: "无法确认",
   direct: "直接证据", derived: "基于源码推导", hypothesis: "待验证假设",
   type_check: "类型检查", publisher_restriction: "发布者限制", permission_check: "权限检查", path_check: "路径检查",
+  emulator: "模拟器", simulator: "模拟器", physical_device: "真机", none: "无需设备",
+  atlas_symbol: "atlas 符号核验", evidence_location: "证据位置引用",
 };
 const label = (value: unknown) => labels[String(value ?? "")] ?? String(value ?? "-");
 const dimensionStatus = (value: unknown): string => {
@@ -61,12 +63,6 @@ function pocArtifact(finding: Row): Row {
   return Object.keys(obj(artifact.payload)).length ? obj(artifact.payload) : artifact;
 }
 
-function pocCode(finding: Row): string {
-  const artifact = pocArtifact(finding); const code = String(artifact.code ?? "");
-  if (code) return `入口类型：${String(artifact.entry_type ?? "-")}\n触发方式：${String(obj(artifact.trigger).kind ?? "-")}\n\n${code}`;
-  return String(finding.poc || "");
-}
-
 function pocMarkdown(finding: Row): string {
   const artifact = pocArtifact(finding);
   const preamble: string[] = [];
@@ -81,13 +77,20 @@ function pocMarkdown(finding: Row): string {
   if (preamble.length) preamble.push("");
   const expected = String(artifact.expected_observation ?? "");
   const limitations = String(artifact.limitations ?? "");
+  const hint = obj(artifact.execution_hint);
+  const steps = strings(hint.step_by_step);
+  const device = String(hint.device_required ?? "");
+  const symbolRefs = rows(artifact.symbol_refs).map((item) => `\`${codeMd(item.symbol)}\`（${label(item.verified_by)}）`);
   const body = [
     ...preamble,
     expected ? `**预期现象**：${inlineMd(expected)}` : "",
     limitations ? `> 复现限制：${inlineMd(limitations)}` : "",
-  ].filter((line) => line.length);
-  const code = String(artifact.code ?? "") || String(finding.poc || "");
-  return [...body, code ? `\`\`\`${codeMd(artifact.language || "typescript")}\n${code}\n\`\`\`` : "未提供 PoC"].join("\n");
+    device && device !== "none" ? `> 复现环境：${label(device)}` : "",
+    steps.length ? ["**逐步复现**：", ...steps.map((step, index) => `${index + 1}. ${inlineMd(step)}`)] : [],
+    symbolRefs.length ? `- 引用核验：${symbolRefs.join("、")}` : "",
+  ].flat().filter((line) => typeof line === "string" && line.length);
+  const code = String(artifact.code ?? "");
+  return [...body, code ? `\`\`\`${codeMd(artifact.language || "typescript")}\n${code}\n\`\`\`` : "未生成 PoC"].join("\n");
 }
 
 function recommendations(finding: Row, group: Row): string[] {
@@ -257,7 +260,11 @@ export function renderHtml(report: Row): string {
     const pocMeta = [String(poc.entry_type ?? ""), String(pocTrigger.kind ?? ""), String(poc.language ?? "")].filter(Boolean).map((item) => `<code>${escapeHtml(item)}</code>`).join(" ");
     const pocPrereqs = strings(poc.prerequisites).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
     const pocExpected = String(poc.expected_observation ?? ""); const pocLimitations = String(poc.limitations ?? "");
-    const pocHtml = Object.keys(poc).length ? `<details open><summary>查看验证方式 / PoC <b class="badge ${escapeHtml(finding.severity)}">${escapeHtml(poc.entry_type || "PoC")}</b></summary><dl class="kv">${pocMeta ? `<dt>入口 / 触发 / 语言</dt><dd>${pocMeta}</dd>` : ""}${pocExpected ? `<dt>预期现象</dt><dd>${escapeHtml(pocExpected)}</dd>` : ""}${pocLimitations ? `<dt>复现限制</dt><dd>${escapeHtml(pocLimitations)}</dd>` : ""}</dl>${pocPrereqs ? `<h5>前置条件</h5><ul class="notes">${pocPrereqs}</ul>` : ""}<pre><code>${escapeHtml(pocCode(finding))}</code></pre></details>` : `<details><summary>查看验证方式 / PoC</summary><pre><code>${escapeHtml(finding.poc || "未提供 PoC")}</code></pre></details>`;
+    const pocHint = obj(poc.execution_hint); const pocSteps = strings(pocHint.step_by_step).map((step, index) => `<li>${escapeHtml(step)}</li>`).join("");
+    const pocDevice = String(pocHint.device_required ?? "");
+    const pocSymbols = rows(poc.symbol_refs).map((item) => `<code>${escapeHtml(item.symbol)}</code><small>${escapeHtml(label(item.verified_by))}</small>`).join(" ");
+    const pocCodeText = String(poc.code ?? "");
+    const pocHtml = pocCodeText ? `<details open><summary>查看验证方式 / PoC <b class="badge ${escapeHtml(finding.severity)}">${escapeHtml(poc.entry_type || "PoC")}</b></summary><dl class="kv">${pocMeta ? `<dt>入口 / 触发 / 语言</dt><dd>${pocMeta}</dd>` : ""}${pocExpected ? `<dt>预期现象</dt><dd>${escapeHtml(pocExpected)}</dd>` : ""}${pocLimitations ? `<dt>复现限制</dt><dd>${escapeHtml(pocLimitations)}</dd>` : ""}${pocDevice && pocDevice !== "none" ? `<dt>复现环境</dt><dd>${escapeHtml(label(pocDevice))}</dd>` : ""}</dl>${pocPrereqs ? `<h5>前置条件</h5><ul class="notes">${pocPrereqs}</ul>` : ""}${pocSteps ? `<h5>逐步复现</h5><ol class="notes">${pocSteps}</ol>` : ""}${pocSymbols ? `<h5>引用核验</h5><div class="facts">${pocSymbols}</div>` : ""}<pre><code>${escapeHtml(pocCodeText)}</code></pre></details>` : `<details><summary>查看验证方式 / PoC</summary><pre><code>未生成 PoC</code></pre></details>`;
     return `<article class="finding" data-search="${escapeHtml([finding.title, finding.severity, finding.cwe, group.capability_id].join(" ").toLowerCase())}"><header><span class="finding-index">${String(index + 1).padStart(2, "0")}</span><div><p>${badge(finding.classification || validation.classification)} ${badge(finding.severity)}</p><h3>${escapeHtml(finding.title)}</h3><small>${escapeHtml(finding.finding_id)} · ${escapeHtml(finding.cwe)} · ${escapeHtml(group.capability_id || validation.capability_id)}</small></div></header><div class="finding-body"><div class="callout danger"><b>安全影响</b><p>${escapeHtml(finding.impact)}</p></div><div class="grid-2"><section><h4>根因与敏感操作</h4><dl class="kv"><dt>敏感操作</dt><dd><code>${escapeHtml(operation.body || "-")}</code></dd><dt>源码位置</dt><dd><code>${escapeHtml(operation.location || "-")}</code></dd><dt>业务用途</dt><dd>${escapeHtml(intent.declared_or_inferred_purpose || obj(payload.context).intended_behavior || "-")}</dd><dt>防护判定</dt><dd>${escapeHtml(label(assessment.security_check_outcome))}</dd></dl></section><section><h4>安全边界</h4><dl class="kv"><dt>预期边界</dt><dd>${escapeHtml(boundary.expected_boundary || "-")}</dd><dt>突破原因</dt><dd>${escapeHtml(boundary.reason || "-")}</dd><dt>来源主体</dt><dd>${escapeHtml(principal.origin_principal || "-")}</dd><dt>权限使用</dt><dd>${escapeHtml(principal.authority_used || "-")}</dd></dl></section></div><h4>六维有效性验证</h4><div class="dimensions">${dimensions}</div>${checks ? `<h4>已识别防护事实</h4><div class="facts">${checks}</div>` : ""}${evidenceHtml ? `<h4>源码证据链</h4><div class="facts">${evidenceHtml}</div>` : ""}<h4>修复建议</h4><ul class="notes">${fixes}</ul>${pocHtml}</div></article>`;
   }).join("") : '<div class="empty"><strong>未发现需要处置的安全问题</strong><p>请同时查看组件审计结果和覆盖缺口。</p></div>';
 
