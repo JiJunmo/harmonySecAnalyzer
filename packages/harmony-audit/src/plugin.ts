@@ -1,5 +1,6 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import fg from "fast-glob";
 import {
@@ -77,6 +78,35 @@ type ArtifactId = keyof typeof artifactDefinitions;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+// Execution settings (agent pool capacity, model) are run-level policy, not audit
+// facts, so they live in a sidecar next to run.db instead of the schema. Resume
+// restores them so a recovered run keeps the concurrency it was created with.
+const RUN_EXECUTION_SETTINGS_FILE = "run-capacity.json";
+
+interface RunExecutionSettings {
+  readonly schema_version: number;
+  readonly capacity?: number;
+  readonly model?: string;
+}
+
+function persistRunExecutionSettings(runDirectory: string, settings: { capacity: number; model?: string | undefined }): void {
+  try {
+    writeFileSync(join(runDirectory, RUN_EXECUTION_SETTINGS_FILE), `${JSON.stringify({ schema_version: 1, ...settings }, null, 2)}\n`, "utf8");
+  } catch { /* Persisting settings must never fail run creation. */ }
+}
+
+function readRunExecutionSettings(runDirectory: string): RunExecutionSettings | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(runDirectory, RUN_EXECUTION_SETTINGS_FILE), "utf8")) as Partial<RunExecutionSettings>;
+    if (parsed?.schema_version !== 1) return undefined;
+    return {
+      schema_version: 1,
+      ...(typeof parsed.capacity === "number" ? { capacity: parsed.capacity } : {}),
+      ...(typeof parsed.model === "string" && parsed.model ? { model: parsed.model } : {}),
+    };
+  } catch { return undefined; }
 }
 
 function stringList(value: unknown, field: string): string[] {
@@ -256,6 +286,9 @@ class HarmonyAuditPluginRuntime implements PluginRuntime {
     let execution!: Promise<void>;
     const orchestrator = this.#dependencies.createOrchestrator(this.#options(payload.capacity!, payload.model, (run) => {
       createdDirectory = run.runDirectory;
+      persistRunExecutionSettings(run.runDirectory, {
+        capacity: payload.capacity!, model: payload.model ?? this.#config.model,
+      });
       resolveCreated(this.#snapshot(AuditStore.openExisting(run.runDirectory)));
       queueMicrotask(() => this.#executions.set(run.runDirectory, execution));
     }));
@@ -359,10 +392,15 @@ class HarmonyAuditPluginRuntime implements PluginRuntime {
     }
     if (action.name === "resume") {
       if (this.#executions.has(directory)) throw new Error("harmony_audit_run_execution_active");
+      // Explicit action parameters win; otherwise restore the settings the run
+      // was created with, falling back to the plugin defaults for legacy runs.
+      const stored = readRunExecutionSettings(directory);
       const requestedCapacity = isRecord(action.payload) ? action.payload.capacity : undefined;
-      const runCapacity = capacity(requestedCapacity, this.#config.capacity ?? HARMONY_DEFAULT_AGENT_CAPACITY);
+      const runCapacity = capacity(requestedCapacity ?? stored?.capacity, this.#config.capacity ?? HARMONY_DEFAULT_AGENT_CAPACITY);
+      const requestedModel = isRecord(action.payload) && typeof action.payload.model === "string" && action.payload.model ? action.payload.model : undefined;
+      const runModel = requestedModel ?? stored?.model ?? this.#config.model;
       this.#preparing.add(directory);
-      const orchestrator = this.#dependencies.createOrchestrator(this.#options(runCapacity, this.#config.model));
+      const orchestrator = this.#dependencies.createOrchestrator(this.#options(runCapacity, runModel));
       const execution = Promise.resolve(orchestrator.resume(directory)).then(() => undefined).catch((error: unknown) => {
         try { store.markFailed(errorMessage(error)); } catch { /* Preserve the original execution error. */ }
         this.#context.logger.error("harmony audit resume failed", { run: directory, error: errorMessage(error) });

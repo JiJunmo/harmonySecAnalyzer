@@ -170,3 +170,44 @@ describe("HarmonyAuditPlugin adapter", () => {
     await runtime.dispose();
   });
 });
+
+  it("restores the original capacity and model when a run is resumed", async () => {
+    const root = await projectFixture();
+    const received: HarmonyAuditOptions[] = [];
+    const definition = createHarmonyAuditPlugin({
+      inspectReadiness: async () => ({ ready: true, checks: [], defaults: { capacity: 5, model: "test/audit-model" } }),
+      createOrchestrator: (options) => {
+        received.push(options);
+        return {
+          async run(context) {
+            const target = String(context.request.metadata?.target);
+            const store = await AuditStore.create(target, await profileProject(target));
+            options.onRunCreated?.({ runId: store.runId(), runDirectory: store.runDirectory, target });
+            return { runDirectory: store.runDirectory };
+          },
+          async resume(runDirectory) {
+            return AuditStore.openExisting(runDirectory).resume();
+          },
+        };
+      },
+    });
+    const runtime = await activatePlugin(definition, {
+      config: { atlasExecutable: "atlas-test", allowedRoots: [root], capacity: 5, model: "test/audit-model", eventPollIntervalMs: 10 },
+      sharedConfig: { pi: { agentDir: "/tmp/pi-agent", cwd: root }, mcp: { maxSessions: 5 }, skills: { roots: [] } },
+      signal: new AbortController().signal,
+      logger,
+    });
+
+    const created = await runtime.createRun({ requestId: "request-cap", payload: { target: root, capacity: 2, model: "test/strong-model" } });
+    expect(received[0]).toMatchObject({ capacity: 2, model: "test/strong-model" });
+
+    // Resume without explicit parameters restores the run's original settings.
+    await runtime.action(created.run, { name: "resume" });
+    expect(received[1]).toMatchObject({ capacity: 2, model: "test/strong-model" });
+
+    // Explicit action parameters still win over the stored settings.
+    await new Promise((done) => setTimeout(done, 5));
+    await runtime.action(created.run, { name: "resume", payload: { capacity: 4 } });
+    expect(received[2]).toMatchObject({ capacity: 4, model: "test/strong-model" });
+    await runtime.dispose();
+  });
