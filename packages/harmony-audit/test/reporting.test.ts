@@ -120,6 +120,9 @@ describe("deterministic reporting", () => {
     const [failedTask, successfulTask] = validationTasks;
     expect(store.reconcile(failedTask!.task_id, failedTask!.attempt, undefined, "model_failed")).toMatchObject({ status: "queued" });
     for (let retry = 0; retry < 2; retry += 1) {
+      const db = new Database(store.paths.db);
+      db.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(failedTask!.task_id);
+      db.close();
       const [task] = (await store.claim(1)).tasks;
       expect(task!.task_id).toBe(failedTask!.task_id);
       store.reconcile(task!.task_id, task!.attempt, undefined, "model_failed");

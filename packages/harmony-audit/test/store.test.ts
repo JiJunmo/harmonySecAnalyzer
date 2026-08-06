@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,8 +89,60 @@ describe("audit store", () => {
       },
     });
     store.reconcile(first!.task_id, first!.attempt, undefined, "SCHEMA_INVALID:category");
+    // A rejected task backs off before it may be claimed again; clear the gate to observe retry feedback.
+    const db = new Database(store.paths.db);
+    db.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(first!.task_id);
+    db.close();
     const [retry] = (await store.claim(1)).tasks;
     expect(await store.taskDocument(retry!)).toMatchObject({ previous_error: "SCHEMA_INVALID:category" });
+  });
+
+  it("backs off rejected tasks before the rolling pool may reclaim them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harmony-backoff-"));
+    await mkdir(join(root, "entry/src/main"), { recursive: true });
+    await writeFile(join(root, "entry/src/main/module.json5"), `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }] } }`);
+    const store = await AuditStore.create(root, await profileProject(root), { capabilities: ["CAP-FS-001"], components: ["A"] });
+    const [first] = (await store.claim(1)).tasks;
+    store.reconcile(first!.task_id, first!.attempt, undefined, "SCHEMA_INVALID:category");
+
+    // Not claimable while the backoff window is open.
+    expect((await store.claim(1)).tasks).toHaveLength(0);
+    const db = new Database(store.paths.db);
+    const gate = db.prepare("SELECT retry_after,status FROM tasks WHERE task_id=?").get(first!.task_id) as { retry_after: string | null; status: string };
+    expect(gate.status).toBe("queued");
+    expect(gate.retry_after).not.toBeNull();
+    expect(new Date(gate.retry_after!).getTime() - Date.now()).toBeGreaterThan(20_000);
+
+    // Once the gate passes the task is claimable again and the gate is cleared.
+    db.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(first!.task_id);
+    db.close();
+    const [retry] = (await store.claim(1)).tasks;
+    expect(retry!.task_id).toBe(first!.task_id);
+    const cleared = new Database(store.paths.db);
+    expect(cleared.prepare("SELECT retry_after FROM tasks WHERE task_id=?").get(first!.task_id)).toEqual({ retry_after: null });
+    cleared.close();
+  });
+
+  it("does not back off an exhausted task", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harmony-backoff-exhaust-"));
+    await mkdir(join(root, "entry/src/main"), { recursive: true });
+    await writeFile(join(root, "entry/src/main/module.json5"), `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }] } }`);
+    const store = await AuditStore.create(root, await profileProject(root), { capabilities: ["CAP-FS-001"], components: ["A"] });
+    const [first] = (await store.claim(1)).tasks;
+    store.reconcile(first!.task_id, first!.attempt, undefined, "model_failed");
+    const db = new Database(store.paths.db);
+    db.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(first!.task_id);
+    db.close();
+    const [second] = (await store.claim(1)).tasks;
+    store.reconcile(second!.task_id, second!.attempt, undefined, "model_failed");
+    const db2 = new Database(store.paths.db);
+    db2.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(first!.task_id);
+    db2.close();
+    const [third] = (await store.claim(1)).tasks;
+    expect(store.reconcile(third!.task_id, third!.attempt, undefined, "model_failed")).toMatchObject({ status: "exhausted" });
+    const final = new Database(store.paths.db);
+    expect(final.prepare("SELECT status,retry_after FROM tasks WHERE task_id=?").get(first!.task_id)).toEqual({ status: "exhausted", retry_after: null });
+    final.close();
   });
 
   it("normalizes capability domain and ordered fact edges before validation", async () => {

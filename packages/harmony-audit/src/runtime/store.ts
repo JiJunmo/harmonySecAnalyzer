@@ -35,6 +35,10 @@ import { canonicalJson, contentHash, stableId } from "./identity.js";
 import { pocTaskInput, semanticTaskInput, validationTaskInput } from "./task-context.js";
 
 const now = () => new Date().toISOString();
+/** Task-level retry backoff: a rejected task becomes claimable after attempt * this delay. */
+const RETRY_BACKOFF_MS = 30_000;
+/** Lease-expired tasks are reclaimed after a short delay so an unavailable model does not churn. */
+const LEASE_RECLAIM_BACKOFF_MS = 10_000;
 const rows = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
 const refs = (value: Record<string, unknown>): string[] => Array.isArray(value.evidence_refs) ? value.evidence_refs.filter((item): item is string => typeof item === "string") : [];
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -45,9 +49,9 @@ const executionTitle = (kind: string): string => kind === "component_semantic_an
 
 const schema = `
 PRAGMA foreign_keys=ON;
-CREATE TABLE schema_meta(version INTEGER PRIMARY KEY CHECK(version=3),contract_version TEXT NOT NULL,migrated_at TEXT NOT NULL);
+CREATE TABLE schema_meta(version INTEGER PRIMARY KEY CHECK(version=4),contract_version TEXT NOT NULL,migrated_at TEXT NOT NULL);
 CREATE TABLE runs(run_id TEXT PRIMARY KEY,target_repo TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('created','running','complete','complete_with_gaps','failed','cancelled')),error TEXT,project_model_version TEXT NOT NULL,audit_scope_json TEXT NOT NULL,resume_generation INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finalized_at TEXT);
-CREATE TABLE tasks(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),semantic_key TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('component_semantic_analysis','exploitability_validation','poc_generation')),subject_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','completed','exhausted','cancelled')),attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0),input_json TEXT NOT NULL,result_json TEXT,error TEXT,claimed_at TEXT,lease_expires_at TEXT,worker_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(run_id,semantic_key));
+CREATE TABLE tasks(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),semantic_key TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('component_semantic_analysis','exploitability_validation','poc_generation')),subject_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','completed','exhausted','cancelled')),attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0),input_json TEXT NOT NULL,result_json TEXT,error TEXT,retry_after TEXT,claimed_at TEXT,lease_expires_at TEXT,worker_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(run_id,semantic_key));
 CREATE TABLE analysis_units(component_id TEXT PRIMARY KEY,entry_id TEXT NOT NULL,input_json TEXT NOT NULL);
 CREATE TABLE entries(entry_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),component_id TEXT NOT NULL,candidate_key TEXT NOT NULL,payload_json TEXT NOT NULL,UNIQUE(run_id,candidate_key));
 CREATE TABLE entry_facets(facet_id TEXT PRIMARY KEY,entry_id TEXT NOT NULL REFERENCES entries(entry_id),facet_type TEXT NOT NULL,payload_sha256 TEXT NOT NULL,payload_json TEXT NOT NULL,UNIQUE(entry_id,facet_type,payload_sha256));
@@ -92,7 +96,7 @@ export class AuditStore {
   open(): Database.Database {
     const db = new Database(this.paths.db); db.pragma("foreign_keys = ON"); db.pragma("journal_mode = WAL"); db.pragma("busy_timeout = 30000");
     const version = (db.prepare("SELECT version FROM schema_meta").get() as { version: number } | undefined)?.version;
-    if (version !== 3) { db.close(); throw new AuditInvariantError("UNSUPPORTED_SCHEMA_VERSION", { version }); }
+    if (version !== 4) { db.close(); throw new AuditInvariantError("UNSUPPORTED_SCHEMA_VERSION", { version }); }
     return db;
   }
 
@@ -113,7 +117,7 @@ export class AuditStore {
     try {
       db.exec(schema);
       const stamp = now();
-      db.prepare("INSERT INTO schema_meta VALUES (?,?,?)").run(3, "audit-contract-v1", stamp);
+      db.prepare("INSERT INTO schema_meta VALUES (?,?,?)").run(4, "audit-contract-v1", stamp);
       const normalizedScope = { ...runScope, mode };
       db.prepare("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)").run(runId, resolve(target), "created", null, `project-model-v${model.schema_version}`, canonicalJson(normalizedScope), 0, stamp, stamp, null);
       const units = new Map<string, Record<string, unknown>[]>();
@@ -220,11 +224,11 @@ export class AuditStore {
         const queued = (db.prepare("SELECT COUNT(*) n FROM tasks WHERE status='queued'").get() as { n: number }).n;
         if (running === 0 && queued === 0) { this.ensureValidationTasks(db); this.ensurePocTasks(db); }
         const available = Math.max(0, Math.min(limit, HARMONY_MAX_AGENT_CAPACITY - running));
-        const selected = db.prepare("SELECT * FROM tasks WHERE status='queued' ORDER BY created_at,task_id LIMIT ?").all(available) as Record<string, unknown>[];
+        const selected = db.prepare("SELECT * FROM tasks WHERE status='queued' AND (retry_after IS NULL OR retry_after<=?) ORDER BY created_at,task_id LIMIT ?").all(now(), available) as Record<string, unknown>[];
         return selected.map((row) => {
           const attempt = Number(row.attempts) + 1; const stamp = now();
           const expires = new Date(Date.now() + leaseMs).toISOString();
-          db.prepare("UPDATE tasks SET status='running',attempts=?,claimed_at=?,lease_expires_at=?,worker_id=?,updated_at=? WHERE task_id=?").run(attempt, stamp, expires, workerId, stamp, row.task_id);
+          db.prepare("UPDATE tasks SET status='running',attempts=?,claimed_at=?,lease_expires_at=?,worker_id=?,retry_after=NULL,updated_at=? WHERE task_id=?").run(attempt, stamp, expires, workerId, stamp, row.task_id);
           return { task_id: String(row.task_id), kind: String(row.kind), attempt, input: JSON.parse(String(row.input_json)) } satisfies PoolTaskHandle;
         });
       })();
@@ -278,8 +282,11 @@ export class AuditStore {
 
   private rejectAttempt(db: Database.Database, task: Record<string, unknown>, attempt: number, error: string, code?: string): Record<string, unknown> {
     const status = attempt < 3 ? "queued" : "exhausted";
-    db.prepare("UPDATE tasks SET status=?,error=?,claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE task_id=?").run(status, error, now(), task.task_id);
-    this.event(db, "task_rejected", String(task.task_id), { attempt, status, error_code: code ?? null });
+    // A retryable rejection backs off so a rate-limited or failing model is not
+    // hammered by the rolling pool: attempt 1 waits 30s, attempt 2 waits 60s.
+    const retryAfter = status === "queued" ? new Date(Date.now() + attempt * RETRY_BACKOFF_MS).toISOString() : null;
+    db.prepare("UPDATE tasks SET status=?,error=?,retry_after=?,claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE task_id=?").run(status, error, retryAfter, now(), task.task_id);
+    this.event(db, "task_rejected", String(task.task_id), { attempt, status, error_code: code ?? null, retry_after: retryAfter });
     return { accepted: false, status, error, ...(code ? { error_code: code } : {}) };
   }
 
@@ -854,8 +861,9 @@ export class AuditStore {
       return db.transaction(() => {
         const expired = db.prepare("SELECT task_id,attempts FROM tasks WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=? ORDER BY task_id").all(at.toISOString()) as { task_id: string; attempts: number }[];
         for (const task of expired) {
-          db.prepare("UPDATE tasks SET status='queued',error='lease_expired',claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE task_id=?").run(now(), task.task_id);
-          this.event(db, "task_lease_recovered", task.task_id, { attempts: task.attempts });
+          const retryAfter = new Date(Date.now() + LEASE_RECLAIM_BACKOFF_MS).toISOString();
+          db.prepare("UPDATE tasks SET status='queued',error='lease_expired',retry_after=?,claimed_at=NULL,lease_expires_at=NULL,worker_id=NULL,updated_at=? WHERE task_id=?").run(retryAfter, now(), task.task_id);
+          this.event(db, "task_lease_recovered", task.task_id, { attempts: task.attempts, retry_after: retryAfter });
         }
         return expired.length;
       })();

@@ -208,6 +208,9 @@ describe("audit domain invariants", () => {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const [task] = (await store.claim(1)).tasks;
       store.reconcile(task!.task_id, task!.attempt, undefined, "model_failed");
+      const db = new Database(store.paths.db);
+      db.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(task!.task_id);
+      db.close();
     }
     const report = await store.finalize();
     expect((report.run as Record<string, unknown>).status).toBe("complete_with_gaps");

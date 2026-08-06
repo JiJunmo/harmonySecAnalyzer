@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { access, mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,10 @@ describe("run recovery lifecycle", () => {
     const store = await fixture(); const [stale] = (await store.claim(1, "crashed-worker", -1)).tasks;
     expect(store.recoverExpiredTasks()).toBe(1);
     expect(store.reconcile(stale!.task_id, stale!.attempt, semantic(stale as Record<string, any>))).toMatchObject({ accepted: false, ignored: true, error_code: "TASK_NOT_RUNNING" });
+    // A reclaimed lease backs off briefly before the pool may claim it again.
+    const db = new Database(store.paths.db);
+    db.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(stale!.task_id);
+    db.close();
     const [reclaimed] = (await store.claim(1, "replacement-worker")).tasks;
     expect(reclaimed).toMatchObject({ task_id: stale!.task_id, attempt: 2 });
   });

@@ -129,9 +129,15 @@ describe("poc generation phase", () => {
     const { store, pocTask } = await confirmedStore();
     expect(store.reconcile(pocTask.task_id, pocTask.attempt, poc(pocTask, { language: "shell", code: "startAbility({})" })))
       .toMatchObject({ accepted: false, status: "queued", error_code: "POC_SHELL_COMMAND_REQUIRED" });
+    const db0 = new Database(store.paths.db);
+    db0.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(pocTask.task_id);
+    db0.close();
     const [second] = (await store.claim(1)).tasks;
     expect(store.reconcile(second!.task_id, second!.attempt, poc(second as Record<string, any>, { trigger: { kind: "adb_shell", payload: { command: "ls" } } })))
       .toMatchObject({ accepted: false, status: "queued", error_code: "POC_ARKTS_TRIGGER_MISMATCH" });
+    const db1 = new Database(store.paths.db);
+    db1.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(second!.task_id);
+    db1.close();
     const [third] = (await store.claim(1)).tasks;
     expect(store.reconcile(third!.task_id, third!.attempt, poc(third as Record<string, any>, {
       language: "shell", trigger: { kind: "ability_want", payload: { uri: "demo://x" } },
@@ -226,8 +232,14 @@ describe("poc generation phase", () => {
   it("lets the run finalize without a poc artifact after the poc task is exhausted", async () => {
     const { store, pocTask } = await confirmedStore();
     store.reconcile(pocTask.task_id, pocTask.attempt, undefined, "model_failed");
+    const db0 = new Database(store.paths.db);
+    db0.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(pocTask.task_id);
+    db0.close();
     const [retry] = (await store.claim(1)).tasks;
     store.reconcile(retry!.task_id, retry!.attempt, undefined, "model_failed");
+    const db1 = new Database(store.paths.db);
+    db1.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(retry!.task_id);
+    db1.close();
     const [last] = (await store.claim(1)).tasks;
     store.reconcile(last!.task_id, last!.attempt, undefined, "model_failed");
     expect(store.status().tasks).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "poc_generation", status: "exhausted" })]));
