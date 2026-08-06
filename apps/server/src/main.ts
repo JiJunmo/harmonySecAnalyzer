@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -14,7 +15,10 @@ import {
 import { AssistantSessionService, LocalGatewayState, PluginHostService, type AssistantSubagentConfig, type LocalReliabilityConfig } from "@agent-platform/interface";
 import { createPluginWebServer } from "./server.js";
 
-const configPath = resolve(process.env.AGENT_PLATFORM_CONFIG ?? "agent-platform.json");
+// Explicit env wins; otherwise fall back to the repo-root legacy layout, then the
+// conventional config/ directory so a fresh checkout runs with zero environment.
+const explicitConfig = process.env.AGENT_PLATFORM_CONFIG;
+const configPath = resolve(explicitConfig ?? (existsSync(resolve("agent-platform.json")) ? "agent-platform.json" : "config/agent-platform.json"));
 const config = await loadConfig(configPath);
 const configRoot = dirname(configPath);
 const reliabilityConfig = configSection<LocalReliabilityConfig>(config, "reliability");
