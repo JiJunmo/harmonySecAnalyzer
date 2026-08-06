@@ -78,8 +78,7 @@ CREATE INDEX idx_tasks_status ON tasks(run_id,status,created_at);
 export interface RunPaths { root: string; db: string; tasks: string; reportJson: string; reportMarkdown: string; reportHtml: string; attackMatrixJson: string; incremental: ReturnType<typeof incrementalRunFiles>; }
 export interface AuditScope { readonly mode?: "full" | "capability" | "incremental"; readonly capabilities?: readonly string[]; readonly components?: readonly string[]; }
 interface PocFindingRow {
-  finding_id: string; root_cause_key: string; title: string; severity: string; cwe: string; impact: string; finding_payload: string;
-  entry_id: string; coverage_json: string; entry_payload: string; group_payload: string; validation_payload: string | null; validation_task_id: string | null;
+  finding_id: string; classification: string; finding_payload: string;
 }
 export interface AuditStoredEvent {
   readonly event_id: number;
@@ -601,94 +600,62 @@ export class AuditStore {
   }
 
   private pocFindingRows(db: Database.Database): PocFindingRow[] {
-    return db.prepare(`SELECT f.finding_id,f.root_cause_key,f.title,f.severity,f.cwe,f.impact,f.payload_json finding_payload,
-      s.entry_id,s.coverage_json,COALESCE(root_e.payload_json,e.payload_json) entry_payload,g.payload_json group_payload,
-      v.payload_json validation_payload,v.task_id validation_task_id
-      FROM findings f
-      JOIN operation_groups g ON g.group_id=f.root_cause_key
-      JOIN semantic_analyses s ON s.semantic_analysis_id=g.semantic_analysis_id
-      JOIN entries e ON e.entry_id=s.entry_id
-      LEFT JOIN cross_component_groups cg ON cg.local_group_id=g.group_id
-      LEFT JOIN component_paths cp ON cp.path_id=cg.path_id
-      LEFT JOIN entries root_e ON root_e.entry_id=cp.root_entry_id
-      LEFT JOIN validation_results v ON v.validation_id=json_extract(f.payload_json,'$.representative_validation_id')
-      WHERE f.classification='confirmed_vulnerability' ORDER BY f.finding_id`).all() as PocFindingRow[];
+    return db.prepare("SELECT finding_id,classification,payload_json finding_payload FROM findings WHERE classification IN ('confirmed_vulnerability','residual_risk') ORDER BY finding_id").all() as PocFindingRow[];
   }
 
-  private pocTaskInput(db: Database.Database, row: PocFindingRow, targetRepo: string): Record<string, unknown> {
-    const coverage = JSON.parse(row.coverage_json) as Record<string, unknown>;
-    const findingPayload = JSON.parse(row.finding_payload) as Record<string, unknown>;
-    const validation = row.validation_payload ? JSON.parse(row.validation_payload) as Record<string, unknown> : {};
-    const producers = new Set<string>();
-    if (row.validation_task_id) {
-      producers.add(row.validation_task_id);
-      const validationInput = db.prepare("SELECT input_json FROM tasks WHERE task_id=?").get(row.validation_task_id) as { input_json: string } | undefined;
-      const validationInputDocument = validationInput ? JSON.parse(validationInput.input_json) as Record<string, unknown> : {};
-      const inherited = Array.isArray(validationInputDocument.inherited_evidence_task_ids) ? validationInputDocument.inherited_evidence_task_ids.map(String) : [];
-      for (const id of inherited) producers.add(id);
-    }
-    const producerTaskIds = [...producers];
-    const evidenceRows = producerTaskIds.length ? db.prepare(`SELECT DISTINCT local_evidence_id,kind,source,location,json_extract(payload_json,'$.summary') summary
-      FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string; kind: string; source: string; location: string | null; summary: string | null }[] : [];
-    return {
-      verification_scope: { target_repo: targetRepo, seed_symbols: Array.isArray(coverage.entry_symbols_checked) ? coverage.entry_symbols_checked : [] },
-      finding: { finding_id: row.finding_id, root_cause_key: row.root_cause_key, title: row.title, severity: row.severity, cwe: row.cwe, impact: row.impact, representative_validation_id: findingPayload.representative_validation_id ?? null },
-      validation, operation_group: JSON.parse(row.group_payload), entry: JSON.parse(row.entry_payload),
-      inherited_evidence: evidenceRows.map((item) => ({ evidence_id: item.local_evidence_id, kind: item.kind, source: item.source, summary: item.summary ?? "", location: item.location })),
-      inherited_evidence_ids: evidenceRows.map((item) => item.local_evidence_id), inherited_evidence_task_ids: producerTaskIds,
-    };
-  }
-
-  /** Insert or refresh the PoC task for one finding; a completed artifact whose representative validation changed is requeued for regeneration. */
+  /** Insert or refresh the PoC task for one finding; a completed artifact whose finding changed is requeued for regeneration. */
   private schedulePocForFinding(db: Database.Database, findingId: string): { scheduled: boolean; reused: boolean; repaired: boolean } {
     const row = this.pocFindingRows(db).find((item) => item.finding_id === findingId);
     if (!row) return { scheduled: false, reused: false, repaired: false };
     const key = `poc:${findingId}`;
-    const targetRepo = (db.prepare("SELECT target_repo FROM runs").get() as { target_repo: string }).target_repo;
-    const input = this.pocTaskInput(db, row, targetRepo);
+    // Lightweight seed: the full task document is rebuilt from canonical state at claim time
+    // by task-context.pocTaskInput, exactly like the validation task two-stage pattern.
+    const input = { _finding_hash: stableId("POCIN", row.finding_payload), finding_id: findingId };
     const existing = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
     let repaired = false;
     if (existing?.status === "completed") {
       const storedInput = JSON.parse(String(existing.input_json)) as Record<string, unknown>;
-      const storedRepresentative = String(((storedInput.finding as Record<string, unknown> | undefined) ?? {}).representative_validation_id ?? "");
-      const currentRepresentative = String((JSON.parse(row.finding_payload) as Record<string, unknown>).representative_validation_id ?? "");
-      if (storedRepresentative === currentRepresentative) return { scheduled: false, reused: false, repaired: false };
+      if (storedInput._finding_hash === input._finding_hash) return { scheduled: false, reused: false, repaired: false };
       const pocs = db.prepare("SELECT poc_id FROM poc_artifacts WHERE finding_id=?").all(findingId) as { poc_id: string }[];
       for (const poc of pocs) db.prepare("DELETE FROM evidence_refs WHERE owner_type='poc_artifact' AND owner_id=?").run(poc.poc_id);
       db.prepare("DELETE FROM poc_artifacts WHERE finding_id=?").run(findingId);
-      db.prepare("UPDATE tasks SET status='queued',attempts=0,error='poc_representative_changed',result_json=NULL,input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
+      db.prepare("UPDATE tasks SET status='queued',attempts=0,error='poc_finding_changed',result_json=NULL,input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
       this.event(db, "poc_artifact_repair", String(existing.task_id), { finding_id: findingId });
       repaired = true;
     } else if (!existing) {
-      db.prepare("INSERT INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,created_at,updated_at) VALUES (?,?,?,?,?,'queued',0,?,?,?)").run(stableId("TASK", this.runIdFrom(db), key), this.runIdFrom(db), key, "poc_generation", row.entry_id, canonicalJson(input), now(), now());
+      db.prepare("INSERT INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,created_at,updated_at) VALUES (?,?,?,?,?,'queued',0,?,?,?)").run(stableId("TASK", this.runIdFrom(db), key), this.runIdFrom(db), key, "poc_generation", findingId, canonicalJson(input), now(), now());
     } else if (existing.status === "queued") {
       db.prepare("UPDATE tasks SET input_json=?,updated_at=? WHERE task_id=?").run(canonicalJson(input), now(), existing.task_id);
     }
     const current = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
-    const reused = current && current.status === "queued" ? this.tryReusePoc(db, current, input) : false;
+    const reused = current && current.status === "queued" ? this.tryReusePoc(db, current) : false;
     return { scheduled: !existing, reused, repaired };
   }
 
-  private tryReusePoc(db: Database.Database, task: Record<string, unknown>, input: Record<string, unknown>): boolean {
+  private tryReusePoc(db: Database.Database, task: Record<string, unknown>): boolean {
     const run = db.prepare("SELECT audit_scope_json FROM runs").get() as { audit_scope_json: string };
     const scope = JSON.parse(run.audit_scope_json) as Record<string, unknown>;
     if (scope.mode !== "incremental") return false;
-    const entry = db.prepare("SELECT candidate_key,payload_json FROM entries WHERE entry_id=?").get(task.subject_id) as { candidate_key: string; payload_json: string } | undefined;
+    const finding = db.prepare("SELECT root_cause_key FROM findings WHERE finding_id=?").get(task.subject_id) as { root_cause_key: string } | undefined;
+    if (!finding) return false;
+    const rootCauseKey = finding.root_cause_key;
+    const group = db.prepare("SELECT semantic_analysis_id,payload_json FROM operation_groups WHERE group_id=?").get(rootCauseKey) as { semantic_analysis_id: string; payload_json: string } | undefined;
+    if (!group) return false;
+    const semantic = db.prepare("SELECT entry_id FROM semantic_analyses WHERE semantic_analysis_id=?").get(group.semantic_analysis_id) as { entry_id: string } | undefined;
+    if (!semantic) return false;
+    const entry = db.prepare("SELECT candidate_key,payload_json FROM entries WHERE entry_id=?").get(semantic.entry_id) as { candidate_key: string; payload_json: string } | undefined;
     if (!entry || (JSON.parse(entry.payload_json) as Record<string, unknown>).incremental_reused !== true) return false;
     let document: Record<string, unknown>;
     try { document = JSON.parse(readFileSync(this.paths.incremental.baselinePocs, "utf8")) as Record<string, unknown>; }
     catch { return false; }
     const items = Array.isArray(document.items) ? document.items as Record<string, unknown>[] : [];
-    const rootCauseKey = String((input.finding as Record<string, unknown>).root_cause_key);
-    const group = db.prepare("SELECT payload_json FROM operation_groups WHERE group_id=?").get(rootCauseKey) as { payload_json: string } | undefined;
-    if (!group) return false;
     const currentFingerprint = validationGroupFingerprint(JSON.parse(group.payload_json));
     const snapshot = items.find((item) => String(item.group_fingerprint) === currentFingerprint);
     if (!snapshot || !snapshot.result || typeof snapshot.result !== "object") return false;
     try {
       db.transaction(() => {
         const candidate = structuredClone(snapshot.result as Record<string, unknown>);
-        candidate.task_id = task.task_id; candidate.finding_id = String((input.finding as Record<string, unknown>).finding_id);
+        candidate.task_id = task.task_id; candidate.finding_id = String(task.subject_id);
         const normalized = normalizePocSubmission(candidate);
         validateSubmissionSchema("poc_generation", normalized);
         this.ingestPoc(db, task, 0, normalized);
@@ -703,11 +670,14 @@ export class AuditStore {
   }
 
   private ingestPoc(db: Database.Database, task: Record<string, unknown>, attempt: number, candidate: Record<string, unknown>): void {
+    // The seed input is lightweight; rebuild the full context from canonical state,
+    // exactly as claim-time taskDocument does, so validation and ingestion agree.
     const input = JSON.parse(String(task.input_json)) as Record<string, unknown>;
-    const finding = (input.finding as Record<string, unknown> | undefined) ?? {};
-    const allowedEntryTypes = new Set(Array.isArray(input.allowed_entry_types) ? input.allowed_entry_types.map(String) : []);
+    const context = pocTaskInput(db, input, String(task.subject_id));
+    const finding = (context.finding as Record<string, unknown> | undefined) ?? {};
+    const allowedEntryTypes = new Set(Array.isArray(context.allowed_entry_types) ? context.allowed_entry_types.map(String) : []);
     if (!allowedEntryTypes.size) {
-      const entryDocument = (input.entry as Record<string, unknown> | undefined) ?? {};
+      const entryDocument = (context.entry as Record<string, unknown> | undefined) ?? {};
       const candidates = Array.isArray(entryDocument.project_candidates) ? entryDocument.project_candidates as Record<string, unknown>[] : Array.isArray(entryDocument.facets) ? entryDocument.facets as Record<string, unknown>[] : [];
       for (const candidate of candidates) {
         const type = String(candidate.type ?? candidate.entry_type ?? "");
@@ -715,7 +685,7 @@ export class AuditStore {
       }
     }
     const localEvidence = this.insertEvidence(db, task, rows(candidate.evidence));
-    const producerTaskIds = Array.isArray(input.inherited_evidence_task_ids) ? input.inherited_evidence_task_ids.map(String) : [];
+    const producerTaskIds = Array.isArray(context.inherited_evidence_task_ids) ? context.inherited_evidence_task_ids.map(String) : [];
     const inheritedRows = producerTaskIds.length ? db.prepare(`SELECT local_evidence_id,evidence_id FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string; evidence_id: string }[] : [];
     const evidence = new Map(inheritedRows.map((row) => [row.local_evidence_id, row.evidence_id])); for (const [key, value] of localEvidence) evidence.set(key, value);
     validatePocSubmission(candidate, {

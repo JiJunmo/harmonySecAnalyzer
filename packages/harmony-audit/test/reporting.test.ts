@@ -64,10 +64,11 @@ describe("deterministic reporting", () => {
     db.close();
 
     const [pocTask] = (await store.claim(5)).tasks.filter((task) => task.kind === "poc_generation");
-    expect(pocTask!.input.finding).toMatchObject({ severity: "critical", cwe: "CWE-89" });
-    expect(pocTask!.input.inherited_evidence).toEqual([expect.objectContaining({ evidence_id: "EV-V", summary: "六维阶段重新读取并核验完整效果链" })]);
+    const pocDocument = await store.taskDocument(pocTask as never) as Record<string, any>;
+    expect(pocDocument.input.finding).toMatchObject({ severity: "critical", cwe: "CWE-89" });
+    expect(pocDocument.input.inherited_evidence).toEqual(expect.arrayContaining([expect.objectContaining({ evidence_id: "EV-V", summary: "六维阶段重新读取并核验完整效果链" })]));
     expect(store.reconcile(pocTask!.task_id, pocTask!.attempt, {
-      task_id: pocTask!.task_id, finding_id: String((pocTask!.input.finding as Record<string, any>).finding_id),
+      task_id: pocTask!.task_id, finding_id: String((pocDocument.input.finding as Record<string, any>).finding_id),
       entry_type: "want", trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.VIEW", uri: "demo://query?q=x" } },
       language: "shell", code: "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://query?q=x'",
       prerequisites: ["安装 debug 包"], expected_observation: "返回私有记录", limitations: "未在真机验证",

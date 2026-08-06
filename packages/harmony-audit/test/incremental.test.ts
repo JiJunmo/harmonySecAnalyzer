@@ -123,7 +123,8 @@ describe("incremental audit migration", () => {
     const model = await profileProject(root); const plan = await planIncremental(root, model);
     expect(plan.impactPlan.affected_entries).toEqual([]);
     const incremental = await AuditStore.create(root, model, { mode: "incremental", capabilities }, plan);
-    expect((await incremental.claim(5)).tasks).toEqual([]);
+    const claimedPoc = (await incremental.claim(5)).tasks;
+    expect(claimedPoc).toEqual([]);
     const db = new Database(incremental.paths.db);
     expect(db.prepare("SELECT status,attempts FROM tasks WHERE kind='exploitability_validation'").get()).toEqual({ status: "completed", attempts: 0 });
     expect((db.prepare("SELECT COUNT(*) n FROM validation_results").get() as { n: number }).n).toBe(1);
@@ -152,7 +153,8 @@ describe("incremental audit migration", () => {
     expect(full.reconcile(validation!.task_id, validation!.attempt, confirmed)).toMatchObject({ accepted: true });
     const [poc] = (await full.claim(5)).tasks;
     expect(poc!.kind).toBe("poc_generation");
-    expect(full.reconcile(poc!.task_id, poc!.attempt, pocArtifact(poc as Record<string, any>))).toMatchObject({ accepted: true });
+    const pocDocument = await full.taskDocument(poc as never);
+    expect(full.reconcile(poc!.task_id, poc!.attempt, pocArtifact(pocDocument as Record<string, any>))).toMatchObject({ accepted: true });
     await full.finalize();
 
     const model = await profileProject(root); const plan = await planIncremental(root, model);

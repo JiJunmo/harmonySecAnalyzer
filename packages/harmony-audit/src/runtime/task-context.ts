@@ -120,12 +120,33 @@ export function validationTaskInput(db: Database.Database, raw: Row, entryId: st
   };
 }
 
-export function pocTaskInput(db: Database.Database, raw: Row, entryId: string): Row {
-  const finding = (raw.finding as Row | undefined) ?? {};
-  const validation = (raw.validation as Row | undefined) ?? {};
-  const group = (raw.operation_group as Row | undefined) ?? {};
-  const entry = (raw.entry as Row | undefined) ?? {};
-  const facets = rows(entry.facets ?? (entry.project_candidates as unknown)).map(facet);
+/** Single source of truth for the PoC task document, rebuilt from canonical state at claim time. */
+export function pocTaskInput(db: Database.Database, raw: Row, findingId: string): Row {
+  const finding = db.prepare("SELECT * FROM findings WHERE finding_id=?").get(findingId) as Row | undefined;
+  if (!finding) return raw;
+  const rootCauseKey = String(finding.root_cause_key);
+  const groupRow = db.prepare("SELECT * FROM operation_groups WHERE group_id=?").get(rootCauseKey) as Row | undefined;
+  if (!groupRow) return raw;
+  const group = JSON.parse(String(groupRow.payload_json)) as Row;
+  group.group_id = String(groupRow.group_id);
+  const validationRow = db.prepare("SELECT payload_json FROM validation_results WHERE group_id=?").get(rootCauseKey) as { payload_json: string } | undefined;
+  const validation = validationRow ? JSON.parse(validationRow.payload_json) as Row : {};
+  // Evidence belongs to the target component's semantic task; the trigger entry
+  // for a cross-component finding is the root entry of the path (COALESCE(root_e, e)).
+  const semantic = db.prepare("SELECT entry_id FROM semantic_analyses WHERE semantic_analysis_id=?").get(String(groupRow.semantic_analysis_id)) as { entry_id: string } | undefined;
+  const semanticEntryId = String(semantic?.entry_id ?? "");
+  let entryId = semanticEntryId;
+  const cross = db.prepare("SELECT path_id FROM cross_component_groups WHERE local_group_id=?").get(rootCauseKey) as { path_id: string } | undefined;
+  if (cross) {
+    const path = db.prepare("SELECT root_entry_id FROM component_paths WHERE path_id=?").get(cross.path_id) as { root_entry_id: string } | undefined;
+    if (path) entryId = path.root_entry_id;
+  }
+  const entryRow = entryId ? db.prepare("SELECT * FROM entries WHERE entry_id=?").get(entryId) as Row | undefined : undefined;
+  if (!entryRow) return raw;
+  const entryPayload = JSON.parse(String(entryRow.payload_json)) as Row;
+  // entry_facets stores the raw candidate payloads; facet() derives the entry_type view.
+  const facets = (db.prepare("SELECT payload_json FROM entry_facets WHERE entry_id=? ORDER BY facet_id").all(entryId) as { payload_json: string }[]).map((row) => facet(JSON.parse(row.payload_json) as Row));
+  const entry = { ...entryPayload, entry_id: String(entryRow.entry_id), entry_key: String(entryRow.candidate_key), component_id: String(entryRow.component_id), facets };
   const locations = new Set<string>();
   const operation = (group.operation as Row | undefined) ?? {};
   if (typeof operation.location === "string") locations.add(operation.location);
@@ -136,19 +157,33 @@ export function pocTaskInput(db: Database.Database, raw: Row, entryId: string): 
     const type = String(item.entry_type ?? "");
     return { exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], common_event_candidate: ["common_event"], project_scope: ["project"] }[type] ?? [type];
   })]);
+  const evidenceRows = db.prepare(`SELECT local_evidence_id,kind,source,location,json_extract(payload_json,'$.summary') summary
+    FROM evidence WHERE producer_task_id IN (
+      SELECT task_id FROM semantic_analyses WHERE entry_id=?
+      UNION
+      SELECT task_id FROM validation_results WHERE group_id=? OR group_id IN (SELECT group_id FROM cross_component_groups WHERE local_group_id=?)
+    ) ORDER BY evidence_id`).all(semanticEntryId, rootCauseKey, rootCauseKey) as { local_evidence_id: string; kind: string; source: string; location: string | null; summary: string | null }[];
+  const run = db.prepare("SELECT target_repo FROM runs").get() as { target_repo: string } | undefined;
   return {
-    finding,
+    ...raw,
+    finding: {
+      finding_id: String(finding.finding_id), root_cause_key: String(finding.root_cause_key),
+      title: String(finding.title ?? ""), classification: String(finding.classification ?? ""),
+      severity: finding.severity ?? null, cwe: finding.cwe ?? null, impact: finding.impact ?? null,
+    },
     validation,
     operation_group: group,
     entry: { ...entry, facets },
     allowed_entry_types: [...allowedEntryTypes].sort(),
     verification_scope: {
-      target_repo: String(((raw.verification_scope as Row | undefined) ?? {}).target_repo ?? ""),
+      target_repo: String(run?.target_repo ?? ""),
       seed_locations: [...locations].sort(),
       seed_files: [...new Set([...locations].map(sourceFile))].sort(),
       seed_symbols: strings((raw.verification_scope as Row | undefined)?.seed_symbols),
     },
-    inherited_evidence: Array.isArray(raw.inherited_evidence) ? raw.inherited_evidence as Row[] : [],
+    inherited_evidence: evidenceRows.map((item) => ({ evidence_id: item.local_evidence_id, kind: item.kind, source: item.source, summary: item.summary ?? "", location: item.location })),
+    inherited_evidence_ids: evidenceRows.map((item) => item.local_evidence_id),
+    inherited_evidence_task_ids: (db.prepare(`SELECT task_id FROM semantic_analyses WHERE entry_id=? UNION SELECT task_id FROM validation_results WHERE group_id=? OR group_id IN (SELECT group_id FROM cross_component_groups WHERE local_group_id=?)`).all(semanticEntryId, rootCauseKey, rootCauseKey) as { task_id: string }[]).map((row) => String(row.task_id)),
     output_contract: {
       task_unit: "one deterministic PoC generation unit for one confirmed finding",
       entry_type_constraint: "entry_type 必须来自 allowed_entry_types",

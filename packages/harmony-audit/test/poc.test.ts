@@ -64,7 +64,8 @@ async function confirmedStore(): Promise<{ store: AuditStore; pocTask: Record<st
   expect(validationTask!.kind).toBe("exploitability_validation");
   expect(store.reconcile(validationTask!.task_id, validationTask!.attempt, validation(validationTask as Record<string, any>))).toMatchObject({ accepted: true });
   const [pocTask] = (await store.claim(1)).tasks;
-  return { store, pocTask: pocTask as Record<string, any> };
+  // The claimed handle carries a lightweight seed; the full task document is rebuilt at claim time.
+  return { store, pocTask: await store.taskDocument(pocTask as never) as Record<string, any> };
 }
 
 describe("poc generation phase", () => {
@@ -132,14 +133,16 @@ describe("poc generation phase", () => {
     const db0 = new Database(store.paths.db);
     db0.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(pocTask.task_id);
     db0.close();
-    const [second] = (await store.claim(1)).tasks;
-    expect(store.reconcile(second!.task_id, second!.attempt, poc(second as Record<string, any>, { trigger: { kind: "adb_shell", payload: { command: "ls" } } })))
+    const [secondHandle] = (await store.claim(1)).tasks;
+    const second = await store.taskDocument(secondHandle as never);
+    expect(store.reconcile(second.task_id, second.attempt, poc(second as Record<string, any>, { trigger: { kind: "adb_shell", payload: { command: "ls" } } })))
       .toMatchObject({ accepted: false, status: "queued", error_code: "POC_ARKTS_TRIGGER_MISMATCH" });
     const db1 = new Database(store.paths.db);
-    db1.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(second!.task_id);
+    db1.prepare("UPDATE tasks SET retry_after=NULL WHERE task_id=?").run(second.task_id);
     db1.close();
-    const [third] = (await store.claim(1)).tasks;
-    expect(store.reconcile(third!.task_id, third!.attempt, poc(third as Record<string, any>, {
+    const [thirdHandle] = (await store.claim(1)).tasks;
+    const third = await store.taskDocument(thirdHandle as never);
+    expect(store.reconcile(third.task_id, third.attempt, poc(third as Record<string, any>, {
       language: "shell", trigger: { kind: "ability_want", payload: { uri: "demo://x" } },
       code: "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://x'",
     }))).toMatchObject({ accepted: true });
@@ -215,15 +218,16 @@ describe("poc generation phase", () => {
     const bValidation = validationTasks.find((task) => (task.input.operation_groups as Record<string, any>[])[0]!.scope !== "cross_component")!;
     const aValidation = validationTasks.find((task) => (task.input.operation_groups as Record<string, any>[])[0]!.scope === "cross_component")!;
     expect(store.reconcile(bValidation.task_id, bValidation.attempt, validation(bValidation as Record<string, any>, "high"))).toMatchObject({ accepted: true });
-    const [firstPoc] = (await store.claim(5)).tasks.filter((task) => task.kind === "poc_generation");
-    expect(store.reconcile(firstPoc!.task_id, firstPoc!.attempt, poc(firstPoc as Record<string, any>))).toMatchObject({ accepted: true });
+    const [firstPocHandle] = (await store.claim(5)).tasks.filter((task) => task.kind === "poc_generation");
+    const firstPoc = await store.taskDocument(firstPocHandle as never);
+    expect(store.reconcile(firstPoc.task_id, firstPoc.attempt, poc(firstPoc as Record<string, any>))).toMatchObject({ accepted: true });
     const before = new Database(store.paths.db);
     expect((before.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(1);
     before.close();
     // A cross-component confirmation (critical) supersedes B's local representative → artifact must be repaired.
     expect(store.reconcile(aValidation.task_id, aValidation.attempt, validation(aValidation as Record<string, any>, "critical"))).toMatchObject({ accepted: true });
     const db = new Database(store.paths.db);
-    expect(db.prepare("SELECT status,error FROM tasks WHERE kind='poc_generation'").get()).toMatchObject({ status: "queued", error: "poc_representative_changed" });
+    expect(db.prepare("SELECT status,error FROM tasks WHERE kind='poc_generation'").get()).toMatchObject({ status: "queued", error: "poc_finding_changed" });
     expect((db.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(0);
     expect((db.prepare("SELECT COUNT(*) n FROM events WHERE event_type='poc_artifact_repair'").get() as { n: number }).n).toBe(1);
     db.close();
