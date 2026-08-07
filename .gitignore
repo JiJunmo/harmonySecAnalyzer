@@ -2,7 +2,9 @@
 reports/*
 !reports/.gitkeep
 outputs/
-.claude/
+
+# Claude Code 个人设置（项目资源 .claude/ 其余内容入库）
+.claude/settings.local.json
 
 # atlas 索引（若在被审计仓生成）
 .atlas/

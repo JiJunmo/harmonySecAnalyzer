@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "atlas": {
+      "type": "stdio",
+      "command": "/Users/jixiaokui/.cargo/bin/atlas",
+      "args": ["mcp"]
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # harmonySecAnalyzer-v3.1
 
-本项目是适配 OpenCode 的 HarmonyOS ArkTS 白盒安全审计多智能体系统。
+本项目同时适配 OpenCode 与 Claude Code 的 HarmonyOS ArkTS 白盒安全审计多智能体系统。本文件面向 OpenCode；Claude Code 侧见 `CLAUDE.md`，其资源位于 `.claude/`，运行时与本文约定共用 `.opencode/skills/` 下的同一份脚本。
 
 ## 入口
 
