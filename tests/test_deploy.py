@@ -51,6 +51,32 @@ class DeployRenderTest(unittest.TestCase):
                 skill = (base / ".claude" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
                 self.assertNotIn("slash: false", skill, name)
 
+    def test_render_preserves_user_local_settings(self):
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td)
+            deploy.render_tree(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), base=dest)
+            local = dest / ".claude" / "settings.local.json"
+            local.write_text('{"env": {"X": "1"}}', encoding="utf-8")
+            deploy.render_tree(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), base=dest)
+            self.assertTrue(local.exists(), "settings.local.json 不应被重新渲染删除")
+            self.assertEqual(local.read_text(encoding="utf-8"), '{"env": {"X": "1"}}')
+
+    def test_check_only_detects_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td)
+            deploy.render_tree(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), base=dest)
+            good, problems = deploy.render_drift(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), dest=dest)
+            self.assertTrue(good, problems)
+            f = dest / ".claude" / "agents" / "harmony-auditor.md"
+            f.write_text("tampered", encoding="utf-8")
+            good, problems = deploy.render_drift(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), dest=dest)
+            self.assertFalse(good)
+            self.assertTrue(any("harmony-auditor.md" in p for p in problems), problems)
+            f.unlink()
+            good, problems = deploy.render_drift(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), dest=dest)
+            self.assertFalse(good)
+            self.assertTrue(any("缺失" in p for p in problems), problems)
+
     def test_render_is_idempotent_per_tool(self):
         with tempfile.TemporaryDirectory() as td:
             for tool in ("opencode", "claude"):
@@ -118,16 +144,28 @@ class DeploySourceTest(unittest.TestCase):
             legacy_entry_resolver.write_text("legacy", encoding="utf-8")
             legacy_component_analyzer.write_text("legacy", encoding="utf-8")
             legacy_pattern.write_text("legacy", encoding="utf-8")
-            # 渲染本地树(测试副作用,结束后清理;产物均被 gitignore)
+            # 渲染前快照真实 atlas 路径(测试用 /bin/echo 模拟,避免误写进配置)
+            prev_atlas = None
+            ojson = ROOT / "opencode.json"
+            if ojson.exists():
+                try:
+                    cmd = json.loads(ojson.read_text(encoding="utf-8")).get("mcp", {}).get("atlas", {}).get("command", [])
+                    if cmd and Path(cmd[0]).is_file():
+                        prev_atlas = Path(cmd[0]).resolve()
+                except Exception:
+                    pass
             deploy.render_tree(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"))
             try:
                 deploy.install_global(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), target)
             finally:
-                for p in (ROOT / ".opencode", ROOT / "AGENTS.md", ROOT / "opencode.json"):
-                    if p.is_dir():
-                        shutil.rmtree(p)
-                    elif p.exists():
-                        p.unlink()
+                if prev_atlas and deploy.verify_atlas(prev_atlas):
+                    deploy.render_tree(ROOT, deploy.PROFILES["opencode"], prev_atlas)
+                else:
+                    for p in (ROOT / ".opencode", ROOT / "AGENTS.md", ROOT / "opencode.json"):
+                        if p.is_dir():
+                            shutil.rmtree(p)
+                        elif p.exists():
+                            p.unlink()
             skill = (target / "skills/audit-orchestration/SKILL.md").read_text(encoding="utf-8")
             expected = target.resolve() / "skills/audit-orchestration/scripts/audit_orchestrator.py"
             self.assertIn(f"python3 {expected}", skill)

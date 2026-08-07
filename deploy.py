@@ -13,7 +13,7 @@ harmonySecAnalyzer 部署脚本（OpenCode / Claude Code 双工具）
   python deploy.py --tool opencode --global    # 全局安装到 ~/.config/opencode
   python deploy.py --tool claude --global      # 全局安装到 ~/.claude(并注册 atlas MCP)
   python deploy.py --tool claude --uninstall   # 卸载全局安装的资源
-  python deploy.py --tool opencode --check-only  # 仅检查不修改
+  python deploy.py --tool opencode --check-only  # 不写入,校验生成物与模板一致性(供 CI)
   python deploy.py --tool claude --atlas /path/to/atlas
 
 跨平台: macOS / Windows / Linux。部署脚本使用标准库,运行时依赖见 requirements.txt。
@@ -274,12 +274,22 @@ def claude_settings_config():
 
 
 def render_tree(root, profile, atlas, base=None):
-    """按 profile 渲染:目标资源目录 + 根级配置 + 工具文档。base 供测试重定向。"""
+    """按 profile 渲染:目标资源目录 + 根级配置 + 工具文档。base 供测试重定向。
+
+    只重写已知生成子路径(agents/commands/skills/settings.json),
+    保留目录内用户个人文件(如 .claude/settings.local.json)。
+    """
     dest = base or root
     tree = dest / profile["dir"]
-    if tree.exists():
-        shutil.rmtree(tree)
-    tree.mkdir(parents=True)
+    tree.mkdir(parents=True, exist_ok=True)
+    for sub in ("agents", "commands", "skills"):
+        p = tree / sub
+        if p.exists():
+            shutil.rmtree(p)
+    if profile["tool"] == "claude":
+        p = tree / "settings.json"
+        if p.exists():
+            p.unlink()
 
     for agent in AGENTS:
         fm = frontmatter_for(profile, "agents", agent)
@@ -309,6 +319,27 @@ def render_tree(root, profile, atlas, base=None):
         (tree / "settings.json").write_text(json.dumps(claude_settings_config(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     (dest / profile["docs_file"]).write_text(render_doc(root, profile), encoding="utf-8")
+
+
+def render_drift(root, profile, atlas, dest=None):
+    """渲染到临时目录,与 dest(默认项目根)下现有生成物字节比对。
+
+    返回 (ok, problems); 用于 --check-only 与 CI 漂移校验,不写任何文件。
+    """
+    dest = dest or root
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        render_tree(root, profile, atlas, base=base)
+        generated = {p.relative_to(base).as_posix(): p.read_bytes()
+                     for p in base.rglob("*") if p.is_file()}
+    problems = []
+    for rel, content in sorted(generated.items()):
+        cur = dest / rel
+        if not cur.exists():
+            problems.append(f"缺失: {rel}")
+        elif cur.read_bytes() != content:
+            problems.append(f"不一致: {rel}")
+    return (not problems), problems
 
 
 # ---------------- 输出 ----------------
@@ -373,11 +404,12 @@ def find_tool(profile):
 
 
 def verify_atlas(path):
-    if not path or not Path(path).exists():
+    if not path or not Path(path).is_file():
         return False
     try:
         r = subprocess.run([str(path), "--version"], capture_output=True, text=True, timeout=20)
-        return r.returncode == 0
+        # 要求版本输出含 "atlas",避免任意可执行文件(如 /bin/echo)通过探测
+        return r.returncode == 0 and "atlas" in (r.stdout + r.stderr).lower()
     except Exception:
         return False
 
@@ -767,8 +799,21 @@ def main():
 
     # [4/5] 配置/安装
     info(f"[4/5] {'全局安装' if args.global_install else '本地配置'}")
+    drift_found = False
     if args.check_only:
-        warn("--check-only: 跳过写入")
+        warn("--check-only: 不写入,校验渲染产物与模板一致性")
+        try:
+            drift_ok, problems = render_drift(root, profile, atlas)
+        except Exception as exc:
+            drift_ok, problems = False, [f"渲染校验异常: {exc}"]
+        if drift_ok:
+            ok("生成物与当前模板一致")
+        else:
+            drift_found = True
+            fail(f"生成物与模板不一致({len(problems)} 处):")
+            for p in problems:
+                fail(f"  {p}")
+            fail(f"请重新部署: python deploy.py --tool {profile['tool']}")
     else:
         render_tree(root, profile, atlas)
         if args.global_install:
@@ -804,7 +849,7 @@ def main():
     print()
 
     print("=" * 60)
-    if not validation_ok:
+    if not validation_ok or drift_found:
         print("✗ 部署校验失败，请修复上方错误后重试。")
     elif args.global_install:
         print(f"✓ 全局安装完成。任意目录启动 {profile['tool']} 即可用 /audit。")
@@ -816,7 +861,7 @@ def main():
         print(f"    cd {root} && {profile['tool']} && /audit <目标鸿蒙仓路径>")
         print(f"    失败任务恢复: /audit --resume <run目录>")
     print("=" * 60)
-    if not validation_ok:
+    if not validation_ok or drift_found:
         sys.exit(4)
 
 
