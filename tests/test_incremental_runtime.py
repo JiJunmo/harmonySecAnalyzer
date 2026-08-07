@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / ".opencode/skills/audit-orchestration/scripts"
+SCRIPTS = ROOT / "resources/skills/audit-orchestration/scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from audit_runtime.common import SIX_EXPLOITABILITY_CHECKS, canonical_json, run_paths, write_json

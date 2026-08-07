@@ -6,7 +6,7 @@ from jsonschema import Draft202012Validator
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / ".opencode/skills/audit-orchestration/config"
+CONFIG = ROOT / "resources/skills/audit-orchestration/config"
 
 
 class CapabilityRegistryTest(unittest.TestCase):

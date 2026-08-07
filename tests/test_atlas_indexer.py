@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INDEXER = ROOT / ".opencode" / "skills" / "project-modeling" / "scripts" / "atlas_indexer.py"
+INDEXER = ROOT / "resources" / "skills" / "project-modeling" / "scripts" / "atlas_indexer.py"
 SPEC = importlib.util.spec_from_file_location("atlas_indexer", INDEXER)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)

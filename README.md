@@ -21,11 +21,18 @@ OpenCode 使用 `.opencode/` 资源目录；Claude Code 使用 `.claude/` 资源
 
 `--component` 与 `--capability` 均可重复并可组合。组件过滤用于定点审计 Ability/ExtensionAbility，能力过滤用于只验证指定能力。
 
+资源目录是部署生成物，不入库：`.opencode/`、`.claude/`、`opencode.json`、`.mcp.json`、`AGENTS.md`、`CLAUDE.md` 均由 `deploy.py` 按工具渲染生成。克隆后必须先用目标工具部署一次：
+
 ```bash
 python3 -m pip install -r requirements.txt
-python3 deploy.py
-python3 deploy.py --global
+python3 deploy.py --tool opencode          # 本项目内用 OpenCode 审计
+python3 deploy.py --tool claude            # 本项目内用 Claude Code 审计
+python3 deploy.py --tool opencode --global # 全局安装到 ~/.config/opencode
+python3 deploy.py --tool claude --global   # 全局安装到 ~/.claude(并注册 atlas MCP)
+python3 deploy.py --tool claude --uninstall
 ```
+
+规范源位于 `resources/`（agents/commands/skills 模板、运行时脚本与共享约定文档）；生成器按 `--tool` 的 profile 渲染 frontmatter 与工具专属段落。
 
 ## 架构
 

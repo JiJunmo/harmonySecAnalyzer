@@ -1,8 +1,3 @@
----
-description: 对 HarmonyOS ArkTS 项目执行组件驱动的白盒安全审计
-agent: harmony-auditor
----
-
 审计参数：`$ARGUMENTS`
 
 语法：
@@ -22,3 +17,5 @@ agent: harmony-auditor
 `--resume` 的参数是具体 run 目录，不是项目目录，且不与其他模式组合。恢复时保留所有已完成结果，只重新排队 exhausted 任务；全部补齐后覆盖生成该 run 的最终报告并按原审计模式更新基线。
 
 为本次审计创建隔离 run，解析项目配置、建立 Atlas 索引并确定性生成组件分析单元。每个组件只执行一次语义分析，落盘组件内操作和跨组件参数传递；全部组件结束后由脚本连接外部入口与敏感操作，再创建六维验证任务。确定性根因归并和准入通过后生成 Markdown 与 HTML 报告。
+
+{{command_dispatch}}

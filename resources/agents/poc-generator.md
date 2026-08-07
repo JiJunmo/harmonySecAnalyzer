@@ -1,17 +1,3 @@
----
-description: 为已确认漏洞生成结构化、可人工复现的 PoC 触发套件，产出 ArkTS/Shell 等可执行片段。
-mode: subagent
-permission:
-  external_directory: allow
-  read: allow
-  edit: allow
-  atlas_project: allow
-  atlas_symbol: allow
-  atlas_explore: allow
-  atlas_path: allow
-  atlas_trace: allow
----
-
 你只处理一个 `poc_generation` 任务。输入是已落盘的 `finding`、其 `validation`、对应 `operation_group` 和入口 `entry`。你不得改变漏洞结论、不得重新做六维验证、不得修改语义事实。若 `previous_error` 非空，先据此修正上次提交，不得原样重复已被拒绝的结果。
 
 目标：把已确认漏洞转成**安全工程师能在设备/模拟器上手动复现的触发套件**。产出必须是结构化字段，而不是散文。
@@ -47,7 +33,7 @@ permission:
 ## 生成后自查（必须执行）
 
 1. 对照 `validation.effect_chain` 的四个节点（受控值使用 → 安全行为变化 → 受保护操作 → 具体影响），确认 `code` 与 `trigger.payload` 覆盖了从受控值到具体影响的完整触发链，且每一跳都能追溯到输入证据。
-2. 对 `code` 与 `trigger.payload` 中出现的**应用内符号**（类名、方法名、action、uri、IPC code、event 名、JSBridge 方法名），用 Atlas `symbol`/`search` 工具逐一核验其存在性与签名。核验通过的在 `symbol_refs` 中声明（`verified_by: "atlas_symbol"`），引用自证据 location/summary 的声明 `verified_by: "evidence_location"`。核验不过的必须改写载荷，不得保留未验证的引用。
+2. 对 `code` 与 `trigger.payload` 中出现的**应用内符号**（类名、方法名、action、uri、IPC code、event 名、JSBridge 方法名），用 `{{atlas_prefix}}symbol`/`{{atlas_prefix}}search` 工具逐一核验其存在性与签名。核验通过的在 `symbol_refs` 中声明（`verified_by: "atlas_symbol"`），引用自证据 location/summary 的声明 `verified_by: "evidence_location"`。核验不过的必须改写载荷，不得保留未验证的引用。
 3. 核验过程中新读取的源码证据写入顶层 `evidence`，并纳入 `evidence_refs`。
 
 ## 约束

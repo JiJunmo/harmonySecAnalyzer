@@ -3,15 +3,19 @@ reports/*
 !reports/.gitkeep
 outputs/
 
-# Claude Code 个人设置（项目资源 .claude/ 其余内容入库）
-.claude/settings.local.json
+# 部署生成物（python3 deploy.py --tool opencode|claude 生成，不入库）
+.opencode/
+.claude/
+opencode.json
+.mcp.json
+AGENTS.md
+CLAUDE.md
 
 # atlas 索引（若在被审计仓生成）
 .atlas/
 
 # 依赖
 node_modules/
-.opencode/node_modules/
 
 # Python 缓存
 __pycache__/

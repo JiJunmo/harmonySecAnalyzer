@@ -8,7 +8,7 @@ from jsonschema import Draft202012Validator
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PATH = ROOT / ".opencode/skills/project-modeling/scripts/project_profiler.py"
+PATH = ROOT / "resources/skills/project-modeling/scripts/project_profiler.py"
 SPEC = importlib.util.spec_from_file_location("project_profiler", PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -16,7 +16,7 @@ SPEC.loader.exec_module(MODULE)
 
 class ProjectProfilerTest(unittest.TestCase):
     def assertValidModel(self, model):
-        schema_path = ROOT / ".opencode/skills/audit-orchestration/config/schemas/project-model.schema.json"
+        schema_path = ROOT / "resources/skills/audit-orchestration/config/schemas/project-model.schema.json"
         Draft202012Validator(json.loads(schema_path.read_text(encoding="utf-8"))).validate(model)
 
     def test_profiles_json5_entry_candidates(self):

@@ -1,3 +1,5 @@
+import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,21 +11,59 @@ import deploy
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class DeployTest(unittest.TestCase):
-    def test_subagents_can_write_dynamic_submission_paths(self):
-        for name in ("component-semantic-analyzer.md", "exploitability-validator.md"):
-            agent = ROOT / ".opencode" / "agents" / name
-            content = agent.read_text(encoding="utf-8")
-            self.assertIn("  edit: allow", content, name)
-            self.assertNotIn('    "*": deny', content, name)
-            self.assertNotIn('    "**/reports/**": allow', content, name)
+class DeployRenderTest(unittest.TestCase):
+    def test_opencode_subagents_can_write_dynamic_submission_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            deploy.render_tree(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), base=base)
+            for name in ("component-semantic-analyzer.md", "exploitability-validator.md"):
+                agent = base / ".opencode" / "agents" / name
+                content = agent.read_text(encoding="utf-8")
+                self.assertIn("  edit: allow", content, name)
+                self.assertNotIn('    "*": deny', content, name)
+                self.assertNotIn('    "**/reports/**": allow', content, name)
 
-    def test_internal_skills_are_not_exposed_as_slash_commands(self):
-        for name in deploy.OWNED_SKILLS:
-            skill = ROOT / ".opencode" / "skills" / name / "SKILL.md"
-            content = skill.read_text(encoding="utf-8")
-            self.assertIn("slash: false", content, name)
+    def test_opencode_internal_skills_are_not_exposed_as_slash_commands(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            deploy.render_tree(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), base=base)
+            for name in deploy.OWNED_SKILLS:
+                skill = base / ".opencode" / "skills" / name / "SKILL.md"
+                content = skill.read_text(encoding="utf-8")
+                self.assertIn("slash: false", content, name)
 
+    def test_claude_render_produces_expected_artifacts(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            deploy.render_tree(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), base=base)
+            mcp = json.loads((base / ".mcp.json").read_text(encoding="utf-8"))
+            self.assertEqual(mcp["mcpServers"]["atlas"]["command"], "/bin/echo")
+            self.assertEqual(mcp["mcpServers"]["atlas"]["args"], ["mcp"])
+            settings = json.loads((base / ".claude" / "settings.json").read_text(encoding="utf-8"))
+            self.assertIn("mcp__atlas__*", settings["permissions"]["allow"])
+            auditor = (base / ".claude" / "agents" / "harmony-auditor.md").read_text(encoding="utf-8")
+            self.assertIn("mcp__atlas__project", auditor)
+            self.assertIn("subagent_type", auditor)
+            self.assertIn("run_in_background", auditor)
+            semantic = (base / ".claude" / "agents" / "component-semantic-analyzer.md").read_text(encoding="utf-8")
+            self.assertIn("tools: Read, Grep, Glob, Edit, Write", semantic)
+            for name in deploy.OWNED_SKILLS:
+                skill = (base / ".claude" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+                self.assertNotIn("slash: false", skill, name)
+
+    def test_render_is_idempotent_per_tool(self):
+        with tempfile.TemporaryDirectory() as td:
+            for tool in ("opencode", "claude"):
+                a = Path(td) / tool / "a"
+                b = Path(td) / tool / "b"
+                deploy.render_tree(ROOT, deploy.PROFILES[tool], Path("/bin/echo"), base=a)
+                deploy.render_tree(ROOT, deploy.PROFILES[tool], Path("/bin/echo"), base=b)
+                files_a = {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()}
+                files_b = {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()}
+                self.assertEqual(files_a, files_b, tool)
+
+
+class DeploySourceTest(unittest.TestCase):
     def test_runtime_smoke_uses_batch_scheduler_command(self):
         source = (ROOT / "deploy.py").read_text(encoding="utf-8")
         self.assertIn('invoke("claim-batch", first["run_dir"])', source)
@@ -34,6 +74,11 @@ class DeployTest(unittest.TestCase):
         source = (ROOT / "deploy.py").read_text(encoding="utf-8")
         self.assertNotIn("/audit full <", source)
         self.assertIn("/audit <目标鸿蒙仓路径>", source)
+
+    def test_tool_is_mandatory(self):
+        source = (ROOT / "deploy.py").read_text(encoding="utf-8")
+        self.assertIn("required=True", source)
+        self.assertIn('choices=["opencode", "claude"]', source)
 
     def test_atlas_smoke_uses_resolved_executable_instead_of_temporary_stub(self):
         atlas = Path("C:/Tools/atlas.exe")
@@ -73,11 +118,20 @@ class DeployTest(unittest.TestCase):
             legacy_entry_resolver.write_text("legacy", encoding="utf-8")
             legacy_component_analyzer.write_text("legacy", encoding="utf-8")
             legacy_pattern.write_text("legacy", encoding="utf-8")
-            deploy.install_global(ROOT, Path("/bin/echo"), target)
+            # 渲染本地树(测试副作用,结束后清理;产物均被 gitignore)
+            deploy.render_tree(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"))
+            try:
+                deploy.install_global(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), target)
+            finally:
+                for p in (ROOT / ".opencode", ROOT / "AGENTS.md", ROOT / "opencode.json"):
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                    elif p.exists():
+                        p.unlink()
             skill = (target / "skills/audit-orchestration/SKILL.md").read_text(encoding="utf-8")
             expected = target.resolve() / "skills/audit-orchestration/scripts/audit_orchestrator.py"
             self.assertIn(f"python3 {expected}", skill)
-            self.assertNotIn("python3 .opencode/skills/audit-orchestration", skill)
+            self.assertNotIn("python3 resources/skills/audit-orchestration", skill)
 
             agent = (target / "agents/harmony-auditor.md").read_text(encoding="utf-8")
             self.assertIn('"*": deny', agent)

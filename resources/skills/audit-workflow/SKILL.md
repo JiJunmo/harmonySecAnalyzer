@@ -1,9 +1,3 @@
----
-name: audit-workflow
-description: 以组件为任务单位、以实际敏感操作组为判断单位的审计语义。
-slash: false
----
-
 ## 工作流
 
 `项目事实 -> 组件语义分析 -> 确定性组件连接 -> 六维验证 -> Root Cause Finding`
@@ -22,4 +16,4 @@ slash: false
 
 ## Atlas 使用
 
-从分配的组件输入出发，使用 `search/symbol/explore/calls/path/trace/impact` 有界追踪。允许穿过组件内公共 handler 和异步回调；调用进入另一个 Ability/ExtensionAbility 时记录 `component_calls` 并停止，同时记录下游观察身份、原始身份绑定状态和实际使用的权限。Atlas 无法证明的目标记录到 `coverage.unresolved_targets`，不得用逐文件扫描补造证据。NAPI/native 不在当前范围。
+从分配的组件输入出发，使用 `search/symbol/explore/calls/path/trace/impact` 有界追踪（当前工具下对应 `{{atlas_prefix}}search` 等名称）。允许穿过组件内公共 handler 和异步回调；调用进入另一个 Ability/ExtensionAbility 时记录 `component_calls` 并停止，同时记录下游观察身份、原始身份绑定状态和实际使用的权限。Atlas 无法证明的目标记录到 `coverage.unresolved_targets`，不得用逐文件扫描补造证据。NAPI/native 不在当前范围。
