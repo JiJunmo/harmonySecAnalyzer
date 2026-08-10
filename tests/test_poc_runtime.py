@@ -285,6 +285,11 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
         poc_handle = claim_batch(full, 5)["tasks"][0]
         poc_task = json.loads(Path(poc_handle["task_file"]).read_text(encoding="utf-8"))
         poc = poc_result_for(poc_task)
+        poc["symbol_refs"] = [{
+            "symbol": "EntryAbility.onCreate",
+            "evidence": [self.source_evidence("核验 PoC 使用的应用入口符号", "EntryAbility.ets:10")],
+            "verified_by": "atlas_symbol",
+        }]
         Path(poc_handle["submission_file"]).write_text(json.dumps(poc), encoding="utf-8")
         accepted = submit_result(full, poc_task["task_id"], Path(poc_handle["submission_file"]),
                                  poc_task["attempt"])
@@ -310,6 +315,10 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
             ).fetchone()
             self.assertEqual(dict(poc_task_row), {"status": "completed", "attempts": 0})
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM poc_artifacts").fetchone()["n"], 1)
+            payload = json.loads(conn.execute("SELECT payload_json FROM poc_artifacts").fetchone()["payload_json"])
+            self.assertEqual(payload["symbol_refs"][0]["symbol"], "EntryAbility.onCreate")
+            self.assertNotIn("evidence", payload["symbol_refs"][0])
+            self.assertEqual(len(payload["symbol_refs"][0]["evidence_refs"]), 1)
 
 
 if __name__ == "__main__":

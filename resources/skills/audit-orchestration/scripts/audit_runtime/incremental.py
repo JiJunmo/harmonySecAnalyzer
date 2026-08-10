@@ -470,11 +470,18 @@ def baseline_eligible(conn):
 def _poc_snapshot(conn):
     rows = []
     for row in conn.execute(
-        "SELECT p.poc_id,p.finding_id,p.entry_type,p.payload_json,f.root_cause_key,f.group_id "
-        "FROM poc_artifacts p JOIN findings f ON f.finding_id=p.finding_id ORDER BY p.poc_id"
+        """SELECT p.poc_id,p.finding_id,p.entry_type,t.result_ref,f.root_cause_key,f.group_id
+           FROM poc_artifacts p
+           JOIN tasks t ON t.task_id=p.task_id
+           JOIN findings f ON f.finding_id=p.finding_id
+           ORDER BY p.poc_id"""
     ):
         item = dict(row)
-        item["result"] = json.loads(item.pop("payload_json"))
+        result_ref = item.pop("result_ref")
+        result = read_json(result_ref) if result_ref else None
+        if not isinstance(result, dict):
+            continue
+        item["result"] = result
         fingerprint = validation_group_fingerprint(conn, item["group_id"])
         item["group_fingerprint"] = fingerprint or ""
         rows.append(item)
