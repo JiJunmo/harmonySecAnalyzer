@@ -6,6 +6,8 @@ from pathlib import Path
 
 from .common import *
 from .contracts import normalize_submission, validate_submission
+from .evidence import (materialize_component_call, materialize_poc, materialize_semantic_group,
+                       materialize_validation)
 from .lifecycle import run_row, update_session
 from .scheduler import readiness, reject_attempt
 from .store import *
@@ -59,49 +61,6 @@ def submit_result(run_dir, task_id, input_path, attempt=None):
     if result_ref and submitted != result_ref.resolve():
         submitted.unlink(missing_ok=True)
     return {"ok": True, "accepted": True, "task_id": task_id, "status": "completed", **summary}
-
-
-def _insert_evidence(conn, task_id, rows):
-    identities = {}
-    for row in rows or []:
-        evidence_id = stable_id("EVID", [task_id, row["evidence_id"]])
-        identities[row["evidence_id"]] = evidence_id
-        conn.execute(
-            "INSERT INTO evidence(evidence_id,task_id,kind,source,location,summary,content_ref,sha256,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (evidence_id, task_id, row["kind"], row["source"], row.get("location"), row["summary"],
-             row.get("content_ref"), row.get("sha256"), now()),
-        )
-    return identities
-
-
-def _refs(values, identities):
-    return sorted({identities.get(value, value) for value in values})
-
-
-def _remap_group_evidence(group, evidence_ids):
-    payload = json.loads(json.dumps(group))
-    payload["evidence_refs"] = _refs(payload.get("evidence_refs", []), evidence_ids)
-    for key in ("facts", "edges", "branches", "security_checks"):
-        for row in payload.get(key, []):
-            row["evidence_refs"] = _refs(row.get("evidence_refs", []), evidence_ids)
-    payload["context"]["evidence_refs"] = _refs(payload["context"].get("evidence_refs", []), evidence_ids)
-    for hypothesis in payload["context"].get("effect_hypotheses", []):
-        hypothesis["basis_evidence_refs"] = _refs(hypothesis.get("basis_evidence_refs", []), evidence_ids)
-    if payload.get("availability"):
-        payload["availability"]["evidence_refs"] = _refs(
-            payload["availability"].get("evidence_refs", []), evidence_ids
-        )
-    return payload
-
-
-def _remap_component_call_evidence(component_call, evidence_ids):
-    payload = json.loads(json.dumps(component_call))
-    payload["evidence_refs"] = _refs(payload.get("evidence_refs", []), evidence_ids)
-    for security_check in payload.get("security_checks", []):
-        security_check["evidence_refs"] = _refs(security_check.get("evidence_refs", []), evidence_ids)
-    transition = payload.get("principal_transition", {})
-    transition["evidence_refs"] = _refs(transition.get("evidence_refs", []), evidence_ids)
-    return payload
 
 
 def _merge_finding(conn, group_id, group, validation):
@@ -164,14 +123,13 @@ def _merge_finding(conn, group_id, group, validation):
 
 
 def _merge_semantic_analysis(conn, task, result):
-    evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
     conn.execute("INSERT INTO semantic_analyses VALUES (?,?,?,?,?)",
                  (task["subject_id"], task["task_id"], result["summary"], canonical_json(result["coverage"]), now()))
     entry = conn.execute("SELECT payload_json FROM entries WHERE entry_id=?", (task["subject_id"],)).fetchone()
     entry_payload = row_json(entry, "payload_json", {})
     call_ids = []
     for source in result["component_calls"]:
-        component_call = _remap_component_call_evidence(source, evidence_ids)
+        component_call = materialize_component_call(conn, task["task_id"], source)
         identity = canonical_json([
             task["subject_id"], component_call["target_component_id"],
             normalize_location(component_call["call_location"]), component_call["parameter_mappings"],
@@ -194,7 +152,7 @@ def _merge_semantic_analysis(conn, task, result):
         call_ids.append(call_id)
     group_ids = []
     for source in result["operation_groups"]:
-        group = _remap_group_evidence(source, evidence_ids)
+        group = materialize_semantic_group(conn, task["task_id"], source)
         identity = operation_group_identity(task["subject_id"], group)
         group_id = stable_id("GROUP", identity)
         conn.execute(
@@ -230,27 +188,9 @@ def _merge_semantic_analysis(conn, task, result):
 
 
 def _merge_exploitability_validation(conn, task, result, paths=None):
-    evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
     finding_ids = []
     for source in result["validations"]:
-        validation = json.loads(json.dumps(source))
-        validation["evidence_refs"] = _refs(validation.get("evidence_refs", []), evidence_ids)
-        for key in ("business_intent", "security_boundary"):
-            validation[key]["evidence_refs"] = _refs(validation[key].get("evidence_refs", []), evidence_ids)
-        for dimension in validation.get("exploitability", {}).values():
-            dimension["evidence_refs"] = _refs(dimension.get("evidence_refs", []), evidence_ids)
-        for proof in validation.get("effect_chain", {}).values():
-            proof["evidence_refs"] = _refs(proof.get("evidence_refs", []), evidence_ids)
-        if validation.get("principal_analysis"):
-            validation["principal_analysis"]["evidence_refs"] = _refs(
-                validation["principal_analysis"].get("evidence_refs", []), evidence_ids
-            )
-        if validation.get("availability_analysis"):
-            validation["availability_analysis"]["evidence_refs"] = _refs(
-                validation["availability_analysis"].get("evidence_refs", []), evidence_ids
-            )
-        for counter in validation.get("counter_evidence", []):
-            counter["evidence_refs"] = _refs(counter.get("evidence_refs", []), evidence_ids)
+        validation = materialize_validation(conn, task["task_id"], source)
         group_id = validation["group_id"]
         group = group_context(conn, group_id)
         conn.execute(
@@ -347,12 +287,7 @@ def _try_reuse_poc(conn, paths, task_id):
 
 
 def _merge_poc_artifact(conn, task, result):
-    evidence_ids = _insert_evidence(conn, task["task_id"], result.get("evidence", []))
-    poc = json.loads(json.dumps(result))
-    poc["evidence_refs"] = _refs(poc.get("evidence_refs", []), evidence_ids)
-    for symbol_ref in poc.get("symbol_refs", []):
-        if isinstance(symbol_ref, dict) and symbol_ref.get("evidence_id") in evidence_ids:
-            symbol_ref["evidence_id"] = evidence_ids[symbol_ref["evidence_id"]]
+    poc = materialize_poc(conn, task["task_id"], result)
     poc_id = stable_id("POC", task["task_id"])
     conn.execute(
         "INSERT OR REPLACE INTO poc_artifacts VALUES (?,?,?,?,?,?)",

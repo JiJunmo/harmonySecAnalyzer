@@ -41,8 +41,10 @@ def audit_contract_hash():
     files = (
         CAPABILITIES_PATH,
         SCHEMAS_DIR / "component-semantic-result.schema.json",
+        SCHEMAS_DIR / "exploitability-validation-result.schema.json",
         SCHEMAS_DIR / "poc-result.schema.json",
         SKILL_DIR.parent.parent / "agents" / "component-semantic-analyzer.md",
+        SKILL_DIR.parent.parent / "agents" / "exploitability-validator.md",
         SKILL_DIR.parent.parent / "agents" / "poc-generator.md",
     )
     digest = hashlib.sha256()

@@ -4,7 +4,7 @@
 
 一个 Ability/ExtensionAbility 只派发一个语义任务。Agent 使用 Atlas 确认组件输入并追踪组件内实际可达的安全相关操作，不做漏洞判断。到达另一个组件时停止，记录目标组件、调用位置和参数控制性映射。多个普通分支到达同一操作且关键受控参数相同时合并为一个 Operation Group；防护代码只作为客观事实记录。
 
-每组按调用顺序使用必要的 `entrypoint/reachability/control/transform/security_check/operation/effect/dead_end/gap` 类型保存最短证据链；类型按实际证据选用，不要求每种都存在。节点之间的相邻关系由运行时根据顺序确定性生成。
+每组按调用顺序使用必要的 `entrypoint/reachability/control/transform/security_check/operation/dead_end/gap` 类型保存最短证据链；facts 只能是源码事实，不允许使用 `effect` 类型承载推断。类型按实际证据选用，不要求每种都存在。节点之间的相邻关系由运行时根据顺序确定性生成。
 
 ## 可利用性
 

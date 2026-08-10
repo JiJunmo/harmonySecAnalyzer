@@ -35,7 +35,7 @@ ATLAS_INDEXER_REL = "resources/skills/project-modeling/scripts/atlas_indexer.py"
 ORCHESTRATION_RUNTIME_FILES = [
     f"resources/skills/audit-orchestration/scripts/audit_runtime/{name}"
     for name in (
-        "__init__.py", "common.py", "store.py", "contracts.py", "reporting.py",
+        "__init__.py", "common.py", "store.py", "contracts.py", "evidence.py", "reporting.py",
         "commands.py", "initialization.py", "lifecycle.py", "correlation.py", "scheduler.py", "task_context.py", "cli.py",
     )
 ]

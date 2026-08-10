@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 
 from .common import canonical_json, load_capabilities
+from .evidence import semantic_admissible_refs, semantic_hypothesis_refs
 from .store import row_json
 
 # Candidate type -> allowed PoC trigger entry types (same mapping as v3.2).
@@ -89,6 +90,26 @@ def validation_context(conn, group_id):
     return payload
 
 
+def _evidence_records(conn, evidence_ids):
+    records = []
+    for evidence_id in sorted(evidence_ids):
+        row = conn.execute(
+            "SELECT evidence_id,kind,source,location,summary,content_ref,sha256 FROM evidence WHERE evidence_id=?",
+            (evidence_id,),
+        ).fetchone()
+        if row:
+            records.append(dict(row))
+    return records
+
+
+def _attach_evidence_scope(conn, group):
+    group["evidence_scope"] = {
+        "admissible": _evidence_records(conn, semantic_admissible_refs(group)),
+        "hypothesis_only": _evidence_records(conn, semantic_hypothesis_refs(group)),
+    }
+    return group
+
+
 def group_context(conn, group_id):
     """Combined read model used only by exports and reports."""
     semantic = semantic_group_context(conn, group_id)
@@ -147,6 +168,7 @@ def task_context(conn, task):
         )]
         for group in groups:
             group.pop("edges", None)
+            _attach_evidence_scope(conn, group)
         full_coverage = row_json(analysis, "coverage_json", {})
         coverage = {
             key: full_coverage.get(key)
@@ -169,7 +191,10 @@ def task_context(conn, task):
             },
             "validation_contract": {
                 "semantic_effect_hypotheses_are_untrusted": True,
-                "dimensions_require_status_reason_evidence_level_and_refs": True,
+                "semantic_refs_must_come_from_current_group_admissible_scope": True,
+                "hypothesis_only_evidence_cannot_support_validation": True,
+                "new_source_evidence_is_inline_and_runtime_numbered": True,
+                "dimensions_require_status_reason_evidence_level_and_support": True,
                 "confirmed_effect_chain": ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
                 "confirmed_effect_chain_requires_fresh_validation_evidence": True,
                 "poc_produced_by_later_phase": True,
@@ -224,7 +249,8 @@ def task_context(conn, task):
                 "trigger_kind": ["adb_shell", "ability_want", "common_event", "ipc_client", "provider_query", "web_navigation", "jsbridge_call", "network", "crypto", "archive", "distributed", "generic"],
                 "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "impact"],
                 "form_selection": "受控值到敏感操作的完整触发链能用 hdc shell aa start 命令行表达时选 shell；需要应用上下文/复杂参数/回调/内部链路时选 arkts 并附最小工程复现步骤",
-                "self_verification_required": "code/trigger.payload 引用的应用内符号必须逐一用 atlas 核验并写回 symbol_refs 与证据",
+                "evidence_refs_scope": "evidence_refs 只能引用 inherited_evidence_ids 中已有的证据 id；新证据内联在 symbol_refs 的 evidence 数组，不创建证据 ID，编号和去重由运行时完成",
+                "self_verification_required": "code/trigger.payload 引用的应用内符号必须逐一用 atlas 核验并写回 symbol_refs 与内联 evidence",
             },
         }
     return payload

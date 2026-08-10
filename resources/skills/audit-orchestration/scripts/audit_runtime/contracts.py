@@ -6,6 +6,8 @@ import re
 from jsonschema import Draft202012Validator
 
 from .common import *
+from .evidence import (semantic_admissible_refs, semantic_hypothesis_refs,
+                       validation_semantic_refs)
 from .store import row_json
 from .task_context import semantic_group_context, task_context
 
@@ -24,8 +26,6 @@ def normalize_submission(result, task, conn=None):
     if task["kind"] != "poc_generation":
         result["entry_id"] = task["subject_id"]
     if task["kind"] == "component_semantic_analysis":
-        # Edges belong to individual groups and are rebuilt below from ordered facts.
-        result.pop("edges", None)
         coverage = result.get("coverage", {})
         if not isinstance(coverage, dict) or not isinstance(result.get("operation_groups", []), list):
             return result
@@ -78,21 +78,8 @@ def normalize_submission(result, task, conn=None):
                     "type": "operation",
                     "body": operation["body"],
                     "location": operation["location"],
-                    "evidence_refs": list(group.get("evidence_refs", [])),
+                    "evidence": list(operation.get("evidence", [])),
                 })
-
-            # Facts are an ordered trace. Persisting their adjacency is deterministic
-            # and should not be delegated to the model as another fragile identifier contract.
-            group["edges"] = [{
-                "from": source["fact_key"],
-                "to": target["fact_key"],
-                "kind": "next",
-                "evidence_refs": sorted({
-                    value for fact in (source, target)
-                    for value in (fact.get("evidence_refs", []) if isinstance(fact.get("evidence_refs", []), list) else [])
-                    if isinstance(value, str)
-                }),
-            } for source, target in zip(facts, facts[1:])]
             if operation.get("location"):
                 checked_sites.add(operation["location"])
         merged_groups = {}
@@ -118,12 +105,10 @@ def normalize_submission(result, task, conn=None):
             for key in ("branches", "security_checks"):
                 rows = existing.get(key, []) + group.get(key, [])
                 existing[key] = list({canonical_json(row): row for row in rows}.values())
-            existing["evidence_refs"] = sorted(set(existing.get("evidence_refs", [])) | set(group.get("evidence_refs", [])))
             existing_context = existing.get("context", {})
             duplicate_context = group.get("context", {})
-            existing_context["evidence_refs"] = sorted(
-                set(existing_context.get("evidence_refs", [])) | set(duplicate_context.get("evidence_refs", []))
-            )
+            context_evidence = existing_context.get("evidence", []) + duplicate_context.get("evidence", [])
+            existing_context["evidence"] = list({canonical_json(row): row for row in context_evidence}.values())
         result["operation_groups"] = list(merged_groups.values()) + unmergeable_groups
         normalized_calls = {}
         for component_call in result.get("component_calls", []):
@@ -181,36 +166,12 @@ def schema_errors(kind, result):
     return sorted(errors)
 
 
-def _semantic_refs(group):
-    refs = list(group.get("evidence_refs", []))
-    for key in ("facts", "edges", "branches", "security_checks"):
-        for row in group.get(key, []):
-            refs.extend(row.get("evidence_refs", []))
-    refs.extend(group.get("context", {}).get("evidence_refs", []))
-    for hypothesis in group.get("context", {}).get("effect_hypotheses", []):
-        refs.extend(hypothesis.get("basis_evidence_refs", []))
-    refs.extend(group.get("availability", {}).get("evidence_refs", []))
-    return refs
-
-
-def _component_call_refs(component_call):
-    refs = list(component_call.get("evidence_refs", []))
-    refs.extend(component_call.get("principal_transition", {}).get("evidence_refs", []))
-    for security_check in component_call.get("security_checks", []):
-        refs.extend(security_check.get("evidence_refs", []))
-    return refs
-
-
 def validate_semantic_analysis(result, task, conn):
     errors = []
     if result.get("task_id") != task["task_id"]:
         errors.append("task_id_mismatch")
     if result.get("entry_id") != task["subject_id"]:
         errors.append("entry_id_mismatch")
-    evidence_ids = [row.get("evidence_id") for row in result.get("evidence", [])]
-    if len(evidence_ids) != len(set(evidence_ids)):
-        errors.append("duplicate_evidence_id")
-    known_evidence = set(evidence_ids)
     coverage = result.get("coverage", {})
     entry_status = coverage.get("entry_status")
     if entry_status == "confirmed" and not coverage.get("entry_symbols_checked"):
@@ -224,14 +185,8 @@ def validate_semantic_analysis(result, task, conn):
         label = f"operation_groups[{index}]"
         model_keys.append(group.get("group_key"))
         identities.append(operation_group_identity(task["subject_id"], group))
-        missing = set(_semantic_refs(group)) - known_evidence
-        if missing:
-            errors.append(f"{label}:unknown_evidence:" + ",".join(sorted(missing)))
         semantic_context = group.get("context", {})
-        for hypothesis in semantic_context.get("effect_hypotheses", []):
-            if not hypothesis.get("basis_evidence_refs"):
-                errors.append(f"{label}:hypothesis_basis_missing")
-        if semantic_context.get("direct_observed_effect") is not None and not semantic_context.get("evidence_refs"):
+        if semantic_context.get("direct_observed_effect") is not None and not semantic_context.get("evidence"):
             errors.append(f"{label}:direct_effect_evidence_missing")
     if len(model_keys) != len(set(model_keys)):
         errors.append("duplicate_group_key")
@@ -262,9 +217,6 @@ def validate_semantic_analysis(result, task, conn):
         ]))
         if component_call.get("target_component_id") not in known_components:
             errors.append(f"{label}:unknown_target_component")
-        missing = set(_component_call_refs(component_call)) - known_evidence
-        if missing:
-            errors.append(f"{label}:unknown_evidence:" + ",".join(sorted(missing)))
     if len(call_keys) != len(set(call_keys)):
         errors.append("duplicate_call_key")
     if len(call_identities) != len(set(call_identities)):
@@ -291,10 +243,6 @@ def validate_exploitability(result, task, conn):
     if len(group_ids) != len(actual):
         errors.append("duplicate_operation_group_validation")
 
-    verification_ids = [row.get("evidence_id") for row in result.get("evidence", [])]
-    if len(verification_ids) != len(set(verification_ids)):
-        errors.append("duplicate_evidence_id")
-
     analysis = conn.execute("SELECT coverage_json FROM semantic_analyses WHERE entry_id=?", (task["subject_id"],)).fetchone()
     entry_status = row_json(analysis, "coverage_json", {}).get("entry_status") if analysis else None
     for index, validation in enumerate(result.get("validations", [])):
@@ -302,28 +250,22 @@ def validate_exploitability(result, task, conn):
         group = semantic_group_context(conn, validation.get("group_id"))
         if not group:
             continue
-        known_evidence = set(_semantic_refs(group)) | set(verification_ids)
-        refs = list(validation.get("evidence_refs", []))
-        refs.extend(validation.get("business_intent", {}).get("evidence_refs", []))
-        refs.extend(validation.get("security_boundary", {}).get("evidence_refs", []))
-        refs.extend(validation.get("principal_analysis", {}).get("evidence_refs", []))
-        refs.extend(validation.get("availability_analysis", {}).get("evidence_refs", []))
-        for dimension in validation.get("exploitability", {}).values():
-            if isinstance(dimension, dict):
-                refs.extend(dimension.get("evidence_refs", []))
-        for proof in validation.get("effect_chain", {}).values():
-            if isinstance(proof, dict):
-                refs.extend(proof.get("evidence_refs", []))
-        for counter in validation.get("counter_evidence", []):
-            refs.extend(counter.get("evidence_refs", []))
-        missing = set(refs) - known_evidence
-        if missing:
-            errors.append(f"{label}:unknown_semantic_evidence:" + ",".join(sorted(missing)))
+        refs = validation_semantic_refs(validation)
+        admissible_refs = semantic_admissible_refs(group)
+        hypothesis_refs = semantic_hypothesis_refs(group)
+        outside_refs = refs - admissible_refs - hypothesis_refs
+        if outside_refs:
+            errors.append(f"{label}:evidence_outside_operation_group:" + ",".join(sorted(outside_refs)))
+        inadmissible_refs = refs & hypothesis_refs
+        if inadmissible_refs:
+            errors.append(f"{label}:hypothesis_evidence_not_admissible:" + ",".join(sorted(inadmissible_refs)))
         checks = validation.get("exploitability", {})
         for name in SIX_EXPLOITABILITY_CHECKS:
             dimension = checks.get(name, {})
+            support = dimension.get("evidence", {})
+            has_support = bool(support.get("semantic_refs") or support.get("verification"))
             if dimension.get("status") == "true" and (
-                    dimension.get("evidence_level") == "hypothesis" or not dimension.get("evidence_refs")):
+                    dimension.get("evidence_level") == "hypothesis" or not has_support):
                 errors.append(f"{label}:true_dimension_evidence_insufficient:{name}")
         if group.get("scope") == "cross_component" and not validation.get("principal_analysis"):
             errors.append(f"{label}:cross_component_requires_principal_analysis")
@@ -337,10 +279,10 @@ def validate_exploitability(result, task, conn):
             effect_chain = validation.get("effect_chain", {})
             for proof_name in ("controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"):
                 proof = effect_chain.get(proof_name, {})
-                proof_refs = proof.get("evidence_refs", [])
-                if not proof.get("location") or not proof_refs:
+                support = proof.get("evidence", {})
+                if not proof.get("location") or not (support.get("semantic_refs") or support.get("verification")):
                     errors.append(f"{label}:confirmed_effect_chain_incomplete:{proof_name}")
-                elif not set(proof_refs) & set(verification_ids):
+                elif not support.get("verification"):
                     errors.append(f"{label}:confirmed_effect_not_independently_verified:{proof_name}")
         if (validation.get("security_check_outcome") == "effective"
                 and checks.get("security_check_bypassed_or_absent", {}).get("status") == "true"):
@@ -358,7 +300,7 @@ ARKTS_TRIGGER_API = re.compile(r"startAbility|rpc\.|commonEventManager|dataAbili
 
 
 def validate_poc(result, task, conn):
-    """v3.2-aligned PoC contract: evidence integrity, executable code, phase boundary."""
+    """PoC contract: refs within inherited scope, inline symbol evidence, executable code, phase boundary."""
     errors = []
     if result.get("task_id") != task["task_id"]:
         errors.append("task_id_mismatch")
@@ -374,10 +316,7 @@ def validate_poc(result, task, conn):
     entry_type = result.get("entry_type")
     if entry_type not in allowed_entry_types:
         errors.append(f"entry_type_mismatch:{entry_type}:allowed={','.join(sorted(allowed_entry_types))}")
-    evidence_ids = [row.get("evidence_id") for row in result.get("evidence", [])]
-    if len(evidence_ids) != len(set(evidence_ids)):
-        errors.append("duplicate_evidence_id")
-    allowed_evidence = set(evidence_ids) | set(input_doc.get("inherited_evidence_ids", []))
+    allowed_evidence = set(input_doc.get("inherited_evidence_ids", []))
     code = result.get("code")
     if not isinstance(code, str) or not code:
         errors.append("poc_code_required")
@@ -406,7 +345,8 @@ def validate_poc(result, task, conn):
             errors.append("poc_arkts_api_required")
     refs = list(result.get("evidence_refs", []))
     for symbol_ref in result.get("symbol_refs", []):
-        refs.append(symbol_ref.get("evidence_id"))
+        if not symbol_ref.get("evidence"):
+            errors.append("symbol_ref_evidence_missing")
     missing = set(refs) - allowed_evidence
     if missing:
         errors.append("unknown_evidence:" + ",".join(sorted(missing)))

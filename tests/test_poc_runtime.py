@@ -35,7 +35,7 @@ def poc_result_for(task, **overrides):
         "expected_observation": "返回私有记录", "limitations": "未在真机验证",
         "execution_hint": {"step_by_step": ["安装 debug 包", "运行代码"],
                            "device_required": "emulator", "network_required": False},
-        "symbol_refs": [], "evidence": [], "evidence_refs": [],
+        "symbol_refs": [], "evidence_refs": [],
     }
     result.update(overrides)
     return result
@@ -128,10 +128,31 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
         task = self.claim("poc_generation")
 
         rejected = self.submit_poc_result(task, poc_result_for(
-            task, symbol_refs=[{"symbol": "EntryAbility.onNewWant", "evidence_id": "EV-MISSING",
+            task, symbol_refs=[{"symbol": "EntryAbility.onNewWant", "evidence": [],
                                 "verified_by": "atlas_symbol"}]))
         self.assertFalse(rejected["accepted"])
-        self.assertIn("unknown_evidence", rejected["error"])
+        self.assertIn("symbol_ref_evidence_missing", rejected["error"])
+        task = self.claim("poc_generation")
+
+        accepted = self.submit_poc_result(task, poc_result_for(
+            task, symbol_refs=[{"symbol": "EntryAbility.onNewWant",
+                                "evidence": [self.source_evidence()],
+                                "verified_by": "atlas_symbol"}]))
+        self.assertTrue(accepted["accepted"], accepted)
+        finding_id = task["input"]["finding"]["finding_id"]
+        with database(self.run / "run.db") as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM poc_artifacts WHERE finding_id=?", (finding_id,)
+            ).fetchone()
+            payload = json.loads(row["payload_json"])
+            refs = payload["symbol_refs"][0]["evidence_refs"]
+            self.assertEqual(len(refs), 1)
+            self.assertTrue(refs[0].startswith("EVID-"))
+            self.assertNotIn("evidence", payload["symbol_refs"][0])
+            self.assertIn(refs[0], payload["evidence_refs"])
+            evidence = conn.execute("SELECT * FROM evidence WHERE evidence_id=?", (refs[0],)).fetchone()
+            self.assertEqual(evidence["summary"], "entry reaches database query")
+            self.assertEqual(evidence["task_id"], task["task_id"])
 
     def test_exhausted_poc_does_not_block_run_completion(self):
         self.submit_semantics([self.semantic_group()])
@@ -187,32 +208,30 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
         semantic_handle = claim_batch(full, 5)["tasks"][0]
         semantic_task = json.loads(Path(semantic_handle["task_file"]).read_text(encoding="utf-8"))
         semantic = self.semantic_result(semantic_task["subject_id"], semantic_task["task_id"], "EntryAbility.onCreate")
+        source_evidence = [self.source_evidence()]
         group = {
             "group_key": "query", "category": "data_access",
             "capability_id": "CAP-PROVIDER-001", "title": "外部参数影响查询",
-            "operation": {"body": "query private records", "location": "EntryAbility.ets:42"},
+            "operation": {"body": "query private records", "location": "EntryAbility.ets:42",
+                          "evidence": source_evidence},
             "controlled_properties": ["want.parameters.recordId"],
             "context": {
                 "external_actor": "third-party application", "intended_behavior": "query one record",
                 "protected_assets": ["private records"], "direct_observed_effect": "record is returned",
-                "effect_hypotheses": [], "evidence_refs": ["EV-TRACE"],
+                "effect_hypotheses": [], "evidence": source_evidence,
             },
-            "branches": [{"condition": "always", "locations": ["EntryAbility.ets:20"], "evidence_refs": ["EV-TRACE"]}],
+            "branches": [{"condition": "always", "locations": ["EntryAbility.ets:20"],
+                          "evidence": source_evidence}],
             "facts": [
                 {"fact_key": "entry", "type": "entrypoint", "body": "external Want",
-                 "location": "EntryAbility.ets:10", "evidence_refs": ["EV-TRACE"]},
+                 "location": "EntryAbility.ets:10", "evidence": source_evidence},
                 {"fact_key": "operation", "type": "operation", "body": "query private records",
-                 "location": "EntryAbility.ets:42", "evidence_refs": ["EV-TRACE"]},
+                 "location": "EntryAbility.ets:42", "evidence": source_evidence},
             ],
-            "edges": [{"from": "entry", "to": "operation", "kind": "reaches", "evidence_refs": ["EV-TRACE"]}],
-            "security_checks": [], "evidence_refs": ["EV-TRACE"],
+            "security_checks": [],
         }
         semantic["operation_groups"] = [group]
         semantic["coverage"]["operation_sites_checked"] = ["EntryAbility.ets:42"]
-        semantic["evidence"] = [{
-            "evidence_id": "EV-TRACE", "kind": "atlas_trace", "source": "atlas",
-            "summary": "entry reaches protected query", "location": "EntryAbility.ets:42",
-        }]
         Path(semantic_handle["submission_file"]).write_text(json.dumps(semantic), encoding="utf-8")
         accepted = submit_result(full, semantic_task["task_id"], Path(semantic_handle["submission_file"]),
                                  semantic_task["attempt"])
@@ -221,10 +240,11 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
         validation_handle = claim_batch(full, 5)["tasks"][0]
         validation_task = json.loads(Path(validation_handle["task_file"]).read_text(encoding="utf-8"))
         persisted_group = validation_task["input"]["semantic_analysis"]["operation_groups"][0]
-        evidence_refs = list(persisted_group["evidence_refs"])
+        evidence = self.evidence_support(persisted_group)
+        verification = [self.verification_evidence()]
         checks = {name: {
             "status": "true", "reason": "源码核验成立", "evidence_level": "direct",
-            "evidence_refs": evidence_refs,
+            "evidence": evidence,
         } for name in SIX_EXPLOITABILITY_CHECKS}
         validation = {
             "group_id": persisted_group["group_id"], "capability_id": "CAP-PROVIDER-001",
@@ -232,15 +252,16 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
             "security_check_outcome": "absent",
             "business_intent": {
                 "is_public_api": True, "declared_or_inferred_purpose": "query one record",
-                "allowed_controls": ["recordId"], "evidence_refs": evidence_refs,
+                "allowed_controls": ["recordId"], "evidence": evidence,
             },
             "security_boundary": {
                 "type": "data_owner", "expected_boundary": "only the owner may query the record",
-                "violation": True, "reason": "recordId is not owner-checked", "evidence_refs": evidence_refs,
+                "violation": True, "reason": "recordId is not owner-checked", "evidence": evidence,
             },
             "exploitability": checks,
             "effect_chain": {
-                key: {"description": description, "location": "EntryAbility.ets:44", "evidence_refs": ["EV-VERIFY"]}
+                key: {"description": description, "location": "EntryAbility.ets:44",
+                      "evidence": self.evidence_support(persisted_group, verification)}
                 for key, description in {
                     "controlled_value_use": "recordId 在查询构造中被读取",
                     "security_behavior_change": "recordId 改变查询范围",
@@ -250,13 +271,11 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
             },
             "counter_evidence": [],
             "impact": "读取他人记录", "severity": "high", "cwe": "CWE-639",
-            "evidence_refs": evidence_refs,
+            "evidence": evidence,
         }
         validation_result = {
             "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
             "summary": "六维验证完成", "validations": [validation],
-            "evidence": [{"evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
-                          "summary": "verified query construction", "location": "EntryAbility.ets:44"}],
         }
         Path(validation_handle["submission_file"]).write_text(json.dumps(validation_result), encoding="utf-8")
         accepted = submit_result(full, validation_task["task_id"], Path(validation_handle["submission_file"]),

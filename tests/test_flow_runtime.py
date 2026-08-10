@@ -62,11 +62,25 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         return json.loads(Path(handle["task_file"]).read_text(encoding="utf-8"))
 
     @staticmethod
-    def semantic_group(branches=None):
+    def source_evidence(summary="entry reaches database query", location="Db.ets:42"):
+        return {"kind": "atlas_trace", "source": "atlas", "summary": summary, "location": location}
+
+    @staticmethod
+    def verification_evidence(summary="verified concrete query construction", location="Db.ets:44"):
+        return {"kind": "source_read", "source": "validator", "summary": summary, "location": location}
+
+    @staticmethod
+    def evidence_support(group, verification=None):
+        semantic_refs = [row["evidence_id"] for row in group["evidence_scope"]["admissible"]]
+        return {"semantic_refs": semantic_refs, "verification": list(verification or [])}
+
+    @classmethod
+    def semantic_group(cls, branches=None):
+        evidence = [cls.source_evidence()]
         return {
             "group_key": "query-private-records", "category": "injection",
             "capability_id": "CAP-INJ-001", "title": "外部参数影响数据库查询",
-            "operation": {"body": "database query", "location": "Db.ets:42"},
+            "operation": {"body": "database query", "location": "Db.ets:42", "evidence": evidence},
             "controlled_properties": ["want.parameters.query"],
             "context": {
                 "external_actor": "third-party application",
@@ -74,25 +88,21 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "protected_assets": ["private records"],
                 "direct_observed_effect": "query result is returned to the caller",
                 "effect_hypotheses": [],
-                "evidence_refs": ["EV-TRACE"],
+                "evidence": evidence,
             },
             "branches": branches or [{
                 "condition": "action == query", "locations": ["EntryAbility.ets:20"],
-                "evidence_refs": ["EV-TRACE"],
+                "evidence": evidence,
             }],
             "facts": [
                 {"fact_key": "entry", "type": "entrypoint", "body": "external deeplink",
-                 "location": "EntryAbility.ets:10", "evidence_refs": ["EV-TRACE"]},
+                 "location": "EntryAbility.ets:10", "evidence": evidence},
                 {"fact_key": "control", "type": "control", "body": "query comes from Want",
-                 "location": "EntryAbility.ets:20", "evidence_refs": ["EV-TRACE"]},
+                 "location": "EntryAbility.ets:20", "evidence": evidence},
                 {"fact_key": "operation", "type": "operation", "body": "database query",
-                 "location": "Db.ets:42", "evidence_refs": ["EV-TRACE"]},
+                 "location": "Db.ets:42", "evidence": evidence},
             ],
-            "edges": [
-                {"from": "entry", "to": "control", "kind": "carries", "evidence_refs": ["EV-TRACE"]},
-                {"from": "control", "to": "operation", "kind": "reaches", "evidence_refs": ["EV-TRACE"]},
-            ],
-            "security_checks": [], "evidence_refs": ["EV-TRACE"],
+            "security_checks": [],
         }
 
     @classmethod
@@ -103,7 +113,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "category": "availability",
             "capability_id": "CAP-DOS-001",
             "title": "外部数量参数触发无界任务分配",
-            "operation": {"body": "allocate worker tasks in a caller-sized loop", "location": "Worker.ets:42"},
+            "operation": {"body": "allocate worker tasks in a caller-sized loop", "location": "Worker.ets:42",
+                          "evidence": [cls.source_evidence(location="Worker.ets:42")]},
             "controlled_properties": ["want.parameters.count"],
             "context": {
                 "external_actor": "三方应用",
@@ -111,7 +122,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "protected_assets": ["应用进程可用性", "任务队列"],
                 "direct_observed_effect": "任务数量随外部 count 线性增长直至进程资源耗尽",
                 "effect_hypotheses": [],
-                "evidence_refs": ["EV-TRACE"],
+                "evidence": [cls.source_evidence(location="Worker.ets:42")],
             },
             "availability": {
                 "resource_or_failure": "任务队列和内存持续增长，最终导致应用进程不可用",
@@ -121,7 +132,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "repeat_trigger": "导出组件可被三方应用重复调用",
                 "affected_scope": "应用主进程及其全部组件",
                 "recovery": "需要系统终止并重启应用进程",
-                "evidence_refs": ["EV-TRACE"],
+                "evidence": [cls.source_evidence(location="Worker.ets:42")],
             },
         })
         group["facts"][1]["body"] = "count comes from Want"
@@ -140,10 +151,6 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "unresolved_targets": [],
             },
             "operation_groups": groups, "component_calls": component_calls or [],
-            "evidence": [{
-                "evidence_id": "EV-TRACE", "kind": "atlas_trace", "source": "atlas",
-                "summary": "entry reaches database query", "location": "Db.ets:42",
-            }],
         }
 
     def submit_semantics(self, groups, entry_status="confirmed"):
@@ -154,14 +161,15 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         return task, submitted
 
     @staticmethod
-    def validation_for(group, classification="confirmed_vulnerability", verification_ref="EV-VERIFY"):
+    def validation_for(group, classification="confirmed_vulnerability", include_verification=True):
         confirmed = classification == "confirmed_vulnerability"
-        evidence = list(group["evidence_refs"])
+        verification = [SplitPipelineRuntimeTest.verification_evidence()] if include_verification else []
+        evidence = SplitPipelineRuntimeTest.evidence_support(group)
         checks = {name: {
             "status": str(confirmed).lower(),
             "reason": "源码核验成立" if confirmed else "源码核验不成立",
             "evidence_level": "direct",
-            "evidence_refs": evidence,
+            "evidence": evidence,
         } for name in SIX_EXPLOITABILITY_CHECKS}
         validation = {
             "group_id": group["group_id"], "capability_id": group.get("capability_id"),
@@ -170,20 +178,21 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "security_check_outcome": "absent" if confirmed else "effective",
             "business_intent": {
                 "is_public_api": True, "declared_or_inferred_purpose": "打开公开内容",
-                "allowed_controls": ["recordId"], "evidence_refs": evidence,
+                "allowed_controls": ["recordId"], "evidence": evidence,
             },
             "security_boundary": {
                 "type": "data_owner", "expected_boundary": "外部调用者不能查询私有记录",
-                "violation": confirmed, "reason": "查询是否越过私有数据边界", "evidence_refs": evidence,
+                "violation": confirmed, "reason": "查询是否越过私有数据边界", "evidence": evidence,
             },
-            "exploitability": checks, "counter_evidence": [], "evidence_refs": evidence,
+            "exploitability": checks, "counter_evidence": [], "evidence": evidence,
         }
         if confirmed:
             validation.update({
                 "impact": "未授权读取私有记录", "severity": "high",
                 "cwe": "CWE-89",
                 "effect_chain": {
-                    key: {"description": description, "location": "Db.ets:44", "evidence_refs": [verification_ref]}
+                    key: {"description": description, "location": "Db.ets:44",
+                          "evidence": SplitPipelineRuntimeTest.evidence_support(group, verification)}
                     for key, description in {
                         "controlled_value_use": "受控查询参数在查询构造中被读取",
                         "security_behavior_change": "受控参数改变查询选择范围",
@@ -196,7 +205,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             validation.update({
                 "demotion_reason": "防护阻止了越权查询",
                 "counter_evidence": [{"kind": "effective_security_check", "reason": "校验覆盖受控参数",
-                                      "evidence_refs": evidence}],
+                                      "evidence": evidence}],
             })
         if group.get("scope") == "cross_component":
             principal_state = group.get("principal_state", {})
@@ -210,7 +219,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "origin_bound_to_observed_principal": principal_state.get("origin_binding") == "preserved",
                 "delegation_risk": principal_state.get("origin_binding") == "replaced_by_caller",
                 "reason": "downstream observes the component identity instead of the external origin",
-                "evidence_refs": evidence,
+                "evidence": evidence,
             }
         return validation
 
@@ -218,12 +227,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         task = self.claim("exploitability_validation")
         semantic = task["input"]["semantic_analysis"]
         validations = [self.validation_for(group, classification) for group in semantic["operation_groups"]]
-        for validation in validations:
-            validation["evidence_refs"].append("EV-VERIFY")
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
-                  "summary": "六维验证完成", "validations": validations,
-                  "evidence": [{"evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
-                                "summary": "verified concrete query construction", "location": "Db.ets:44"}]}
+                  "summary": "六维验证完成", "validations": validations}
         submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
         return task, submitted
 
@@ -240,7 +245,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "expected_observation": "返回私有记录", "limitations": "未在真机验证",
             "execution_hint": {"step_by_step": ["安装 debug 包", "执行命令", "观察返回"],
                                "device_required": "emulator", "network_required": False},
-            "symbol_refs": [], "evidence": [], "evidence_refs": [],
+            "symbol_refs": [], "evidence_refs": [],
         }
         submitted = submit_result(run or self.run, task["task_id"],
                                   self.write_submission(task, result), task["attempt"])
@@ -256,6 +261,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertNotIn("entry", validation_task["input"]["semantic_analysis"])
         self.assertIn("Db.ets", validation_task["input"]["verification_scope"]["seed_files"])
         self.assertEqual(len(validation_task["input"]["semantic_analysis"]["operation_groups"]), 1)
+        evidence_scope = validation_task["input"]["semantic_analysis"]["operation_groups"][0]["evidence_scope"]
+        self.assertEqual(len(evidence_scope["admissible"]), 1)
+        self.assertEqual(evidence_scope["hypothesis_only"], [])
+        self.assertTrue(all(row["evidence_id"].startswith("EVID-") for row in evidence_scope["admissible"]))
         with database(self.run / "run.db") as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM semantic_analyses").fetchone()["n"], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM validation_results").fetchone()["n"], 0)
@@ -317,16 +326,13 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 "affected_scope": "应用主进程及其全部组件",
                 "recovery": "需要系统终止并重启应用进程",
                 "reason": "外部 count 无上限并直接决定任务分配数量",
-                "evidence_refs": persisted_group["evidence_refs"],
+                "evidence": self.evidence_support(persisted_group),
             },
         })
         rejected = submit_result(
             run, validation_task["task_id"], self.write_submission(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
-                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [{
-                    "evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
-                    "summary": "核验外部数量参数到资源耗尽的完整效果链", "location": "Worker.ets:42",
-                }],
+                "summary": "DoS 六维验证完成", "validations": [validation],
             }), validation_task["attempt"],
         )
         self.assertFalse(rejected["accepted"])
@@ -337,10 +343,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         accepted = submit_result(
             run, validation_task["task_id"], self.write_submission(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
-                "summary": "DoS 六维验证完成", "validations": [validation], "evidence": [{
-                    "evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
-                    "summary": "核验外部数量参数到资源耗尽的完整效果链", "location": "Worker.ets:42",
-                }],
+                "summary": "DoS 六维验证完成", "validations": [validation],
             }), validation_task["attempt"],
         )
         self.assertTrue(accepted["accepted"], accepted)
@@ -426,7 +429,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "type": "白名单检查", "location": "EntryAbility.ets:30",
             "protects": "私有记录查询", "subject_kind": "origin_principal",
             "validated_property": "caller bundle name", "behavior": "只允许受信任调用者继续查询",
-            "evidence_refs": ["EV-TRACE"],
+            "evidence": [self.source_evidence(location="EntryAbility.ets:30")],
         }]
         task = self.claim("component_semantic_analysis")
         result = self.semantic_result(task, [group])
@@ -459,7 +462,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         with database(self.run / "run.db") as conn, transaction(conn):
             row = conn.execute("SELECT group_id FROM findings").fetchone()
             group = group_context(conn, row["group_id"])
-            weaker = self.validation_for(group, "residual_risk")
+            weaker = json.loads(json.dumps(group["validation"]))
+            weaker["classification"] = "residual_risk"
+            weaker["title"] = "需要进一步确认的查询风险"
+            weaker["demotion_reason"] = "现有证据不足以维持确认结论"
             weaker["evidence_gap"] = "需要更多运行时证据"
             _merge_finding(conn, row["group_id"], group, weaker)
         with database(self.run / "run.db") as conn:
@@ -471,7 +477,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
 
     def test_many_ordinary_branches_remain_one_semantic_group(self):
         branches = [{"condition": f"route == {index}", "locations": [f"Router.ets:{20 + index}"],
-                     "evidence_refs": ["EV-TRACE"]} for index in range(12)]
+                     "evidence": [self.source_evidence(location=f"Router.ets:{20 + index}")]}
+                    for index in range(12)]
         self.submit_semantics([self.semantic_group(branches)])
         with database(self.run / "run.db") as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM operation_groups").fetchone()["n"], 1)
@@ -481,10 +488,6 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         group = self.semantic_group()
         group["controlled_properties"] = []
         group["facts"] = [fact for fact in group["facts"] if fact["type"] != "operation"]
-        group["edges"] = [{
-            "from": "model-local-id", "to": "missing-id", "kind": "reaches",
-            "evidence_refs": ["EV-TRACE"],
-        }]
         result = self.semantic_result(task, [group])
         result["coverage"]["operation_sites_checked"] = []
         submitted = submit_result(
@@ -496,7 +499,9 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertEqual(normalized["controlled_properties"], [])
         self.assertEqual(sum(fact["type"] == "operation" for fact in normalized["facts"]), 1)
         self.assertEqual(normalized["facts"][-1]["location"], "Db.ets:42")
-        self.assertEqual(len(normalized["edges"]), len(normalized["facts"]) - 1)
+        with database(self.run / "run.db") as conn:
+            stored = group_context(conn, submitted["group_ids"][0])
+        self.assertEqual(len(stored["edges"]), len(stored["facts"]) - 1)
         self.assertEqual(persisted["coverage"]["operation_sites_checked"], ["Db.ets:42"])
 
     def test_equivalent_semantic_groups_are_merged(self):
@@ -515,17 +520,12 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.submit_semantics([group])
         task = self.claim("exploitability_validation")
         semantic_group = task["input"]["semantic_analysis"]["operation_groups"][0]
-        validation = self.validation_for(semantic_group, verification_ref="EV-ANALYSIS")
+        validation = self.validation_for(semantic_group)
         validation["demotion_reason"] = ""
         validation["evidence_gap"] = ""
-        validation["evidence_refs"].append("EV-ANALYSIS")
         result = {
             "task_id": task["task_id"], "entry_id": task["subject_id"],
             "summary": "六维验证完成", "validations": [validation],
-            "evidence": [{
-                "evidence_id": "EV-ANALYSIS", "kind": "atlas_call_graph", "source": "atlas",
-                "summary": "调用链整体核验结论", "location": None,
-            }],
         }
         submitted = submit_result(
             self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
@@ -538,13 +538,14 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         group["context"].update({
             "direct_observed_effect": None,
             "effect_hypotheses": [{
-                "claim": "参数可能跳过安全检查", "basis_evidence_refs": ["EV-TRACE"],
+                "claim": "参数可能跳过安全检查",
+                "basis_evidence": [self.source_evidence("字段名提供待核查线索", "Db.ets:45")],
                 "missing_proofs": ["字段读取位置", "安全行为变化", "具体影响"],
             }],
         })
         group["facts"].append({
             "fact_key": "guessed-effect", "type": "effect", "body": "安全检查被跳过",
-            "location": "Db.ets:45", "evidence_refs": ["EV-TRACE"],
+            "location": "Db.ets:45", "evidence": [self.source_evidence(location="Db.ets:45")],
         })
         submitted = submit_result(
             self.run, task["task_id"], self.write_submission(task, self.semantic_result(task, [group])),
@@ -554,27 +555,36 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertIn("schema:", submitted["error"])
 
     def test_hypothesis_cannot_mark_dimension_true_and_semantic_evidence_cannot_confirm_effect(self):
-        self.submit_semantics([self.semantic_group()])
+        semantic_group = self.semantic_group()
+        semantic_group["context"]["effect_hypotheses"] = [{
+            "claim": "字段名可能暗示安全效果",
+            "basis_evidence": [self.source_evidence("仅观察到可疑字段名", "Db.ets:46")],
+            "missing_proofs": ["字段的真实使用", "具体安全影响"],
+        }]
+        self.submit_semantics([semantic_group])
         task = self.claim("exploitability_validation")
         group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        hypothesis_id = group["evidence_scope"]["hypothesis_only"][0]["evidence_id"]
         validation = self.validation_for(group, "residual_risk")
         validation["evidence_gap"] = "缺少实际安全效果证据"
+        validation["evidence"]["semantic_refs"] = [hypothesis_id]
         validation["exploitability"]["sink_reached"].update({
             "status": "true", "reason": "字段名暗示到达操作", "evidence_level": "hypothesis",
         })
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
-                  "summary": "效果尚未确认", "validations": [validation], "evidence": []}
+                  "summary": "效果尚未确认", "validations": [validation]}
         rejected = submit_result(
             self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
         )
         self.assertFalse(rejected["accepted"])
         self.assertIn("true_dimension_evidence_insufficient:sink_reached", rejected["error"])
+        self.assertIn("hypothesis_evidence_not_admissible", rejected["error"])
 
         task = self.claim("exploitability_validation")
         group = task["input"]["semantic_analysis"]["operation_groups"][0]
-        inherited_only = self.validation_for(group, verification_ref="EV-TRACE")
+        inherited_only = self.validation_for(group, include_verification=False)
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
-                  "summary": "仅复用语义证据", "validations": [inherited_only], "evidence": []}
+                  "summary": "仅复用语义证据", "validations": [inherited_only]}
         rejected = submit_result(
             self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
         )
@@ -598,7 +608,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.submit_semantics([self.semantic_group()])
         task = self.claim("exploitability_validation")
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
-                  "summary": "missing validation", "validations": [], "evidence": []}
+                  "summary": "missing validation", "validations": []}
         submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
         self.assertFalse(submitted["accepted"])
         self.assertIn("unvalidated_operation_groups", submitted["error"])
@@ -607,25 +617,57 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.submit_semantics([self.semantic_group()])
         task = self.claim("exploitability_validation")
         group = task["input"]["semantic_analysis"]["operation_groups"][0]
-        validation = self.validation_for(group, verification_ref="EV-OUTSIDE")
-        validation["evidence_refs"] = ["EVID-INVENTED"]
+        validation = self.validation_for(group)
+        validation["evidence"]["semantic_refs"] = ["EVID-INVENTED"]
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
-                  "summary": "invalid evidence", "validations": [validation], "evidence": []}
+                  "summary": "invalid evidence", "validations": [validation]}
         submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
         self.assertFalse(submitted["accepted"])
-        self.assertIn("unknown_semantic_evidence", submitted["error"])
+        self.assertIn("evidence_outside_operation_group", submitted["error"])
+
+    def test_validation_cannot_borrow_evidence_from_sibling_operation_group(self):
+        first = self.semantic_group()
+        second = self.semantic_group()
+        second["group_key"] = "delete-private-records"
+        second["operation"] = {
+            "body": "delete private records", "location": "Delete.ets:72",
+            "evidence": [self.source_evidence("entry reaches delete operation", "Delete.ets:72")],
+        }
+        second["facts"][-1] = {
+            "fact_key": "operation", "type": "operation", "body": "delete private records",
+            "location": "Delete.ets:72",
+            "evidence": [self.source_evidence("entry reaches delete operation", "Delete.ets:72")],
+        }
+        self.submit_semantics([first, second])
+        task = self.claim("exploitability_validation")
+        groups = task["input"]["semantic_analysis"]["operation_groups"]
+        self.assertEqual(len(groups), 2)
+        query_group = next(group for group in groups if group["operation"]["location"] == "Db.ets:42")
+        delete_group = next(group for group in groups if group["operation"]["location"] == "Delete.ets:72")
+        query_ids = {row["evidence_id"] for row in query_group["evidence_scope"]["admissible"]}
+        delete_ids = {row["evidence_id"] for row in delete_group["evidence_scope"]["admissible"]}
+        sibling_only_id = next(iter(delete_ids - query_ids))
+        validations = [self.validation_for(group, "protected_exposure") for group in groups]
+        query_validation = next(row for row in validations if row["group_id"] == query_group["group_id"])
+        query_validation["evidence"]["semantic_refs"] = [sibling_only_id]
+        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, {
+            "task_id": task["task_id"], "entry_id": task["subject_id"],
+            "summary": "错误复用了相邻操作组证据", "validations": validations,
+        }), task["attempt"])
+        self.assertFalse(submitted["accepted"])
+        self.assertIn("evidence_outside_operation_group", submitted["error"])
 
     def test_validation_can_follow_existing_call_chain_beyond_seed_files(self):
         self.submit_semantics([self.semantic_group()])
         task = self.claim("exploitability_validation")
         group = task["input"]["semantic_analysis"]["operation_groups"][0]
-        validation = self.validation_for(group, verification_ref="EV-OUTSIDE")
-        validation["evidence_refs"].append("EV-OUTSIDE")
+        validation = self.validation_for(group)
+        outside = self.verification_evidence("shared policy implementation", "SharedPolicy.ets:9")
+        for proof in validation["effect_chain"].values():
+            proof["evidence"]["verification"] = [outside]
         result = {
             "task_id": task["task_id"], "entry_id": task["subject_id"],
             "summary": "followed a shared helper", "validations": [validation],
-            "evidence": [{"evidence_id": "EV-OUTSIDE", "kind": "source_read", "source": "validator",
-                          "summary": "shared policy implementation", "location": "SharedPolicy.ets:9"}],
         }
         submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
         self.assertTrue(submitted["accepted"], submitted)
@@ -665,6 +707,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             tasks[task["input"]["entry"]["component"]] = task
 
         def component_call(key, target, source_property, target_property, location, state="preserved"):
+            evidence = [self.source_evidence("组件调用及参数映射", location)]
             return {
                 "call_key": key, "target_component_id": target,
                 "target_symbol": f"{target}.onCreate", "transport": "startAbility",
@@ -678,9 +721,9 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                     "callee_observed_principal": key.split("-to-")[0].upper() + " component",
                     "origin_binding": "replaced_by_caller",
                     "authority_used": "source_component",
-                    "evidence_refs": ["EV-TRACE"],
+                    "evidence": evidence,
                 },
-                "security_checks": [], "evidence_refs": ["EV-TRACE"],
+                "security_checks": [], "evidence": evidence,
             }
 
         results = {
@@ -699,7 +742,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "type": "component whitelist", "location": "C.ets:35",
             "protects": "private file operation", "subject_kind": "immediate_caller",
             "validated_property": "calling component identity",
-            "behavior": "allows B component", "evidence_refs": ["EV-TRACE"],
+            "behavior": "allows B component", "evidence": [self.source_evidence(location="C.ets:35")],
         }]
         for name, task in tasks.items():
             submitted = submit_result(
@@ -724,10 +767,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         submitted = submit_result(
             run, validation_task["task_id"], self.write_submission(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
-                "summary": "delegated authority validated", "validations": [validation], "evidence": [{
-                    "evidence_id": "EV-VERIFY", "kind": "source_read", "source": "validator",
-                    "summary": "核验跨组件参数使用和受保护操作", "location": "CAbility.ets:42",
-                }],
+                "summary": "delegated authority validated", "validations": [validation],
             }), validation_task["attempt"],
         )
         self.assertTrue(submitted["accepted"], submitted)
@@ -788,9 +828,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                         "callee_observed_principal": "A component",
                         "origin_binding": "replaced_by_caller",
                         "authority_used": "source_component",
-                        "evidence_refs": ["EV-TRACE"],
+                        "evidence": [self.source_evidence("组件调用及参数映射", "A.ets:20")],
                     },
-                    "security_checks": [], "evidence_refs": ["EV-TRACE"],
+                    "security_checks": [],
+                    "evidence": [self.source_evidence("组件调用及参数映射", "A.ets:20")],
                 }
                 result = self.semantic_result(first, [], component_calls=[component_call])
                 submitted = submit_result(

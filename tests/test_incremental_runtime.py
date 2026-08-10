@@ -81,6 +81,21 @@ class IncrementalRuntimeTest(unittest.TestCase):
         }
 
     @staticmethod
+    def source_evidence(summary="entry reaches protected query", location="EntryAbility.ets:42"):
+        return {"kind": "atlas_trace", "source": "atlas", "summary": summary, "location": location}
+
+    @staticmethod
+    def verification_evidence(summary="verified query construction", location="EntryAbility.ets:44"):
+        return {"kind": "source_read", "source": "validator", "summary": summary, "location": location}
+
+    @staticmethod
+    def evidence_support(group, verification=None):
+        return {
+            "semantic_refs": [row["evidence_id"] for row in group["evidence_scope"]["admissible"]],
+            "verification": list(verification or []),
+        }
+
+    @staticmethod
     def semantic_result(entry_id, task_id, symbol):
         return {
             "task_id": task_id, "entry_id": entry_id, "summary": "组件未发现安全相关操作",
@@ -88,7 +103,7 @@ class IncrementalRuntimeTest(unittest.TestCase):
                 "entry_status": "confirmed", "entry_notes": ["入口已确认"],
                 "entry_symbols_checked": [symbol], "operation_sites_checked": [], "unresolved_targets": [],
             },
-            "operation_groups": [], "component_calls": [], "evidence": [],
+            "operation_groups": [], "component_calls": [],
         }
 
     def write_baseline(self, model, source_type="snapshot", git=None, semantic_overrides=None):
@@ -258,46 +273,41 @@ class IncrementalRuntimeTest(unittest.TestCase):
 
         semantic_handle = claim_batch(full, 5)["tasks"][0]
         semantic_task = json.loads(Path(semantic_handle["task_file"]).read_text(encoding="utf-8"))
+        source_evidence = [self.source_evidence()]
         group = {
             "group_key": "protected-query", "category": "data_access",
             "capability_id": "CAP-PROVIDER-001", "title": "受保护的数据查询",
-            "operation": {"body": "query private records", "location": "EntryAbility.ets:42"},
+            "operation": {"body": "query private records", "location": "EntryAbility.ets:42",
+                          "evidence": source_evidence},
             "controlled_properties": ["want.parameters.recordId"],
             "context": {
                 "external_actor": "third-party application", "intended_behavior": "query one record",
                 "protected_assets": ["private records"], "direct_observed_effect": "record is returned",
                 "effect_hypotheses": [],
-                "evidence_refs": ["EV-TRACE"],
+                "evidence": source_evidence,
             },
             "branches": [{
                 "condition": "action == query", "locations": ["EntryAbility.ets:20"],
-                "evidence_refs": ["EV-TRACE"],
+                "evidence": source_evidence,
             }],
             "facts": [
                 {"fact_key": "entry", "type": "entrypoint", "body": "external Want",
-                 "location": "EntryAbility.ets:10", "evidence_refs": ["EV-TRACE"]},
+                 "location": "EntryAbility.ets:10", "evidence": source_evidence},
                 {"fact_key": "operation", "type": "operation", "body": "query private records",
-                 "location": "EntryAbility.ets:42", "evidence_refs": ["EV-TRACE"]},
+                 "location": "EntryAbility.ets:42", "evidence": source_evidence},
             ],
-            "edges": [{"from": "entry", "to": "operation", "kind": "reaches",
-                       "evidence_refs": ["EV-TRACE"]}],
             "security_checks": [{
                 "type": "owner check", "location": "EntryAbility.ets:35",
                 "protects": "private records", "subject_kind": "origin_principal",
                 "validated_property": "record owner", "behavior": "rejects another owner",
-                "evidence_refs": ["EV-TRACE"],
+                "evidence": source_evidence,
             }],
-            "evidence_refs": ["EV-TRACE"],
         }
         semantic = self.semantic_result(
             semantic_task["subject_id"], semantic_task["task_id"], "EntryAbility.onCreate"
         )
         semantic["operation_groups"] = [group]
         semantic["coverage"]["operation_sites_checked"] = ["EntryAbility.ets:42"]
-        semantic["evidence"] = [{
-            "evidence_id": "EV-TRACE", "kind": "atlas_trace", "source": "atlas",
-            "summary": "entry reaches protected query", "location": "EntryAbility.ets:42",
-        }]
         semantic_submission = Path(semantic_handle["submission_file"])
         semantic_submission.write_text(json.dumps(semantic), encoding="utf-8")
         semantic_accepted = submit_result(
@@ -308,11 +318,11 @@ class IncrementalRuntimeTest(unittest.TestCase):
         validation_handle = claim_batch(full, 5)["tasks"][0]
         validation_task = json.loads(Path(validation_handle["task_file"]).read_text(encoding="utf-8"))
         persisted_group = validation_task["input"]["semantic_analysis"]["operation_groups"][0]
-        evidence_refs = list(persisted_group["evidence_refs"])
+        evidence = self.evidence_support(persisted_group)
         checks = {name: {
             "status": "false" if name in {"security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"} else "true",
             "reason": "所有者校验阻止越权" if name in {"security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"} else "源码事实已确认",
-            "evidence_level": "direct", "evidence_refs": evidence_refs,
+            "evidence_level": "direct", "evidence": evidence,
         } for name in SIX_EXPLOITABILITY_CHECKS}
         validation = {
             "group_id": persisted_group["group_id"], "capability_id": "CAP-PROVIDER-001",
@@ -320,24 +330,24 @@ class IncrementalRuntimeTest(unittest.TestCase):
             "security_check_outcome": "effective",
             "business_intent": {
                 "is_public_api": True, "declared_or_inferred_purpose": "query one owned record",
-                "allowed_controls": ["recordId"], "evidence_refs": evidence_refs,
+                "allowed_controls": ["recordId"], "evidence": evidence,
             },
             "security_boundary": {
                 "type": "data_owner", "expected_boundary": "only the owner may query the record",
                 "violation": False, "reason": "owner check rejects another caller",
-                "evidence_refs": evidence_refs,
+                "evidence": evidence,
             },
             "exploitability": checks,
             "counter_evidence": [{
                 "kind": "effective_security_check", "reason": "owner check dominates the query",
-                "evidence_refs": evidence_refs,
+                "evidence": evidence,
             }],
             "demotion_reason": "owner check prevents unauthorized access",
-            "evidence_refs": evidence_refs,
+            "evidence": evidence,
         }
         validation_result = {
             "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
-            "summary": "六维验证完成", "validations": [validation], "evidence": [],
+            "summary": "六维验证完成", "validations": [validation],
         }
         validation_submission = Path(validation_handle["submission_file"])
         validation_submission.write_text(json.dumps(validation_result), encoding="utf-8")
