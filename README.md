@@ -19,7 +19,7 @@ OpenCode 使用 `.opencode/` 资源目录；Claude Code 使用 `.claude/` 资源
 
 `--resume` 用于最终报告存在 exhausted 任务的运行。参数是具体 run 目录；已完成结果保持不变，只重试失败任务，成功后覆盖生成该 run 的报告并推进合格基线。
 
-`--component` 与 `--capability` 均可重复并可组合。组件过滤用于定点审计 Ability/ExtensionAbility，能力过滤用于只验证指定能力。
+`--component` 与 `--capability` 均可重复并可组合。组件过滤用于定点审计 Ability/ExtensionAbility，能力过滤用于只验证指定能力。项目建模不再为每个模块创建宽泛的 CommonEvent 子任务；相关代码只作为所属 Ability/ExtensionAbility 组件语义的一部分处理。
 
 资源目录是部署生成物，不入库：`.opencode/`、`.claude/`、`opencode.json`、`.mcp.json`、`AGENTS.md`、`CLAUDE.md` 均由 `deploy.py` 按工具渲染生成。克隆后必须先用目标工具部署一次：
 

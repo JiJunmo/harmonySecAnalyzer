@@ -951,7 +951,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertEqual({row["entry_type"] for row in task["input"]["entry"]["facets"]},
                          {"exported_component", "deeplink"})
 
-    def test_large_candidate_ledger_becomes_eight_semantic_tasks(self):
+    def test_large_candidate_ledger_becomes_seven_component_tasks(self):
         candidates = []
         for component_index in range(7):
             for candidate_index in range(3):
@@ -960,15 +960,13 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                     "component_id": f"CMP-{component_index}", "component_name": f"Ability{component_index}",
                     "module_name": "entry", "type": "deeplink",
                 })
-        candidates.append({"candidate_id": "PE-DYNAMIC", "component_id": None,
-                           "module_name": "entry", "type": "common_event_candidate"})
         model = self.root / "large.json"
         model.write_text(json.dumps({"schema_version": 2, "status": "complete",
                                      "entry_candidates": candidates}), encoding="utf-8")
         run = Path(new_run(self.root / "large-reports", self.target)["run_dir"])
         initialized = initialize_run(run, model)
-        self.assertEqual(initialized["analysis_units"], 8)
-        self.assertEqual(len(initialized["task_ids"]), 8)
+        self.assertEqual(initialized["analysis_units"], 7)
+        self.assertEqual(len(initialized["task_ids"]), 7)
 
     def test_full_capability_and_component_cli_modes_remain_available(self):
         parser = runtime_parser()

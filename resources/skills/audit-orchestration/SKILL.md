@@ -15,7 +15,7 @@ python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py resum
 python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py status <run_dir>
 ```
 
-`prepare` 依次完成 JSON5 配置解析、Atlas 全量索引、隔离 run 创建、完整组件目录归组和起始组件任务初始化。Manifest 候选按 `component_id` 归组；无组件 ID 的动态入口候选按 module 和候选类型归组。上述工作全部由脚本完成，不调用 AI。
+`prepare` 依次完成 JSON5 配置解析、Atlas 全量索引、隔离 run 创建、完整组件目录归组和起始组件任务初始化。Manifest 候选按 `component_id` 归组；项目建模不创建宽泛的 module 级 CommonEvent 候选或独立子任务。上述工作全部由脚本完成，不调用 AI。
 
 增量模式必须已有一次无过滤且无未完成任务的成功基线。脚本将 Git 累计提交差异或非 Git 文件快照统一为 `change_set.json`，对比新旧项目模型，再按模块归属、反向模块依赖和历史组件调用计算 `impact_plan.json`。受影响组件进入原有语义任务；未受影响组件的历史结果必须重新通过当前 Schema 和业务不变量才能复用。组件连接使用当前完整语义状态重新计算；同一入口下的操作组集合及安全语义指纹完全一致时复用六维验证结果，否则重新派发验证任务。
 

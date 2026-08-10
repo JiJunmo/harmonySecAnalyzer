@@ -35,7 +35,7 @@ class ProjectProfilerTest(unittest.TestCase):
             types = {row["type"] for row in model["entry_candidates"]}
             self.assertEqual(model["status"], "complete")
             self.assertIn("deeplink", types)
-            self.assertIn("common_event_candidate", types)
+            self.assertNotIn("common_event_candidate", types)
 
     def test_models_declared_hap_hsp_and_local_dependency(self):
         with tempfile.TemporaryDirectory() as td:

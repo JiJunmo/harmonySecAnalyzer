@@ -152,7 +152,7 @@ def module_output_kind(module_type):
     }.get(str(module_type or "").lower(), "unknown")
 
 
-def make_entry_candidates(components, modules):
+def make_entry_candidates(components):
     candidates = []
 
     def add(entry_type, component, location, trigger_facts):
@@ -202,28 +202,6 @@ def make_entry_candidates(components, modules):
                 "extension_type": component.get("extension_type"),
                 "requires_stub_publication_evidence": True,
             })
-
-    for module in modules:
-        if not is_production_source_scope(module.get("source_scope")):
-            continue
-        candidates.append({
-            "candidate_id": stable_id("PE", module.get("module_id"), "common_event_candidate"),
-            "type": "common_event_candidate",
-            "source": "module_scope",
-            "component_id": None,
-            "component_name": None,
-            "module_name": module.get("name"),
-            "module_id": module.get("module_id"),
-            "module_root": module.get("root"),
-            "location": module.get("file"),
-            "exported": None,
-            "permissions": [],
-            "src_entry": module.get("src_entry"),
-            "lifecycle_candidates": [],
-            "trigger_facts": {
-                "requires_custom_event_subscription_evidence": True,
-            },
-        })
 
     return candidates
 
@@ -484,7 +462,7 @@ def profile_project(target_repo):
     active_modules = [row for row in modules if row["included_in_build"]]
     active_module_ids = {row["module_id"] for row in active_modules}
     active_components = [row for row in components if row["module_id"] in active_module_ids]
-    entry_candidates = make_entry_candidates(active_components, active_modules)
+    entry_candidates = make_entry_candidates(active_components)
     status = "partial" if any(d["severity"] == "error" for d in diagnostics) else "complete"
     return {
         "schema_version": SCHEMA_VERSION,
