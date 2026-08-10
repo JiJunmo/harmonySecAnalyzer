@@ -14,7 +14,7 @@ describe("Harmony project profiler", () => {
     expect(model.schema_version).toBe(2);
     expect(model.components).toHaveLength(1);
     expect(model.entry_candidates.map((row) => row.type)).toEqual(expect.arrayContaining(["component_scope", "exported_component", "deeplink", "implicit_want"]));
-    expect(model.entry_candidates.map((row) => row.type)).toContain("common_event_candidate");
+    expect(model.entry_candidates.map((row) => row.type)).not.toContain("common_event_candidate");
     expect(model.entry_candidates.filter((row) => row.type === "project_scope")).toHaveLength(1);
   });
 

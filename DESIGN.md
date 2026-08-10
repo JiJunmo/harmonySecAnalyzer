@@ -68,6 +68,8 @@ flowchart TB
 
 插件独占以下能力：Harmony 项目解析、Atlas 索引和 MCP Profile、审计能力目录、任务 Skill、LangGraph 状态机、五槽并发策略、路径关联、六维验证、PoC 生成、不变量、`run.db`、增量基线和报告。
 
+Project Profiler 以 Ability/ExtensionAbility 为分析单元，不为模块创建独立的 CommonEvent 审计任务；相关代码在所属组件语义范围内处理。
+
 ## 4. 通用助手链路
 
 ```text

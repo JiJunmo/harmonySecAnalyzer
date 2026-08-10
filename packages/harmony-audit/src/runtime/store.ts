@@ -127,7 +127,7 @@ export class AuditStore {
       const selectedEntryTypes = new Set(capabilityRows.filter((item) => runScope.capabilities?.includes(item.capability_id)).flatMap((item) => item.entry_types ?? []));
       const candidateEntryTypes: Record<string, readonly string[]> = {
         exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"],
-        extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], common_event_candidate: ["common_event"],
+        extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"],
         project_scope: ["project"],
       };
       const affectedEntries = new Set((incrementalPlan?.impactPlan.affected_entries as string[] | undefined) ?? []);
@@ -681,7 +681,7 @@ export class AuditStore {
       const candidates = Array.isArray(entryDocument.project_candidates) ? entryDocument.project_candidates as Record<string, unknown>[] : Array.isArray(entryDocument.facets) ? entryDocument.facets as Record<string, unknown>[] : [];
       for (const candidate of candidates) {
         const type = String(candidate.type ?? candidate.entry_type ?? "");
-        ({ exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], common_event_candidate: ["common_event"], project_scope: ["project"] } as Record<string, string[]>)[type]?.forEach((item) => allowedEntryTypes.add(item));
+        ({ exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], project_scope: ["project"] } as Record<string, string[]>)[type]?.forEach((item) => allowedEntryTypes.add(item));
       }
     }
     const localEvidence = this.insertEvidence(db, task, rows(candidate.evidence));

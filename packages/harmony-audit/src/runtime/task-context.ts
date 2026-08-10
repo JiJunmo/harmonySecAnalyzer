@@ -10,7 +10,6 @@ function facet(candidate: Row): Row {
   const transports: Record<string, string> = {
     component_scope: "component", exported_component: "want", deeplink: "uri", implicit_want: "want",
     extension_uri: "uri", ipc_service_candidate: "ipc",
-    common_event_candidate: "common_event",
   };
   return {
     entry_type: type,
@@ -155,7 +154,7 @@ export function pocTaskInput(db: Database.Database, raw: Row, findingId: string)
   for (const branch of rows(group.branches)) for (const location of strings(branch.locations)) locations.add(location);
   const allowedEntryTypes = new Set([...facets.flatMap((item) => {
     const type = String(item.entry_type ?? "");
-    return { exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], common_event_candidate: ["common_event"], project_scope: ["project"] }[type] ?? [type];
+    return { exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], project_scope: ["project"] }[type] ?? [type];
   })]);
   const evidenceRows = db.prepare(`SELECT local_evidence_id,kind,source,location,json_extract(payload_json,'$.summary') summary
     FROM evidence WHERE producer_task_id IN (

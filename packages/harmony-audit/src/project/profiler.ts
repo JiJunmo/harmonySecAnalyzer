@@ -55,7 +55,7 @@ function normalizedSkill(skill: Row, index: number): Row {
   return { skill_index: index, actions: strings(skill.actions), entities: strings(skill.entities), uris, mime_types: [...new Set([...strings(skill.type), ...strings(skill.types)])].sort() };
 }
 
-function makeEntries(components: Row[], modules: Row[]): Row[] {
+function makeEntries(components: Row[]): Row[] {
   const result: Row[] = [];
   const add = (type: string, component: Row, location: string, trigger: Row) => result.push({
     candidate_id: stableId("PE", component.component_id, type, location), type, source: "manifest", component_id: component.component_id,
@@ -76,12 +76,6 @@ function makeEntries(components: Row[], modules: Row[]): Row[] {
     const extensionType = String(component.extension_type ?? "").toLowerCase();
     if (extensionType.includes("service")) add("ipc_service_candidate", component, base, { extension_type: component.extension_type, requires_stub_publication_evidence: true });
   }
-  for (const module of modules) result.push({
-    candidate_id: stableId("PE", module.module_id, "common_event_candidate"), type: "common_event_candidate", source: "module_scope",
-    component_id: null, component_name: null, module_id: module.module_id, module_name: module.name, module_root: module.root,
-    location: module.file, exported: null, permissions: [], src_entry: module.src_entry ?? null, lifecycle_candidates: [],
-    trigger_facts: { requires_custom_event_subscription_evidence: true },
-  });
   return result;
 }
 
@@ -163,7 +157,7 @@ export async function profileProject(targetRepository: string): Promise<ProjectM
     }
   }
   const activeModules = modules.filter((module) => module.included_in_build); const activeIds = new Set(activeModules.map((module) => module.module_id)); const components = allComponents.filter((component) => activeIds.has(component.module_id));
-  const entryCandidates = makeEntries(components, activeModules);
+  const entryCandidates = makeEntries(components);
   entryCandidates.push({
     candidate_id: stableId("PE", "project_scope", root), type: "project_scope", source: "project_model",
     component_id: stableId("PROJECT", root), component_name: "项目级审计", module_id: stableId("MOD", "project_scope", root),

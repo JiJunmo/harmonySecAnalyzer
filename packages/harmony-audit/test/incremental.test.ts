@@ -71,19 +71,19 @@ describe("incremental audit migration", () => {
     for (const task of (await full.claim(5)).tasks) expect(full.reconcile(task.task_id, task.attempt, semantic(task as Record<string, any>))).toMatchObject({ accepted: true });
     const fullReport = await full.finalize();
     expect((fullReport.run as Record<string, any>).baseline).toMatchObject({ updated: true });
-    expect(JSON.parse(await readFile(incrementalBaselineFiles(root).metadata, "utf8"))).toMatchObject({ schema_version: 1, semantic_results: 4 });
+    expect(JSON.parse(await readFile(incrementalBaselineFiles(root).metadata, "utf8"))).toMatchObject({ schema_version: 1, semantic_results: 3 });
 
     await writeFile(join(root, "entry/src/main/ets/A.ets"), "export default class A { changed = true }\n");
     const model = await profileProject(root); const plan = await planIncremental(root, model);
     expect(plan.changeSet.changed_file_count).toBe(1);
     expect(plan.impactPlan.affected_entries).toHaveLength(2);
-    expect(plan.impactPlan.reusable_entries).toHaveLength(2);
+    expect(plan.impactPlan.reusable_entries).toHaveLength(1);
 
     const incremental = await AuditStore.create(root, model, { mode: "incremental", capabilities }, plan);
     const db = new Database(incremental.paths.db);
-    expect((db.prepare("SELECT COUNT(*) n FROM semantic_analyses").get() as { n: number }).n).toBe(2);
+    expect((db.prepare("SELECT COUNT(*) n FROM semantic_analyses").get() as { n: number }).n).toBe(1);
     expect(db.prepare("SELECT status,attempts FROM tasks ORDER BY status").all()).toEqual([
-      { status: "completed", attempts: 0 }, { status: "completed", attempts: 0 }, { status: "queued", attempts: 0 }, { status: "queued", attempts: 0 },
+      { status: "completed", attempts: 0 }, { status: "queued", attempts: 0 }, { status: "queued", attempts: 0 },
     ]);
     db.close();
 
