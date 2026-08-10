@@ -364,9 +364,15 @@ export async function saveIncrementalBaseline(runDirectory: string, report: Row)
     }
     const target = resolve(run.target_repo); const model = await jsonFile(resolve(runDirectory, "project-model.json")) as ProjectModel;
     const currentGit = await gitState(target); const manifest = await fileManifest(target); const findings = riskSnapshot(report);
-    const pocs = (db.prepare("SELECT p.finding_id,f.root_cause_key,p.entry_type,p.payload_json FROM poc_artifacts p JOIN findings f ON f.finding_id=p.finding_id ORDER BY p.poc_id").all() as { finding_id: string; root_cause_key: string; entry_type: string; payload_json: string }[]).map((row) => {
+    // Baseline snapshots store the raw accepted submission (tasks.result_json) so a
+    // reused snapshot passes the current model-facing schema; poc_artifacts.payload_json
+    // is the materialized shape and would fail it.
+    const pocs = (db.prepare(`SELECT p.finding_id,f.root_cause_key,p.entry_type,t.result_json FROM poc_artifacts p
+      JOIN findings f ON f.finding_id=p.finding_id
+      JOIN tasks t ON t.subject_id=p.finding_id AND t.kind='poc_generation' AND t.status='completed'
+      ORDER BY p.poc_id`).all() as { finding_id: string; root_cause_key: string; entry_type: string; result_json: string }[]).map((row) => {
       const group = db.prepare("SELECT payload_json FROM operation_groups WHERE group_id=?").get(row.root_cause_key) as { payload_json: string } | undefined;
-      return { finding_id: row.finding_id, root_cause_key: row.root_cause_key, group_fingerprint: group ? validationGroupFingerprint(JSON.parse(group.payload_json)) : "", entry_type: row.entry_type, result: JSON.parse(row.payload_json) };
+      return { finding_id: row.finding_id, root_cause_key: row.root_cause_key, group_fingerprint: group ? validationGroupFingerprint(JSON.parse(group.payload_json)) : "", entry_type: row.entry_type, result: JSON.parse(row.result_json) };
     });
     const metadata = { schema_version: INCREMENTAL_BASELINE_SCHEMA_VERSION, run_id: run.run_id, completed_at: new Date().toISOString(), source_type: currentGit ? "git" : "snapshot", git: currentGit, file_manifest: manifest, semantic_results: Object.keys(semanticResults).length, validation_results: Object.keys(validationEntries).length, audit_contract_hash: await auditContractHash(), findings: findings.length, pocs: pocs.length };
     const files = incrementalBaselineFiles(target); await mkdir(files.root, { recursive: true });

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
 import { validatePocSubmission } from "../src/validation/submission-validator.js";
-import { effectChain, sixDimensions, validationEvidence } from "./p0-fixtures.js";
+import { admissibleRefs, effectChain, evidenceRow, sixDimensions, support } from "./p0-fixtures.js";
 
 async function fixture(abilities = `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }] } }`, components: string[] = ["A"]): Promise<{ root: string; store: AuditStore }> {
   const root = await mkdtemp(join(tmpdir(), "harmony-poc-"));
@@ -15,33 +15,34 @@ async function fixture(abilities = `{ module: { name: 'entry', abilities: [{ nam
   return { root, store: await AuditStore.create(root, await profileProject(root), { capabilities: ["CAP-INJ-001"], components }) };
 }
 
+const semanticEvidence = () => [evidenceRow("entry reaches query")];
+
 const semantic = (task: Record<string, any>) => ({
   task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked",
   coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onNewWant"], operation_sites_checked: ["A.ets:12"], unresolved_targets: [] }, component_calls: [],
-  evidence: [{ evidence_id: "EV-1", kind: "atlas_trace", source: "atlas", summary: "entry reaches query", location: "A.ets:12" }],
   operation_groups: [{
     group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "query injection",
-    operation: { body: "query", location: "A.ets:12" }, controlled_properties: ["want.query"],
-    context: { external_actor: "third-party app", intended_behavior: "open public data", protected_assets: ["private data"], direct_observed_effect: "query executes", effect_hypotheses: [], evidence_refs: ["EV-1"] },
-    branches: [{ condition: "always", locations: ["A.ets:10"], evidence_refs: ["EV-1"] }], security_checks: [], evidence_refs: ["EV-1"],
-    facts: [{ fact_key: "entry", type: "entrypoint", body: "external", evidence_refs: ["EV-1"] }, { fact_key: "sink", type: "operation", body: "query", evidence_refs: ["EV-1"] }],
-    edges: [{ from: "entry", to: "sink", kind: "reaches", evidence_refs: ["EV-1"] }],
+    operation: { body: "query", location: "A.ets:12", evidence: semanticEvidence() }, controlled_properties: ["want.query"],
+    context: { external_actor: "third-party app", intended_behavior: "open public data", protected_assets: ["private data"], direct_observed_effect: "query executes", effect_hypotheses: [], evidence: semanticEvidence() },
+    branches: [{ condition: "always", locations: ["A.ets:10"], evidence: semanticEvidence() }], security_checks: [],
+    facts: [{ fact_key: "entry", type: "entrypoint", body: "external", evidence: semanticEvidence() }, { fact_key: "sink", type: "operation", body: "query", evidence: semanticEvidence() }],
   }],
 });
 
 const validation = (task: Record<string, any>, severity = "high") => {
   const group = task.input.operation_groups[0];
+  const refs = admissibleRefs(group);
   const cross = group.scope === "cross_component"; const principal = group.principal_state as Record<string, any> | undefined;
   return {
-    task_id: task.task_id, entry_id: task.input.entry_id, summary: "confirmed", evidence: [validationEvidence],
+    task_id: task.task_id, entry_id: task.input.entry_id, summary: "confirmed",
     validations: [{
       group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "query injection",
       security_check_outcome: "absent",
-      business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence_refs: [] },
-      security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence_refs: [] },
-      ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence_refs: [] } } : {}),
-      exploitability: sixDimensions(), effect_chain: effectChain(),
-      counter_evidence: [], impact: "private data disclosure", severity, cwe: "CWE-89", evidence_refs: [],
+      business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence: support(refs) },
+      security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence: support(refs) },
+      ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence: support(refs) } } : {}),
+      exploitability: sixDimensions({}, refs), effect_chain: effectChain(refs),
+      counter_evidence: [], impact: "private data disclosure", severity, cwe: "CWE-89", evidence: support(refs),
     }],
   };
 };
@@ -52,7 +53,7 @@ const poc = (task: Record<string, any>, overrides: Record<string, unknown> = {})
   language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://x?q=1' } })",
   prerequisites: ["安装 debug 包"], expected_observation: "返回越权数据", limitations: "未在真机验证",
   execution_hint: { step_by_step: ["安装 debug 包", "运行代码"], device_required: "emulator", network_required: false },
-  symbol_refs: [], evidence: [], evidence_refs: [],
+  symbol_refs: [], evidence_refs: [],
   ...overrides,
 });
 
@@ -75,8 +76,8 @@ describe("poc generation phase", () => {
     expect(pocTask.kind).toBe("poc_generation");
     expect(pocTask.input).toMatchObject({ finding: { finding_id: expect.any(String) }, verification_scope: { target_repo: expect.any(String) } });
     expect(pocTask.input.inherited_evidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ evidence_id: "EV-V", summary: "六维阶段重新读取并核验完整效果链" }),
-      expect.objectContaining({ evidence_id: "EV-1", summary: "entry reaches query" }),
+      expect.objectContaining({ evidence_id: expect.any(String), summary: "六维阶段重新读取并核验完整效果链" }),
+      expect.objectContaining({ evidence_id: expect.any(String), summary: "entry reaches query" }),
     ]));
     expect(store.reconcile(pocTask.task_id, pocTask.attempt, poc(pocTask))).toMatchObject({ accepted: true });
     const report = await store.finalize();
@@ -149,11 +150,11 @@ describe("poc generation phase", () => {
   });
 
   it("rejects unknown evidence refs and unbound symbol refs in poc submissions", () => {
-    const base = { task_id: "TASK-1", finding_id: "FIND-1", entry_type: "want", trigger: { kind: "ability_want", payload: { action: "x" } }, language: "arkts", code: "startAbility({})", expected_observation: "x", evidence: [], evidence_refs: ["EV-missing"] };
+    const base = { task_id: "TASK-1", finding_id: "FIND-1", entry_type: "want", trigger: { kind: "ability_want", payload: { action: "x" } }, language: "arkts", code: "startAbility({})", expected_observation: "x", evidence_refs: ["EV-missing"] };
     expect(() => validatePocSubmission(base, { taskId: "TASK-1", entryId: "PE-1", findingId: "FIND-1", allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
       .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "UNKNOWN_EVIDENCE_REF" }));
-    expect(() => validatePocSubmission({ ...base, evidence_refs: [], symbol_refs: [{ symbol: "RecordAbility.onNewWant", evidence_id: "EV-missing", verified_by: "atlas_symbol" }] }, { taskId: "TASK-1", entryId: "PE-1", findingId: "FIND-1", allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
-      .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "UNKNOWN_EVIDENCE_REF" }));
+    expect(() => validatePocSubmission({ ...base, evidence_refs: [], symbol_refs: [{ symbol: "RecordAbility.onNewWant", evidence: [], verified_by: "atlas_symbol" }] }, { taskId: "TASK-1", entryId: "PE-1", findingId: "FIND-1", allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
+      .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "SYMBOL_REF_EVIDENCE_MISSING" }));
   });
 
   it("does not schedule poc generation for demoted validations", async () => {
@@ -162,14 +163,14 @@ describe("poc generation phase", () => {
     expect(store.reconcile(semanticTask!.task_id, semanticTask!.attempt, semantic(semanticTask as Record<string, any>))).toMatchObject({ accepted: true });
     const [validationTask] = (await store.claim(1)).tasks;
     const demoted = {
-      task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "not exploitable", evidence: [],
+      task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "not exploitable",
       validations: [{
         group_id: (validationTask!.input.operation_groups[0] as Record<string, unknown>).group_id,
         capability_id: "CAP-INJ-001", classification: "insufficient_evidence", title: "query injection", security_check_outcome: "unknown",
-        business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence_refs: [] },
-        security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: false, reason: "missing trace", evidence_refs: [] },
+        business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence: support([]) },
+        security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: false, reason: "missing trace", evidence: support([]) },
         exploitability: sixDimensions({ externally_reachable: false, attacker_controlled: false, sink_reached: false, security_check_bypassed_or_absent: false, boundary_violated: false, concrete_impact: false }, []),
-        counter_evidence: [], demotion_reason: "cannot confirm reachable chain", evidence_gap: "missing trace", evidence_refs: [],
+        counter_evidence: [], demotion_reason: "cannot confirm reachable chain", evidence_gap: "missing trace", evidence: support([]),
       }],
     };
     expect(store.reconcile(validationTask!.task_id, validationTask!.attempt, demoted)).toMatchObject({ accepted: true });
@@ -207,7 +208,7 @@ describe("poc generation phase", () => {
     const bTask = String(firstTask!.input.entry.component_name) === "B" ? firstTask! : secondTask!;
     const aResult = {
       ...semantic(aTask as Record<string, any>), operation_groups: [],
-      component_calls: [{ call_key: "a-to-b", target_component_id: bComponentId, target_symbol: "B.onCreate", transport: "startAbility", call_location: "A.ets:10", condition: "always", parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }], principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence_refs: [] }, security_checks: [], evidence_refs: [] }],
+      component_calls: [{ call_key: "a-to-b", target_component_id: bComponentId, target_symbol: "B.onCreate", transport: "startAbility", call_location: "A.ets:10", condition: "always", parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }], principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence: [] }, security_checks: [], evidence: [] }],
     };
     expect(store.reconcile(aTask.task_id, aTask.attempt, aResult)).toMatchObject({ accepted: true });
     const bSemantic = semantic(bTask as Record<string, any>);

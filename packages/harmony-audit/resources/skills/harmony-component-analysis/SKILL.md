@@ -20,6 +20,7 @@ tools: [search, symbol, explore, calls, path, trace, impact, file_dependencies]
 5. 每组按真实调用顺序输出最短 `facts` 证据链。`facts` 只能是源码事实，不允许使用 `effect` 类型承载推断；直接效果写入 `context.direct_observed_effect`，不能证明时填 `null`。`edges` 由运行时根据 facts 顺序确定性生成；没有受控参数时 `controlled_properties` 为空数组。不得输出漏洞分类、利用性、严重性、CWE 或 PoC。
 6. 数据到达另一个 Ability/ExtensionAbility 时立即停止深入。根据 `component_directory` 解析目标 `component_id`，只记录 component call 的位置、条件、transport、参数映射、安全检查和 `principal_transition`。无法证明目标或映射时写入 `coverage.unresolved_targets`，不得猜测。
 7. 没有本地安全操作时输出空 `operation_groups`；没有组件调用时输出空 `component_calls`。
+8. 证据直接写在它所证明对象的 `evidence` 数组中，每条包含 `kind`、`source`、`summary` 和可选源码位置；效果假设的依据写入 `basis_evidence`。不要创建证据 ID，不要输出 `evidence_refs` 或顶层证据目录，编号、去重和引用关系由运行时完成。同一段源码用于多个事实时可以重复写相同证据，运行时会自动归并。
 
 当 `audit_scope` 包含 `CAP-DOS-001` 时，还必须证明外部输入或可重复调用到未处理异常、进程终止、无界循环/递归/分配、输入规模放大的高开销操作，或线程、队列、存储、IPC、事件资源耗尽的具体调用关系。不能因存在抛异常或高开销 API 就记录 DoS。DoS 组使用 `category=availability` 并完整记录上限/放大、异常处理/隔离、重复触发、影响范围与恢复；无法证明的事实明确写“未知”。
 

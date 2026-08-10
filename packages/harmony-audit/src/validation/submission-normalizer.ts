@@ -31,15 +31,9 @@ export function normalizeSemanticSubmission(candidate: Row, entryId: string, cap
     } else if (operation.body && operation.location) {
       let key = "operation";
       for (let suffix = 2; used.has(key); suffix += 1) key = `operation-${suffix}`;
-      facts.push({ fact_key: key, type: "operation", body: operation.body, location: operation.location, evidence_refs: strings(group.evidence_refs) });
+      facts.push({ fact_key: key, type: "operation", body: operation.body, location: operation.location, evidence: structuredClone(rows(group.evidence)) });
     }
     group.facts = facts;
-    group.edges = facts.slice(0, -1).map((fact, index) => ({
-      from: fact.fact_key,
-      to: facts[index + 1]!.fact_key,
-      kind: "next",
-      evidence_refs: unique([...strings(fact.evidence_refs), ...strings(facts[index + 1]!.evidence_refs)]),
-    }));
     const coverage = (normalized.coverage as Row | undefined) ?? {};
     coverage.operation_sites_checked = unique([...strings(coverage.operation_sites_checked), ...(typeof operation.location === "string" ? [operation.location] : [])]);
   }
@@ -55,10 +49,12 @@ export function normalizeSemanticSubmission(candidate: Row, entryId: string, cap
       const values = new Map([...rows(richer[key]), ...rows(duplicate[key])].map((item) => [canonicalJson(item), item]));
       richer[key] = [...values.values()];
     }
-    richer.evidence_refs = unique([...strings(richer.evidence_refs), ...strings(duplicate.evidence_refs)]);
+    const groupEvidence = new Map([...rows(richer.evidence), ...rows(duplicate.evidence)].map((item) => [canonicalJson(item), item]));
+    richer.evidence = [...groupEvidence.values()];
     const context = (richer.context as Row | undefined) ?? {};
     const duplicateContext = (duplicate.context as Row | undefined) ?? {};
-    context.evidence_refs = unique([...strings(context.evidence_refs), ...strings(duplicateContext.evidence_refs)]);
+    const contextEvidence = new Map([...rows(context.evidence), ...rows(duplicateContext.evidence)].map((item) => [canonicalJson(item), item]));
+    context.evidence = [...contextEvidence.values()];
     richer.context = context;
     merged.set(identity, richer);
   }

@@ -5,30 +5,31 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
-import { effectChain, sixDimensions, validationEvidence } from "./p0-fixtures.js";
+import { admissibleRefs, effectChain, sixDimensions, support } from "./p0-fixtures.js";
 
 const coverage = { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["onCreate"], operation_sites_checked: ["B.ets:20"], unresolved_targets: [] };
 const call = (target: string) => ({
   call_key: "a-to-b", target_component_id: target, target_symbol: "B.onCreate", transport: "startAbility", call_location: "A.ets:10", condition: "always",
   parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }],
-  principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence_refs: [] }, security_checks: [], evidence_refs: [],
+  principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence: [] }, security_checks: [], evidence: [],
 });
 const group = {
-  group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "外部参数影响查询", operation: { body: "query", location: "B.ets:20" }, controlled_properties: ["want.forwarded"],
-  context: { external_actor: "third-party app", intended_behavior: "query public records", protected_assets: ["private records"], direct_observed_effect: null, effect_hypotheses: [], evidence_refs: [] },
-  branches: [{ condition: "always", locations: ["B.ets:20"], evidence_refs: [] }], facts: [{ fact_key: "sink", type: "operation", body: "query", evidence_refs: [] }], edges: [], security_checks: [], evidence_refs: [],
+  group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "外部参数影响查询", operation: { body: "query", location: "B.ets:20", evidence: [] }, controlled_properties: ["want.forwarded"],
+  context: { external_actor: "third-party app", intended_behavior: "query public records", protected_assets: ["private records"], direct_observed_effect: null, effect_hypotheses: [], evidence: [] },
+  branches: [{ condition: "always", locations: ["B.ets:20"], evidence: [] }], facts: [{ fact_key: "sink", type: "operation", body: "query", evidence: [] }], security_checks: [],
 };
-const semantic = (task: Record<string, any>, calls: Record<string, unknown>[], groups: Record<string, unknown>[], customCoverage = coverage) => ({ task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: customCoverage, operation_groups: groups, component_calls: calls, evidence: [] });
+const semantic = (task: Record<string, any>, calls: Record<string, unknown>[], groups: Record<string, unknown>[], customCoverage = coverage) => ({ task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: customCoverage, operation_groups: groups, component_calls: calls });
 
 function confirmed(groupInput: Record<string, any>): Record<string, unknown> {
   const cross = groupInput.scope === "cross_component"; const principal = groupInput.principal_state as Record<string, unknown> | undefined;
+  const refs = admissibleRefs(groupInput);
   return {
     group_id: groupInput.group_id, capability_id: groupInput.capability_id, classification: "confirmed_vulnerability", title: "外部参数影响查询", security_check_outcome: "absent",
-    business_intent: { is_public_api: true, declared_or_inferred_purpose: "query public records", allowed_controls: ["recordId"], evidence_refs: [] },
-    security_boundary: { type: "data_owner", expected_boundary: "private records remain isolated", violation: true, reason: "input changes query structure", evidence_refs: [] },
-    ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence_refs: [] } } : {}),
-    exploitability: sixDimensions(), effect_chain: effectChain(),
-    counter_evidence: [], impact: "读取私有记录", severity: cross ? "critical" : "high", cwe: "CWE-89", evidence_refs: [],
+    business_intent: { is_public_api: true, declared_or_inferred_purpose: "query public records", allowed_controls: ["recordId"], evidence: support(refs) },
+    security_boundary: { type: "data_owner", expected_boundary: "private records remain isolated", violation: true, reason: "input changes query structure", evidence: support(refs) },
+    ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence: support(refs) } } : {}),
+    exploitability: sixDimensions({}, refs), effect_chain: effectChain(refs),
+    counter_evidence: [], impact: "读取私有记录", severity: cross ? "critical" : "high", cwe: "CWE-89", evidence: support(refs),
   };
 }
 
@@ -50,7 +51,7 @@ describe("deterministic reporting", () => {
     submittedValidations[0]!.principal_analysis.origin_principal = "model-guessed-principal";
     submittedValidations[0]!.principal_analysis.origin_bound_to_observed_principal = true;
     submittedValidations[0]!.principal_analysis.delegation_risk = false;
-    const result = { task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "confirmed", validations: submittedValidations, evidence: [validationEvidence] };
+    const result = { task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "confirmed", validations: submittedValidations };
     expect(store.reconcile(validationTask!.task_id, validationTask!.attempt, result)).toMatchObject({ accepted: true });
     const db = new Database(store.paths.db);
     expect((db.prepare("SELECT COUNT(*) n FROM findings").get() as { n: number }).n).toBe(1);
@@ -66,14 +67,14 @@ describe("deterministic reporting", () => {
     const [pocTask] = (await store.claim(5)).tasks.filter((task) => task.kind === "poc_generation");
     const pocDocument = await store.taskDocument(pocTask as never) as Record<string, any>;
     expect(pocDocument.input.finding).toMatchObject({ severity: "critical", cwe: "CWE-89" });
-    expect(pocDocument.input.inherited_evidence).toEqual(expect.arrayContaining([expect.objectContaining({ evidence_id: "EV-V", summary: "六维阶段重新读取并核验完整效果链" })]));
+    expect(pocDocument.input.inherited_evidence).toEqual(expect.arrayContaining([expect.objectContaining({ evidence_id: expect.any(String), summary: "六维阶段重新读取并核验完整效果链" })]));
     expect(store.reconcile(pocTask!.task_id, pocTask!.attempt, {
       task_id: pocTask!.task_id, finding_id: String((pocDocument.input.finding as Record<string, any>).finding_id),
       entry_type: "want", trigger: { kind: "ability_want", payload: { action: "ohos.intent.action.VIEW", uri: "demo://query?q=x" } },
       language: "shell", code: "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://query?q=x'",
       prerequisites: ["安装 debug 包"], expected_observation: "返回私有记录", limitations: "未在真机验证",
       execution_hint: { step_by_step: ["安装 debug 包", "执行上述命令", "观察是否返回私有记录"], device_required: "emulator", network_required: false },
-      symbol_refs: [], evidence: [], evidence_refs: [],
+      symbol_refs: [], evidence_refs: [],
     })).toMatchObject({ accepted: true });
 
     const report = await store.finalize();
@@ -110,7 +111,7 @@ describe("deterministic reporting", () => {
   it("isolates validation failures per operation group and keeps active groups out of coverage gaps", async () => {
     const { store } = await twoComponentStore(); const [semanticTask] = (await store.claim(1)).tasks;
     const secondGroup = structuredClone(group); secondGroup.group_key = "query-secondary"; secondGroup.title = "第二个查询";
-    secondGroup.operation = { body: "querySecondary", location: "A.ets:30" };
+    secondGroup.operation = { body: "querySecondary", location: "A.ets:30", evidence: [] };
     expect(store.reconcile(semanticTask!.task_id, semanticTask!.attempt, semantic(semanticTask as Record<string, any>, [], [group, secondGroup]))).toMatchObject({ accepted: true });
 
     const validationTasks = (await store.claim(5)).tasks.filter((task) => task.kind === "exploitability_validation");
@@ -130,7 +131,7 @@ describe("deterministic reporting", () => {
     }
     const successfulGroup = (successfulTask!.input.operation_groups as Record<string, any>[])[0]!;
     expect(store.reconcile(successfulTask!.task_id, successfulTask!.attempt, {
-      task_id: successfulTask!.task_id, entry_id: successfulTask!.input.entry_id, summary: "confirmed", validations: [confirmed(successfulGroup)], evidence: [validationEvidence],
+      task_id: successfulTask!.task_id, entry_id: successfulTask!.input.entry_id, summary: "confirmed", validations: [confirmed(successfulGroup)],
     })).toMatchObject({ accepted: true });
 
     const status = store.status(); const gaps = status.coverage_gaps as Record<string, unknown>[];
@@ -141,7 +142,7 @@ describe("deterministic reporting", () => {
 
   it("splits a resumed legacy batch validation task into group-scoped tasks", async () => {
     const { store } = await twoComponentStore(); const [semanticTask] = (await store.claim(1)).tasks;
-    const secondGroup = structuredClone(group); secondGroup.group_key = "query-secondary"; secondGroup.operation = { body: "querySecondary", location: "A.ets:30" };
+    const secondGroup = structuredClone(group); secondGroup.group_key = "query-secondary"; secondGroup.operation = { body: "querySecondary", location: "A.ets:30", evidence: [] };
     store.reconcile(semanticTask!.task_id, semanticTask!.attempt, semantic(semanticTask as Record<string, any>, [], [group, secondGroup]));
 
     const db = new Database(store.paths.db); const stamp = new Date().toISOString(); const entryId = String(semanticTask!.input.entry.candidate_id);

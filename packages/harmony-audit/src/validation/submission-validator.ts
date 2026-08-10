@@ -1,23 +1,13 @@
 import { invariant } from "./invariant-errors.js";
+import { validationSemanticRefs } from "../runtime/evidence.js";
 
 type Row = Record<string, unknown>;
-const rows = (value: unknown): Row[] => Array.isArray(value) ? value.filter((item): item is Row => !!item && typeof item === "object") : [];
+const rows = (value: unknown): Row[] => Array.isArray(value) ? value.filter((item): item is Row => !!item && typeof item === "object" && !Array.isArray(item)) : [];
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+const isRow = (value: unknown): value is Row => !!value && typeof value === "object" && !Array.isArray(value);
 
 function unique(values: readonly string[]): boolean { return new Set(values).size === values.length; }
 function refs(value: Row): string[] { return strings(value.evidence_refs); }
-
-function allSemanticRefs(candidate: Row): string[] {
-  const result = [...rows(candidate.operation_groups).flatMap((group) => [
-    ...refs(group), ...refs((group.context as Row | undefined) ?? {}), ...refs((group.availability as Row | undefined) ?? {}),
-    ...rows(((group.context as Row | undefined) ?? {}).effect_hypotheses).flatMap((hypothesis) => strings(hypothesis.basis_evidence_refs)),
-    ...rows(group.branches).flatMap(refs), ...rows(group.facts).flatMap(refs), ...rows(group.edges).flatMap(refs),
-    ...rows(group.security_checks).flatMap(refs),
-  ]), ...rows(candidate.component_calls).flatMap((call) => [
-    ...refs(call), ...refs((call.principal_transition as Row | undefined) ?? {}), ...rows(call.security_checks).flatMap(refs),
-  ])];
-  return result;
-}
 
 export interface SemanticValidationContext {
   taskId: string; entryId: string; capabilities: readonly string[]; enabledCapabilities: ReadonlySet<string>;
@@ -27,13 +17,9 @@ export interface SemanticValidationContext {
 export function validateSemanticSubmission(candidate: Row, context: SemanticValidationContext): void {
   invariant(candidate.task_id === context.taskId, "TASK_ID_MISMATCH", { expected: context.taskId, actual: candidate.task_id });
   invariant(candidate.entry_id === context.entryId, "ENTRY_ID_MISMATCH", { expected: context.entryId, actual: candidate.entry_id });
-  const evidenceIds = rows(candidate.evidence).map((item) => String(item.evidence_id ?? ""));
-  invariant(evidenceIds.every(Boolean) && unique(evidenceIds), "DUPLICATE_LOCAL_ID", { entity: "evidence" });
-  const evidence = new Set(evidenceIds);
   const coverage = (candidate.coverage as Row | undefined) ?? {};
   if (coverage.entry_status === "confirmed") invariant(strings(coverage.entry_symbols_checked).length > 0, "CONFIRMED_ENTRY_SYMBOL_MISSING");
   if (coverage.entry_status === "excluded") invariant(rows(candidate.operation_groups).length === 0 && rows(candidate.component_calls).length === 0, "EXCLUDED_ENTRY_HAS_OUTPUTS");
-  for (const ref of allSemanticRefs(candidate)) invariant(evidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
 
   const groupKeys = rows(candidate.operation_groups).map((group) => String(group.group_key ?? ""));
   invariant(groupKeys.every(Boolean) && unique(groupKeys), "DUPLICATE_LOCAL_ID", { entity: "operation_group" });
@@ -46,17 +32,13 @@ export function validateSemanticSubmission(candidate: Row, context: SemanticVali
     if (capability === "CAP-DOS-001") invariant(group.category === "availability" && !!group.availability, "DOS_SEMANTIC_MISMATCH");
     const semanticContext = (group.context as Row | undefined) ?? {};
     for (const hypothesis of rows(semanticContext.effect_hypotheses)) {
-      invariant(strings(hypothesis.basis_evidence_refs).length > 0, "HYPOTHESIS_BASIS_MISSING", { group: group.group_key, claim: hypothesis.claim });
+      invariant(rows(hypothesis.basis_evidence).length > 0, "HYPOTHESIS_BASIS_MISSING", { group: group.group_key, claim: hypothesis.claim });
     }
     if (semanticContext.direct_observed_effect !== null) {
-      invariant(refs(semanticContext).length > 0, "DIRECT_EFFECT_EVIDENCE_MISSING", { group: group.group_key });
+      invariant(rows(semanticContext.evidence).length > 0, "DIRECT_EFFECT_EVIDENCE_MISSING", { group: group.group_key });
     }
     const facts = rows(group.facts).map((fact) => String(fact.fact_key ?? ""));
     invariant(facts.every(Boolean) && unique(facts), "DUPLICATE_LOCAL_ID", { entity: "fact", group: group.group_key });
-    const factSet = new Set(facts);
-    for (const edge of rows(group.edges)) {
-      invariant(factSet.has(String(edge.from)) && factSet.has(String(edge.to)) && edge.from !== edge.to, "INVALID_FACT_EDGE", edge);
-    }
   }
 
   const callKeys = rows(candidate.component_calls).map((call) => String(call.call_key ?? ""));
@@ -69,7 +51,16 @@ export function validateSemanticSubmission(candidate: Row, context: SemanticVali
   }
 }
 
-export interface ValidationContext { taskId: string; entryId: string; groups: readonly Row[]; inheritedEvidence: ReadonlySet<string>; entryStatus?: string; }
+export interface ValidationContext {
+  taskId: string; entryId: string; groups: readonly Row[];
+  /** group_id -> evidence ids the group may cite (source-backed, from the group's own payload). */
+  admissibleEvidence: ReadonlyMap<string, ReadonlySet<string>>;
+  /** group_id -> hypothesis basis evidence ids that must not support validation conclusions. */
+  hypothesisOnlyEvidence: ReadonlyMap<string, ReadonlySet<string>>;
+  entryStatus?: string;
+}
+
+const EMPTY: ReadonlySet<string> = new Set();
 
 const DIMENSIONS = ["externally_reachable", "attacker_controlled", "sink_reached", "security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"] as const;
 const EFFECT_PROOFS = ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"] as const;
@@ -77,9 +68,6 @@ const EFFECT_PROOFS = ["controlled_value_use", "security_behavior_change", "prot
 export function validateExploitabilitySubmission(candidate: Row, context: ValidationContext): void {
   invariant(candidate.task_id === context.taskId, "TASK_ID_MISMATCH", { expected: context.taskId, actual: candidate.task_id });
   invariant(candidate.entry_id === context.entryId, "ENTRY_ID_MISMATCH", { expected: context.entryId, actual: candidate.entry_id });
-  const localIds = rows(candidate.evidence).map((item) => String(item.evidence_id ?? ""));
-  invariant(localIds.every(Boolean) && unique(localIds), "DUPLICATE_LOCAL_ID", { entity: "evidence" });
-  const allowedEvidence = new Set([...context.inheritedEvidence, ...localIds]);
   const expected = new Set(context.groups.map((group) => String(group.group_id)));
   const validations = rows(candidate.validations);
   const actual = validations.map((validation) => String(validation.group_id ?? ""));
@@ -92,13 +80,22 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
     invariant(validation.capability_id === group.capability_id, "CAPABILITY_CATEGORY_MISMATCH", { groupId: validation.group_id });
     const classification = String(validation.classification);
     const dimensions = (validation.exploitability as Row | undefined) ?? {};
+
+    const admissible = context.admissibleEvidence.get(String(validation.group_id)) ?? EMPTY;
+    const hypothesisOnly = context.hypothesisOnlyEvidence.get(String(validation.group_id)) ?? EMPTY;
+    const semanticRefs = validationSemanticRefs(validation);
+    const outside = [...semanticRefs].filter((ref) => !admissible.has(ref) && !hypothesisOnly.has(ref)).sort();
+    invariant(outside.length === 0, "EVIDENCE_OUTSIDE_OPERATION_GROUP", { groupId: validation.group_id, refs: outside });
+    const inadmissible = [...semanticRefs].filter((ref) => hypothesisOnly.has(ref)).sort();
+    invariant(inadmissible.length === 0, "HYPOTHESIS_EVIDENCE_NOT_ADMISSIBLE", { groupId: validation.group_id, refs: inadmissible });
+
     for (const key of DIMENSIONS) {
       const dimension = (dimensions[key] as Row | undefined) ?? {};
-      const dimensionRefs = refs(dimension);
+      const support = isRow(dimension.evidence) ? dimension.evidence : {};
+      const hasSupport = strings(support.semantic_refs).length > 0 || rows(support.verification).length > 0;
       if (dimension.status === "true") {
-        invariant(dimension.evidence_level !== "hypothesis" && dimensionRefs.length > 0, "TRUE_DIMENSION_EVIDENCE_INSUFFICIENT", { groupId: validation.group_id, dimension: key });
+        invariant(dimension.evidence_level !== "hypothesis" && hasSupport, "TRUE_DIMENSION_EVIDENCE_INSUFFICIENT", { groupId: validation.group_id, dimension: key });
       }
-      for (const ref of dimensionRefs) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
     }
     if (classification === "confirmed_vulnerability") {
       if (context.entryStatus) invariant(context.entryStatus === "confirmed", "CONFIRMED_ENTRY_REQUIRED", { entryStatus: context.entryStatus });
@@ -107,10 +104,10 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
       const effectChain = (validation.effect_chain as Row | undefined) ?? {};
       for (const key of EFFECT_PROOFS) {
         const proof = (effectChain[key] as Row | undefined) ?? {};
-        const proofRefs = refs(proof);
-        invariant(typeof proof.location === "string" && proof.location.length > 0 && proofRefs.length > 0, "CONFIRMED_EFFECT_CHAIN_INCOMPLETE", { groupId: validation.group_id, proof: key });
-        invariant(proofRefs.some((ref) => localIds.includes(ref)), "CONFIRMED_EFFECT_NOT_INDEPENDENTLY_VERIFIED", { groupId: validation.group_id, proof: key });
-        for (const ref of proofRefs) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
+        const support = isRow(proof.evidence) ? proof.evidence : {};
+        const hasSupport = strings(support.semantic_refs).length > 0 || rows(support.verification).length > 0;
+        invariant(typeof proof.location === "string" && proof.location.length > 0 && hasSupport, "CONFIRMED_EFFECT_CHAIN_INCOMPLETE", { groupId: validation.group_id, proof: key });
+        invariant(rows(support.verification).length > 0, "CONFIRMED_EFFECT_NOT_INDEPENDENTLY_VERIFIED", { groupId: validation.group_id, proof: key });
       }
     } else invariant(typeof validation.demotion_reason === "string" && validation.demotion_reason.length > 0, "DEMOTION_REASON_MISSING");
     if (["residual_risk", "insufficient_evidence"].includes(classification)) invariant(typeof validation.evidence_gap === "string" && validation.evidence_gap.length > 0, "EVIDENCE_GAP_MISSING");
@@ -144,12 +141,12 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
         },
       );
     }
-    for (const ref of [...refs(validation), ...refs((validation.business_intent as Row | undefined) ?? {}), ...refs((validation.security_boundary as Row | undefined) ?? {}), ...refs((validation.principal_analysis as Row | undefined) ?? {}), ...refs((validation.availability_analysis as Row | undefined) ?? {}), ...rows(validation.counter_evidence).flatMap(refs)]) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
   }
 }
 
 export interface PocValidationContext {
   taskId: string; entryId: string; findingId: string; allowedEntryTypes: ReadonlySet<string>;
+  /** Evidence ids inherited from the semantic and validation phases; nothing else may be cited. */
   allowedEvidence: ReadonlySet<string>;
 }
 
@@ -158,16 +155,13 @@ const FORBIDDEN_POC_OUTPUTS = ["classification", "exploitability", "severity", "
 const SHELL_PREFIX = /^\s*(hdc|adb|curl|aa)\b/;
 const ARKTS_TRIGGER_API = /startAbility|rpc\.|commonEventManager|dataAbilityHelper|runJavaScript|webview|createChannel|requestSubmitJob|wifiManager/;
 
-/** v3.2 PoC generation contract: evidence integrity, executable code, and phase boundary (no re-judgement). */
+/** v3.1-aligned PoC contract: refs within inherited scope, inline symbol evidence, executable code, phase boundary. */
 export function validatePocSubmission(candidate: Row, context: PocValidationContext): void {
   invariant(candidate.task_id === context.taskId, "TASK_ID_MISMATCH", { expected: context.taskId, actual: candidate.task_id });
   invariant(candidate.finding_id === context.findingId, "FINDING_ID_MISMATCH", { expected: context.findingId, actual: candidate.finding_id });
   for (const forbidden of FORBIDDEN_POC_OUTPUTS) invariant(!(forbidden in candidate), "POC_FORBIDDEN_OUTPUT", { field: forbidden });
   const entryType = String(candidate.entry_type ?? "");
   invariant(context.allowedEntryTypes.has(entryType), "POC_ENTRY_TYPE_MISMATCH", { entry_type: entryType, allowed: [...context.allowedEntryTypes].sort() });
-  const localIds = rows(candidate.evidence).map((item) => String(item.evidence_id ?? ""));
-  invariant(localIds.every(Boolean) && unique(localIds), "DUPLICATE_LOCAL_ID", { entity: "evidence" });
-  const allowedEvidence = new Set([...context.allowedEvidence, ...localIds]);
   invariant(typeof candidate.code === "string" && String(candidate.code).length > 0, "POC_CODE_REQUIRED");
   invariant(!PLACEHOLDER_PATTERN.test(String(candidate.code)), "POC_PLACEHOLDER_FOUND");
   invariant(typeof candidate.expected_observation === "string" && String(candidate.expected_observation).length > 0, "POC_EXPECTED_OBSERVATION_REQUIRED");
@@ -185,8 +179,8 @@ export function validatePocSubmission(candidate: Row, context: PocValidationCont
     invariant(triggerKind !== "adb_shell", "POC_ARKTS_TRIGGER_MISMATCH", { trigger_kind: triggerKind });
     invariant(ARKTS_TRIGGER_API.test(String(candidate.code)), "POC_ARKTS_API_REQUIRED", { code: String(candidate.code).slice(0, 60) });
   }
-  for (const ref of refs(candidate)) invariant(allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
+  for (const ref of refs(candidate)) invariant(context.allowedEvidence.has(ref), "UNKNOWN_EVIDENCE_REF", { ref });
   for (const symbolRef of rows(candidate.symbol_refs)) {
-    invariant(allowedEvidence.has(String(symbolRef.evidence_id ?? "")), "UNKNOWN_EVIDENCE_REF", { ref: symbolRef.evidence_id, entity: "symbol_ref" });
+    invariant(rows(symbolRef.evidence).length > 0, "SYMBOL_REF_EVIDENCE_MISSING", { symbol: symbolRef.symbol });
   }
 }

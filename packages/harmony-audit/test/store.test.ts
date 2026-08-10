@@ -9,7 +9,7 @@ import { profileProject } from "../src/project/profiler.js";
 const emptySemantic = (task: Record<string, any>, overrides: Record<string, unknown> = {}) => ({
   task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked",
   coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onCreate"], operation_sites_checked: [], unresolved_targets: [] },
-  operation_groups: [], component_calls: [], evidence: [], ...overrides,
+  operation_groups: [], component_calls: [], ...overrides,
 });
 
 describe("audit store", () => {
@@ -154,13 +154,12 @@ describe("audit store", () => {
     const candidate = emptySemantic(task as Record<string, any>, {
       operation_groups: [{
         group_key: "query", category: "sql", capability_id: "CAP-INJ-001", title: "查询",
-        operation: { body: "query", location: "A.ets:12" }, controlled_properties: ["want.id"],
-        context: { external_actor: "外部应用", intended_behavior: "查询", protected_assets: ["数据"], direct_observed_effect: "执行查询", effect_hypotheses: [], evidence_refs: ["E1"] },
-        branches: [{ condition: "always", locations: ["A.ets:10"], evidence_refs: ["E1"] }],
-        facts: [{ fact_key: "entry", type: "entrypoint", body: "入口", evidence_refs: ["E1"] }],
-        security_checks: [], evidence_refs: ["E1"],
+        operation: { body: "query", location: "A.ets:12", evidence: [{ kind: "atlas_trace", source: "atlas", summary: "trace", location: "A.ets:12" }] }, controlled_properties: ["want.id"],
+        context: { external_actor: "外部应用", intended_behavior: "查询", protected_assets: ["数据"], direct_observed_effect: "执行查询", effect_hypotheses: [], evidence: [{ kind: "atlas_trace", source: "atlas", summary: "trace", location: "A.ets:12" }] },
+        branches: [{ condition: "always", locations: ["A.ets:10"], evidence: [{ kind: "atlas_trace", source: "atlas", summary: "trace", location: "A.ets:12" }] }],
+        facts: [{ fact_key: "entry", type: "entrypoint", body: "入口", evidence: [{ kind: "atlas_trace", source: "atlas", summary: "trace", location: "A.ets:12" }] }],
+        security_checks: [],
       }],
-      evidence: [{ evidence_id: "E1", kind: "atlas_trace", source: "atlas", summary: "trace", location: "A.ets:12" }],
     });
     const normalizedOutcome = store.reconcile(task!.task_id, task!.attempt, candidate);
     expect(normalizedOutcome, JSON.stringify(normalizedOutcome)).toMatchObject({ accepted: true });
@@ -184,8 +183,8 @@ describe("audit store", () => {
       component_calls: [{
         call_key: "call-b", target_component_id: target.component_id, target_symbol: "B.onCreate", transport: "startAbility",
         call_location: "A.ets:10", condition: "always", parameter_mappings: [{ source_property: "want.x", target_property: "want.x", control_state: "preserved", transform: "none" }],
-        principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence_refs: [] },
-        security_checks: [], evidence_refs: [],
+        principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence: [] },
+        security_checks: [], evidence: [],
       }],
     }));
     expect(outcome.accepted).toBe(true);

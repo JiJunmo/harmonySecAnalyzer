@@ -32,6 +32,17 @@ import { validateSubmissionSchema } from "../validation/schema-validator.js";
 import { validateExploitabilitySubmission, validatePocSubmission, validateSemanticSubmission } from "../validation/submission-validator.js";
 import { normalizePocSubmission, normalizeSemanticSubmission, normalizeValidationSubmission } from "../validation/submission-normalizer.js";
 import { canonicalJson, contentHash, stableId } from "./identity.js";
+import {
+  evidenceLocalId,
+  materializeComponentCall,
+  materializePoc,
+  materializeSemanticGroup,
+  materializeValidation,
+  semanticAdmissibleRefs,
+  semanticHypothesisRefs,
+  type EvidenceCollector,
+  type EvidenceRow,
+} from "./evidence.js";
 import { pocTaskInput, semanticTaskInput, validationTaskInput } from "./task-context.js";
 
 const now = () => new Date().toISOString();
@@ -298,14 +309,17 @@ export class AuditStore {
     validateSemanticSubmission(candidate, { taskId: String(task.task_id), entryId: String(task.subject_id), capabilities, enabledCapabilities: new Set(capabilities), componentIds, capabilityDomains });
     const semanticId = stableId("SEM", this.runIdFrom(db), task.task_id, attempt);
     db.prepare("INSERT INTO semantic_analyses VALUES (?,?,?,?,?,?,?)").run(semanticId, task.task_id, task.subject_id, attempt, candidate.summary, canonicalJson(candidate.coverage), now());
-    const evidenceMap = this.insertEvidence(db, task, rows(candidate.evidence));
-    for (const call of rows(candidate.component_calls)) this.insertCall(db, semanticId, call, evidenceMap);
-    const normalizedGroups = rows(candidate.operation_groups).map((group) => this.insertGroup(db, semanticId, group, evidenceMap));
+    const collector: EvidenceCollector = new Map();
+    const calls = rows(candidate.component_calls).map((call) => materializeComponentCall(call, collector));
+    const groups = rows(candidate.operation_groups).map((group) => materializeSemanticGroup(group, collector));
+    const evidenceMap = this.insertEvidence(db, task, [...collector.values()]);
+    for (const call of calls) this.insertCall(db, semanticId, call, evidenceMap);
+    const normalizedGroups = groups.map((group) => this.insertGroup(db, semanticId, group, evidenceMap));
     const incomingPaths = this.pathsToEntry(db, String(task.subject_id));
     incomingPaths.flatMap((path) => normalizedGroups.flatMap((group) => {
       const cross = buildCrossComponentGroup(path, group); return cross ? [this.insertCrossGroup(db, semanticId, String(group.group_id), path, cross)] : [];
     }));
-    this.propagateCalls(db, task, input, rows(candidate.component_calls), incomingPaths);
+    this.propagateCalls(db, task, input, calls, incomingPaths);
   }
 
   private normalizeSemantic(candidate: Record<string, unknown>, task: Record<string, unknown>): Record<string, unknown> {
@@ -391,8 +405,23 @@ export class AuditStore {
 
   private scheduleValidation(db: Database.Database, key: string, entryId: string, groups: Record<string, unknown>[], targetRepo: unknown, producerTaskIds: string[]): void {
     const evidenceRows = producerTaskIds.length ? db.prepare(`SELECT DISTINCT local_evidence_id FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string }[] : [];
-    const input = { verification_scope: { target_repo: targetRepo }, entry_id: entryId, operation_groups: groups, inherited_evidence_ids: evidenceRows.map((row) => row.local_evidence_id), inherited_evidence_task_ids: producerTaskIds };
+    const scoped = groups.map((group) => ({ ...group, evidence_scope: this.evidenceScopeForGroup(db, group) }));
+    const input = { verification_scope: { target_repo: targetRepo }, entry_id: entryId, operation_groups: scoped, inherited_evidence_ids: evidenceRows.map((row) => row.local_evidence_id), inherited_evidence_task_ids: producerTaskIds };
     db.prepare("INSERT OR IGNORE INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,created_at,updated_at) VALUES (?,?,?,?,?,'queued',0,?,?,?)").run(stableId("TASK", this.runIdFrom(db), key), this.runIdFrom(db), key, "exploitability_validation", entryId, canonicalJson(input), now(), now());
+  }
+
+  /** Admissible and hypothesis-only evidence records for one operation group, resolved from its materialized payload. */
+  private evidenceScopeForGroup(db: Database.Database, group: Record<string, unknown>): Record<string, unknown> {
+    const admissible = semanticAdmissibleRefs(group);
+    const hypothesisOnly = semanticHypothesisRefs(group);
+    const ids = [...new Set([...admissible, ...hypothesisOnly])].sort();
+    const records = ids.length ? db.prepare(`SELECT DISTINCT local_evidence_id,kind,source,location,json_extract(payload_json,'$.summary') summary FROM evidence WHERE local_evidence_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as { local_evidence_id: string; kind: string; source: string; location: string | null; summary: string }[] : [];
+    const byId = new Map(records.map((row) => [row.local_evidence_id, row]));
+    const record = (id: string) => ({ evidence_id: id, kind: byId.get(id)?.kind ?? "unknown", source: byId.get(id)?.source ?? "unknown", location: byId.get(id)?.location ?? null, summary: byId.get(id)?.summary ?? "" });
+    return {
+      admissible: [...admissible].sort().map(record),
+      hypothesis_only: [...hypothesisOnly].sort().map(record),
+    };
   }
 
   /** v3.1 phase barrier: validation is planned only after semantic discovery and correlation drain. */
@@ -440,13 +469,13 @@ export class AuditStore {
       const key = `validation:${item.entryId}:${groupId}`;
       this.scheduleValidation(db, key, item.entryId, [item.group], targetRepo, item.producerTaskIds);
       const task = db.prepare("SELECT * FROM tasks WHERE semantic_key=?").get(key) as Record<string, unknown> | undefined;
-      if (task && this.tryReuseValidation(db, task, [item.group])) reused += 1;
+      if (task && this.tryReuseValidation(db, task)) reused += 1;
       scheduled += 1;
     }
     if (eligible.length) this.event(db, "validation_phase_planned", this.runIdFrom(db), { entries: entries.size, operation_groups: eligible.length, tasks: scheduled, reused });
   }
 
-  private tryReuseValidation(db: Database.Database, task: Record<string, unknown>, groups: Record<string, unknown>[]): boolean {
+  private tryReuseValidation(db: Database.Database, task: Record<string, unknown>): boolean {
     if (task.status !== "queued") return false;
     const run = db.prepare("SELECT audit_scope_json FROM runs").get() as { audit_scope_json: string };
     const scope = JSON.parse(run.audit_scope_json) as Record<string, unknown>;
@@ -459,6 +488,9 @@ export class AuditStore {
     const entries = document.entries && typeof document.entries === "object" ? document.entries as Record<string, Record<string, unknown>> : {};
     const snapshot = entries[entry.candidate_key];
     if (!snapshot || !snapshot.result || typeof snapshot.result !== "object" || !snapshot.group_fingerprints || typeof snapshot.group_fingerprints !== "object") return false;
+    // Fingerprints must come from the same source the baseline used: the task input's scoped groups.
+    const input = JSON.parse(String(task.input_json)) as Record<string, unknown>;
+    const groups = rows(input.operation_groups);
     const oldFingerprints = snapshot.group_fingerprints as Record<string, string>;
     const currentByFingerprint = new Map(groups.map((group) => [validationGroupFingerprint(group), String(group.group_id)]));
     const reusableValidations = rows((snapshot.result as Record<string, unknown>).validations).filter((validation) => {
@@ -490,12 +522,12 @@ export class AuditStore {
     }
   }
 
-  private insertEvidence(db: Database.Database, task: Record<string, unknown>, evidenceRows: Record<string, unknown>[]): Map<string, string> {
+  private insertEvidence(db: Database.Database, task: Record<string, unknown>, evidenceRows: EvidenceRow[]): Map<string, string> {
     const result = new Map<string, string>(); const runId = this.runIdFrom(db);
     for (const evidence of evidenceRows) {
-      const localId = String(evidence.evidence_id); const hash = String(evidence.sha256 ?? contentHash(evidence.content_ref ?? evidence.summary ?? evidence));
-      // v3.1 identity: a local evidence id is private to its producer task. Two
-      // aliases may legitimately point at identical source content.
+      // Content-addressed identity: the model never authors ids; identical inline
+      // evidence rows collapse to one row per producer task.
+      const localId = evidenceLocalId(evidence); const hash = String(evidence.sha256 ?? contentHash(evidence.content_ref ?? evidence.summary ?? evidence));
       const id = stableId("EV", task.task_id, localId);
       const payload = canonicalJson(evidence);
       const byId = db.prepare("SELECT payload_json FROM evidence WHERE evidence_id=?").get(id) as { payload_json: string } | undefined;
@@ -533,11 +565,15 @@ export class AuditStore {
       this.addRefs(db, "group_edge", owner, refs(edge), evidence);
     }
     rows(group.security_checks).forEach((check, index) => this.insertSecurityCheck(db, { groupId: id }, check, index, evidence));
+    const context = (group.context as Record<string, unknown> | undefined) ?? {};
     this.addRefs(db, "operation_group", id, [
-      ...refs(group), ...refs((group.context as Record<string, unknown> | undefined) ?? {}), ...refs((group.availability as Record<string, unknown> | undefined) ?? {}),
-      ...rows(((group.context as Record<string, unknown> | undefined) ?? {}).effect_hypotheses).flatMap((hypothesis) => strings(hypothesis.basis_evidence_refs)),
+      ...refs(group), ...refs(context), ...refs((group.availability as Record<string, unknown> | undefined) ?? {}),
       ...rows(group.branches).flatMap(refs), ...rows(group.facts).flatMap(refs), ...rows(group.edges).flatMap(refs), ...rows(group.security_checks).flatMap(refs),
     ], evidence);
+    // Hypothesis basis evidence is owned separately so admissible and hypothesis-only scopes stay distinct.
+    rows(context.effect_hypotheses).forEach((hypothesis, index) => {
+      this.addRefs(db, "effect_hypothesis", `${id}:${index}`, strings(hypothesis.basis_evidence_refs), evidence);
+    });
     return normalized;
   }
 
@@ -549,16 +585,25 @@ export class AuditStore {
 
   private ingestValidation(db: Database.Database, task: Record<string, unknown>, attempt: number, candidate: Record<string, unknown>): void {
     const input = JSON.parse(String(task.input_json)) as Record<string, unknown>;
-    const groups = rows(input.operation_groups); const inherited = new Set(Array.isArray(input.inherited_evidence_ids) ? input.inherited_evidence_ids.map(String) : []);
+    const groups = rows(input.operation_groups);
+    const admissibleEvidence = new Map<string, ReadonlySet<string>>();
+    const hypothesisOnlyEvidence = new Map<string, ReadonlySet<string>>();
+    for (const group of groups) {
+      const scope = (group.evidence_scope as Record<string, unknown> | undefined) ?? {};
+      admissibleEvidence.set(String(group.group_id), new Set(rows(scope.admissible).map((row) => String(row.evidence_id))));
+      hypothesisOnlyEvidence.set(String(group.group_id), new Set(rows(scope.hypothesis_only).map((row) => String(row.evidence_id))));
+    }
     const semantic = db.prepare("SELECT coverage_json FROM semantic_analyses WHERE entry_id=? ORDER BY created_at DESC LIMIT 1").get(task.subject_id) as { coverage_json: string } | undefined;
     const entryStatus = semantic ? String((JSON.parse(semantic.coverage_json) as Record<string, unknown>).entry_status ?? "") : undefined;
-    validateExploitabilitySubmission(candidate, { taskId: String(task.task_id), entryId: String(task.subject_id), groups, inheritedEvidence: inherited, ...(entryStatus ? { entryStatus } : {}) });
-    const localEvidence = this.insertEvidence(db, task, rows(candidate.evidence));
+    validateExploitabilitySubmission(candidate, { taskId: String(task.task_id), entryId: String(task.subject_id), groups, admissibleEvidence, hypothesisOnlyEvidence, ...(entryStatus ? { entryStatus } : {}) });
+    const collector: EvidenceCollector = new Map();
+    const validations = rows(candidate.validations).map((validation) => materializeValidation(validation, collector));
+    const localEvidence = this.insertEvidence(db, task, [...collector.values()]);
     const producerTaskIds = Array.isArray(input.inherited_evidence_task_ids) ? input.inherited_evidence_task_ids.map(String) : [String(input.inherited_evidence_task_id ?? "")].filter(Boolean);
     const inheritedRows = producerTaskIds.length ? db.prepare(`SELECT local_evidence_id,evidence_id FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string; evidence_id: string }[] : [];
     const evidence = new Map(inheritedRows.map((row) => [row.local_evidence_id, row.evidence_id])); for (const [key, value] of localEvidence) evidence.set(key, value);
     const affectedRoots = new Set<string>();
-    for (const validation of rows(candidate.validations)) {
+    for (const validation of validations) {
       const id = stableId("VAL", task.task_id, validation.group_id);
       db.prepare("INSERT INTO validation_results VALUES (?,?,?,?,?,?,?)").run(id, task.task_id, validation.group_id, validation.classification, validation.capability_id, canonicalJson(validation), now());
       this.addRefs(db, "validation", id, [
@@ -684,17 +729,20 @@ export class AuditStore {
         ({ exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"], extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"], project_scope: ["project"] } as Record<string, string[]>)[type]?.forEach((item) => allowedEntryTypes.add(item));
       }
     }
-    const localEvidence = this.insertEvidence(db, task, rows(candidate.evidence));
     const producerTaskIds = Array.isArray(context.inherited_evidence_task_ids) ? context.inherited_evidence_task_ids.map(String) : [];
     const inheritedRows = producerTaskIds.length ? db.prepare(`SELECT local_evidence_id,evidence_id FROM evidence WHERE producer_task_id IN (${producerTaskIds.map(() => "?").join(",")})`).all(...producerTaskIds) as { local_evidence_id: string; evidence_id: string }[] : [];
-    const evidence = new Map(inheritedRows.map((row) => [row.local_evidence_id, row.evidence_id])); for (const [key, value] of localEvidence) evidence.set(key, value);
+    const evidence = new Map(inheritedRows.map((row) => [row.local_evidence_id, row.evidence_id]));
     validatePocSubmission(candidate, {
       taskId: String(task.task_id), entryId: String(task.subject_id),
       findingId: String(finding.finding_id), allowedEntryTypes, allowedEvidence: new Set(evidence.keys()),
     });
+    const collector: EvidenceCollector = new Map();
+    const poc = materializePoc(candidate, collector);
+    const localEvidence = this.insertEvidence(db, task, [...collector.values()]);
+    for (const [key, value] of localEvidence) evidence.set(key, value);
     const pocId = stableId("POC", task.task_id);
-    db.prepare("INSERT INTO poc_artifacts VALUES (?,?,?,?,?,?,?)").run(pocId, this.runIdFrom(db), String(finding.finding_id), task.task_id, String(candidate.entry_type), canonicalJson(candidate), now());
-    this.addRefs(db, "poc_artifact", pocId, refs(candidate), evidence);
+    db.prepare("INSERT INTO poc_artifacts VALUES (?,?,?,?,?,?,?)").run(pocId, this.runIdFrom(db), String(finding.finding_id), task.task_id, String(candidate.entry_type), canonicalJson(poc), now());
+    this.addRefs(db, "poc_artifact", pocId, refs(poc), evidence);
   }
 
   private rebuildFinding(db: Database.Database, rootCause: string): { finding_id: string; representative_validation_id: string } | undefined {
@@ -920,7 +968,7 @@ export class AuditStore {
         }
         const checks = (db.prepare("SELECT security_check_id FROM security_checks WHERE group_id=?").all(groupId) as { security_check_id: string }[]).map((row) => row.security_check_id);
         for (const check of checks) db.prepare("DELETE FROM evidence_refs WHERE owner_type='security_check' AND owner_id=?").run(check);
-        for (const ownerType of ["operation_group", "group_fact", "group_edge"]) db.prepare("DELETE FROM evidence_refs WHERE owner_type=? AND (owner_id=? OR owner_id LIKE ?)").run(ownerType, groupId, `${groupId}:%`);
+        for (const ownerType of ["operation_group", "group_fact", "group_edge", "effect_hypothesis"]) db.prepare("DELETE FROM evidence_refs WHERE owner_type=? AND (owner_id=? OR owner_id LIKE ?)").run(ownerType, groupId, `${groupId}:%`);
         db.prepare("DELETE FROM security_checks WHERE group_id=?").run(groupId);
         db.prepare("DELETE FROM group_edges WHERE group_id=?").run(groupId);
         db.prepare("DELETE FROM group_facts WHERE group_id=?").run(groupId);

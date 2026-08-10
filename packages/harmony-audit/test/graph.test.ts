@@ -10,7 +10,7 @@ import type { HarmonyPoolBackend } from "../src/pool-backend.js";
 
 const emptySemantic = (instance: SubAgentInstance) => {
   const input = instance.handle.input as Record<string, unknown>;
-  return { task_id: instance.taskId, entry_id: (input.entry as Record<string, unknown>).candidate_id, summary: "checked", coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onCreate"], operation_sites_checked: [], unresolved_targets: [] }, operation_groups: [], component_calls: [], evidence: [] };
+  return { task_id: instance.taskId, entry_id: (input.entry as Record<string, unknown>).candidate_id, summary: "checked", coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onCreate"], operation_sites_checked: [], unresolved_targets: [] }, operation_groups: [], component_calls: [] };
 };
 
 describe("Harmony LangGraph plugin", () => {

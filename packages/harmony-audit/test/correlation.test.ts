@@ -8,20 +8,20 @@ import { profileProject, type ProjectModel } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
 
 const coverage = { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["onCreate"], operation_sites_checked: [], unresolved_targets: [] };
-const principal = (caller: string, observed: string, binding: "preserved" | "replaced_by_caller" = "preserved") => ({ caller_principal: caller, callee_observed_principal: observed, origin_binding: binding, authority_used: binding === "preserved" ? "origin" : "source_component", evidence_refs: [] });
+const principal = (caller: string, observed: string, binding: "preserved" | "replaced_by_caller" = "preserved") => ({ caller_principal: caller, callee_observed_principal: observed, origin_binding: binding, authority_used: binding === "preserved" ? "origin" : "source_component", evidence: [] });
 const mapping = (source: string, target: string, state: "preserved" | "constrained" | "constant" | "unknown" = "preserved") => ({ source_property: source, target_property: target, control_state: state, transform: state === "constrained" ? "allowlist" : "none" });
 const call = (key: string, target: string, sourceProperty: string, targetProperty: string, binding: "preserved" | "replaced_by_caller" = "preserved") => ({
   call_key: key, target_component_id: target, target_symbol: "Target.onCreate", transport: "startAbility", call_location: `${key}.ets:10`, condition: "always",
-  parameter_mappings: [mapping(sourceProperty, targetProperty)], principal_transition: principal("external", binding === "preserved" ? "external" : "source-component", binding), security_checks: [], evidence_refs: [],
+  parameter_mappings: [mapping(sourceProperty, targetProperty)], principal_transition: principal("external", binding === "preserved" ? "external" : "source-component", binding), security_checks: [], evidence: [],
 });
 const semantic = (task: Record<string, any>, calls: Record<string, unknown>[] = [], groups: Record<string, unknown>[] = []) => ({
-  task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage, operation_groups: groups, component_calls: calls, evidence: [],
+  task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage, operation_groups: groups, component_calls: calls,
 });
 const group = (key: string, property: string) => ({
-  group_key: key, category: "injection", capability_id: "CAP-INJ-001", title: "query", operation: { body: "query", location: "Sink.ets:20" },
-  controlled_properties: [property], context: { external_actor: "caller", intended_behavior: "query", protected_assets: ["records"], direct_observed_effect: null, effect_hypotheses: [], evidence_refs: [] },
-  branches: [{ condition: "always", locations: ["Sink.ets:20"], evidence_refs: [] }],
-  facts: [{ fact_key: "sink", type: "operation", body: "query", evidence_refs: [] }], edges: [], security_checks: [], evidence_refs: [],
+  group_key: key, category: "injection", capability_id: "CAP-INJ-001", title: "query", operation: { body: "query", location: "Sink.ets:20", evidence: [] },
+  controlled_properties: [property], context: { external_actor: "caller", intended_behavior: "query", protected_assets: ["records"], direct_observed_effect: null, effect_hypotheses: [], evidence: [] },
+  branches: [{ condition: "always", locations: ["Sink.ets:20"], evidence: [] }],
+  facts: [{ fact_key: "sink", type: "operation", body: "query", evidence: [] }], security_checks: [],
 });
 
 async function project(names: string[]): Promise<{ root: string; model: ProjectModel; store: AuditStore }> {
@@ -34,7 +34,7 @@ const component = (model: ProjectModel, name: string) => String(model.components
 describe("deterministic cross-component correlation", () => {
   it("composes control and principal state across multiple hops", () => {
     const first = seedPath({ sourceEntryId: "PE-A", sourceComponentId: "CMP-A", sourceTaskId: "TASK-A", targetEntryId: "PE-B", targetComponentId: "CMP-B", call: call("ab", "CMP-B", "want.input", "want.forwarded") });
-    const second = extendPath(first, { sourceEntryId: "PE-B", sourceComponentId: "CMP-B", sourceTaskId: "TASK-B", targetEntryId: "PE-C", targetComponentId: "CMP-C", call: { ...call("bc", "CMP-C", "want.forwarded", "query", "replaced_by_caller"), parameter_mappings: [mapping("want.forwarded", "query", "constrained")], security_checks: [{ type: "permission", location: "B.ets:8", protects: "call", subject_kind: "immediate_caller", validated_property: "permission", behavior: "reject", evidence_refs: [] }] } });
+    const second = extendPath(first, { sourceEntryId: "PE-B", sourceComponentId: "CMP-B", sourceTaskId: "TASK-B", targetEntryId: "PE-C", targetComponentId: "CMP-C", call: { ...call("bc", "CMP-C", "want.forwarded", "query", "replaced_by_caller"), parameter_mappings: [mapping("want.forwarded", "query", "constrained")], security_checks: [{ type: "permission", location: "B.ets:8", protects: "call", subject_kind: "immediate_caller", validated_property: "permission", behavior: "reject", evidence: [] }] } });
     expect(second.parameter_chains[0]).toMatchObject({ origin_property: "want.input", current_property: "query", control_state: "constrained", transforms: ["none", "allowlist"] });
     expect(second.principal_state).toMatchObject({ origin_principal: "external", immediate_caller: "CMP-B", origin_binding: "replaced_by_caller", authority_used: "source_component" });
     expect(second.security_checks[0]).toMatchObject({ source_component_id: "CMP-B", hop_index: 1, applies_to_origin: false });

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["task_id", "finding_id", "entry_type", "trigger", "language", "code", "expected_observation", "execution_hint", "evidence"],
+  "required": ["task_id", "finding_id", "entry_type", "trigger", "language", "code", "expected_observation", "execution_hint"],
   "properties": {
     "task_id": {"type": "string", "minLength": 1},
     "finding_id": {"type": "string", "minLength": 1},
@@ -29,27 +29,34 @@
     "symbol_refs": {
       "type": "array", "uniqueItems": true,
       "items": {
-        "type": "object", "required": ["symbol", "evidence_id", "verified_by"],
+        "type": "object", "required": ["symbol", "evidence", "verified_by"],
         "properties": {
           "symbol": {"type": "string", "minLength": 1},
-          "evidence_id": {"type": "string", "minLength": 1},
+          "evidence": {"$ref": "#/$defs/evidenceList"},
           "verified_by": {"enum": ["atlas_symbol", "evidence_location"]}
         }, "additionalProperties": false
       }
     },
-    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
     "evidence_refs": {"$ref": "#/$defs/refs"}
   },
   "$defs": {
     "refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
     "evidence": {
-      "type": "object", "required": ["evidence_id", "kind", "source", "summary"],
+      "type": "object",
+      "required": ["kind", "source", "summary"],
       "properties": {
-        "evidence_id": {"type": "string", "minLength": 1}, "kind": {"type": "string", "minLength": 1},
-        "source": {"type": "string", "minLength": 1}, "summary": {"type": "string", "minLength": 1},
-        "location": {"type": ["string", "null"]}, "content_ref": {"type": ["string", "null"]},
+        "kind": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "content_ref": {"type": ["string", "null"]},
         "sha256": {"type": ["string", "null"]}
-      }, "additionalProperties": false
+      },
+      "additionalProperties": false
+    },
+    "evidenceList": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence"}
     }
   },
   "additionalProperties": false

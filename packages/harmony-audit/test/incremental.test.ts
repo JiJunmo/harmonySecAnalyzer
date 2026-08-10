@@ -7,25 +7,23 @@ import { resolveCapabilities } from "../src/capabilities.js";
 import { incrementalBaselineFiles, planIncremental } from "../src/incremental.js";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
-import { effectChain, sixDimensions, validationEvidence } from "./p0-fixtures.js";
+import { effectChain, sixDimensions, support } from "./p0-fixtures.js";
 
 const semantic = (task: Record<string, any>) => ({
   task_id: task.task_id,
   entry_id: task.input.entry.candidate_id,
   summary: `checked ${task.input.entry.component_name}`,
   coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: [`${task.input.entry.component_name}.onCreate`], operation_sites_checked: [], unresolved_targets: [] },
-  operation_groups: [], component_calls: [], evidence: [],
+  operation_groups: [], component_calls: [],
 });
 
 const operationGroup = {
   group_key: "owned-query", category: "provider", capability_id: "CAP-PROVIDER-001", title: "受保护的数据查询",
-  operation: { body: "query owned record", location: "A.ets:30" }, controlled_properties: ["want.recordId"],
-  context: { external_actor: "third-party app", intended_behavior: "query owned record", protected_assets: ["private records"], direct_observed_effect: null, effect_hypotheses: [], evidence_refs: [] },
-  branches: [{ condition: "always", locations: ["A.ets:20"], evidence_refs: [] }],
-  facts: [{ fact_key: "entry", type: "entrypoint", body: "external Want", location: "A.ets:10", evidence_refs: [] }, { fact_key: "operation", type: "operation", body: "query owned record", location: "A.ets:30", evidence_refs: [] }],
-  edges: [{ from: "entry", to: "operation", kind: "reaches", evidence_refs: [] }],
-  security_checks: [{ type: "owner check", location: "A.ets:25", protects: "private records", subject_kind: "origin_principal", validated_property: "record owner", behavior: "rejects another owner", evidence_refs: [] }],
-  evidence_refs: [],
+  operation: { body: "query owned record", location: "A.ets:30", evidence: [] }, controlled_properties: ["want.recordId"],
+  context: { external_actor: "third-party app", intended_behavior: "query owned record", protected_assets: ["private records"], direct_observed_effect: null, effect_hypotheses: [], evidence: [] },
+  branches: [{ condition: "always", locations: ["A.ets:20"], evidence: [] }],
+  facts: [{ fact_key: "entry", type: "entrypoint", body: "external Want", location: "A.ets:10", evidence: [] }, { fact_key: "operation", type: "operation", body: "query owned record", location: "A.ets:30", evidence: [] }],
+  security_checks: [{ type: "owner check", location: "A.ets:25", protects: "private records", subject_kind: "origin_principal", validated_property: "record owner", behavior: "rejects another owner", evidence: [] }],
 };
 
 function protectedValidation(task: Record<string, any>) {
@@ -34,12 +32,12 @@ function protectedValidation(task: Record<string, any>) {
     task_id: task.task_id, entry_id: task.input.entry_id, summary: "protected",
     validations: [{
       group_id: group.group_id, capability_id: group.capability_id, classification: "protected_exposure", title: "所有者校验有效", security_check_outcome: "effective",
-      business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence_refs: [] },
-      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: false, reason: "owner check rejects another caller", evidence_refs: [] },
+      business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence: support([]) },
+      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: false, reason: "owner check rejects another caller", evidence: support([]) },
       exploitability: sixDimensions({ security_check_bypassed_or_absent: false, boundary_violated: false, concrete_impact: false }),
-      counter_evidence: [{ kind: "effective_security_check", reason: "owner check dominates query", evidence_refs: [] }],
-      demotion_reason: "owner check prevents unauthorized access", evidence_refs: [],
-    }], evidence: [validationEvidence],
+      counter_evidence: [{ kind: "effective_security_check", reason: "owner check dominates query", evidence: support([]) }],
+      demotion_reason: "owner check prevents unauthorized access", evidence: support([]),
+    }],
   };
 }
 
@@ -49,7 +47,7 @@ const pocArtifact = (task: Record<string, any>) => ({
   language: "arkts", code: "startAbility({ want: { action: 'ohos.intent.action.QUERY', uri: 'demo://record?owned=1' } })",
   prerequisites: ["安装 debug 包"], expected_observation: "返回本人记录", limitations: "未在真机验证",
   execution_hint: { step_by_step: ["安装 debug 包", "运行代码"], device_required: "emulator", network_required: false },
-  symbol_refs: [], evidence: [], evidence_refs: [],
+  symbol_refs: [], evidence_refs: [],
 });
 
 async function project() {
@@ -145,10 +143,10 @@ describe("incremental audit migration", () => {
     (confirmed.validations as Record<string, any>[])[0] = {
       group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "受保护的数据查询",
       security_check_outcome: "bypassable",
-      business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence_refs: [] },
-      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: true, reason: "owner check can be bypassed", evidence_refs: [] },
+      business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence: support([]) },
+      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: true, reason: "owner check can be bypassed", evidence: support([]) },
       exploitability: sixDimensions(), effect_chain: effectChain(),
-      counter_evidence: [], impact: "读取他人记录", severity: "high", cwe: "CWE-89", evidence_refs: [],
+      counter_evidence: [], impact: "读取他人记录", severity: "high", cwe: "CWE-89", evidence: support([]),
     };
     expect(full.reconcile(validation!.task_id, validation!.attempt, confirmed)).toMatchObject({ accepted: true });
     const [poc] = (await full.claim(5)).tasks;

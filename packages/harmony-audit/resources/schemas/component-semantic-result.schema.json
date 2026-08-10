@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_calls", "evidence"],
+  "required": ["task_id", "entry_id", "summary", "coverage", "operation_groups", "component_calls"],
   "properties": {
     "task_id": {"type": "string", "minLength": 1},
     "entry_id": {"type": "string", "minLength": 1},
@@ -19,62 +19,71 @@
       "additionalProperties": false
     },
     "operation_groups": {"type": "array", "items": {"$ref": "#/$defs/group"}},
-    "component_calls": {"type": "array", "items": {"$ref": "#/$defs/component_call"}},
-    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+    "component_calls": {"type": "array", "items": {"$ref": "#/$defs/component_call"}}
   },
   "$defs": {
-    "refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
     "evidence": {
-      "type": "object", "required": ["evidence_id", "kind", "source", "summary"],
+      "type": "object",
+      "required": ["kind", "source", "summary"],
       "properties": {
-        "evidence_id": {"type": "string", "minLength": 1}, "kind": {"type": "string", "minLength": 1},
-        "source": {"type": "string", "minLength": 1}, "summary": {"type": "string", "minLength": 1},
-        "location": {"type": ["string", "null"]}, "content_ref": {"type": ["string", "null"]},
+        "kind": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "content_ref": {"type": ["string", "null"]},
         "sha256": {"type": ["string", "null"]}
-      }, "additionalProperties": false
+      },
+      "additionalProperties": false
+    },
+    "evidenceList": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence"}
     },
     "fact": {
-      "type": "object", "required": ["fact_key", "type", "body", "evidence_refs"],
+      "type": "object",
+      "required": ["fact_key", "type", "body", "evidence"],
       "properties": {
         "fact_key": {"type": "string", "minLength": 1},
         "type": {"enum": ["entrypoint", "reachability", "control", "transform", "security_check", "operation", "dead_end", "gap"]},
-        "body": {"type": "string", "minLength": 1}, "location": {"type": ["string", "null"]},
-        "evidence_refs": {"$ref": "#/$defs/refs"}
-      }, "additionalProperties": false
-    },
-    "edge": {
-      "type": "object", "required": ["from", "to", "kind", "evidence_refs"],
-      "properties": {
-        "from": {"type": "string", "minLength": 1}, "to": {"type": "string", "minLength": 1},
-        "kind": {"type": "string", "minLength": 1}, "evidence_refs": {"$ref": "#/$defs/refs"}
-      }, "additionalProperties": false
+        "body": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "evidence": {"$ref": "#/$defs/evidenceList"}
+      },
+      "additionalProperties": false
     },
     "branch": {
-      "type": "object", "required": ["condition", "locations", "evidence_refs"],
+      "type": "object",
+      "required": ["condition", "locations", "evidence"],
       "properties": {
         "condition": {"type": "string", "minLength": 1},
         "locations": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-        "evidence_refs": {"$ref": "#/$defs/refs"}
-      }, "additionalProperties": false
+        "evidence": {"$ref": "#/$defs/evidenceList"}
+      },
+      "additionalProperties": false
     },
     "security_check": {
-      "type": "object", "required": ["type", "location", "protects", "subject_kind", "validated_property", "behavior", "evidence_refs"],
+      "type": "object",
+      "required": ["type", "location", "protects", "subject_kind", "validated_property", "behavior", "evidence"],
       "properties": {
-        "type": {"type": "string", "minLength": 1}, "location": {"type": ["string", "null"]},
-        "protects": {"type": "string", "minLength": 1}, "validated_property": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "protects": {"type": "string", "minLength": 1},
+        "validated_property": {"type": "string", "minLength": 1},
         "subject_kind": {"enum": ["origin_principal", "immediate_caller", "transferred_property", "resource_owner", "security_boundary", "unknown"]},
-        "behavior": {"type": "string", "minLength": 1}, "evidence_refs": {"$ref": "#/$defs/refs"}
-      }, "additionalProperties": false
+        "behavior": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidenceList"}
+      },
+      "additionalProperties": false
     },
     "principalTransition": {
       "type": "object",
-      "required": ["caller_principal", "callee_observed_principal", "origin_binding", "authority_used", "evidence_refs"],
+      "required": ["caller_principal", "callee_observed_principal", "origin_binding", "authority_used", "evidence"],
       "properties": {
         "caller_principal": {"type": "string", "minLength": 1},
         "callee_observed_principal": {"type": "string", "minLength": 1},
         "origin_binding": {"enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"]},
         "authority_used": {"enum": ["origin", "source_component", "system", "none", "unknown"]},
-        "evidence_refs": {"$ref": "#/$defs/refs"}
+        "evidence": {"$ref": "#/$defs/evidenceList"}
       },
       "additionalProperties": false
     },
@@ -93,7 +102,7 @@
       "type": "object",
       "required": [
         "call_key", "target_component_id", "target_symbol", "transport",
-        "call_location", "condition", "parameter_mappings", "principal_transition", "security_checks", "evidence_refs"
+        "call_location", "condition", "parameter_mappings", "principal_transition", "security_checks", "evidence"
       ],
       "properties": {
         "call_key": {"type": "string", "minLength": 1},
@@ -105,34 +114,38 @@
         "parameter_mappings": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/parameterMapping"}},
         "principal_transition": {"$ref": "#/$defs/principalTransition"},
         "security_checks": {"type": "array", "items": {"$ref": "#/$defs/security_check"}},
-        "evidence_refs": {"$ref": "#/$defs/refs"}
+        "evidence": {"$ref": "#/$defs/evidenceList"}
+      },
+      "additionalProperties": false
+    },
+    "effectHypothesis": {
+      "type": "object",
+      "required": ["claim", "basis_evidence", "missing_proofs"],
+      "properties": {
+        "claim": {"type": "string", "minLength": 1},
+        "basis_evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "missing_proofs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
       },
       "additionalProperties": false
     },
     "context": {
-      "type": "object", "required": ["external_actor", "intended_behavior", "protected_assets", "direct_observed_effect", "effect_hypotheses", "evidence_refs"],
+      "type": "object",
+      "required": ["external_actor", "intended_behavior", "protected_assets", "direct_observed_effect", "effect_hypotheses", "evidence"],
       "properties": {
         "external_actor": {"type": "string", "minLength": 1},
         "intended_behavior": {"type": "string", "minLength": 1},
         "protected_assets": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "direct_observed_effect": {"type": ["string", "null"], "minLength": 1},
         "effect_hypotheses": {"type": "array", "items": {"$ref": "#/$defs/effectHypothesis"}},
-        "evidence_refs": {"$ref": "#/$defs/refs"}
-      }, "additionalProperties": false
-    },
-    "effectHypothesis": {
-      "type": "object", "required": ["claim", "basis_evidence_refs", "missing_proofs"],
-      "properties": {
-        "claim": {"type": "string", "minLength": 1},
-        "basis_evidence_refs": {"$ref": "#/$defs/refs"},
-        "missing_proofs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
-      }, "additionalProperties": false
+        "evidence": {"$ref": "#/$defs/evidenceList"}
+      },
+      "additionalProperties": false
     },
     "availability": {
       "type": "object",
       "required": [
         "resource_or_failure", "attacker_influence", "limit_or_amplification",
-        "exception_or_isolation", "repeat_trigger", "affected_scope", "recovery", "evidence_refs"
+        "exception_or_isolation", "repeat_trigger", "affected_scope", "recovery", "evidence"
       ],
       "properties": {
         "resource_or_failure": {"type": "string", "minLength": 1},
@@ -142,27 +155,34 @@
         "repeat_trigger": {"type": "string", "minLength": 1},
         "affected_scope": {"type": "string", "minLength": 1},
         "recovery": {"type": "string", "minLength": 1},
-        "evidence_refs": {"$ref": "#/$defs/refs"}
+        "evidence": {"$ref": "#/$defs/evidenceList"}
       },
       "additionalProperties": false
     },
     "group": {
       "type": "object",
-      "required": ["group_key", "category", "capability_id", "title", "operation", "controlled_properties", "context", "branches", "facts", "security_checks", "evidence_refs"],
+      "required": ["group_key", "category", "capability_id", "title", "operation", "controlled_properties", "context", "branches", "facts", "security_checks"],
       "properties": {
-        "group_key": {"type": "string", "minLength": 1}, "category": {"type": "string", "minLength": 1},
-        "capability_id": {"type": ["string", "null"]}, "title": {"type": "string", "minLength": 1},
-        "operation": {"type": "object", "required": ["body", "location"], "properties": {
-          "body": {"type": "string", "minLength": 1}, "location": {"type": "string", "minLength": 1}
-        }, "additionalProperties": false},
+        "group_key": {"type": "string", "minLength": 1},
+        "category": {"type": "string", "minLength": 1},
+        "capability_id": {"type": ["string", "null"]},
+        "title": {"type": "string", "minLength": 1},
+        "operation": {
+          "type": "object",
+          "required": ["body", "location", "evidence"],
+          "properties": {
+            "body": {"type": "string", "minLength": 1},
+            "location": {"type": "string", "minLength": 1},
+            "evidence": {"$ref": "#/$defs/evidenceList"}
+          },
+          "additionalProperties": false
+        },
         "controlled_properties": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "context": {"$ref": "#/$defs/context"},
         "availability": {"$ref": "#/$defs/availability"},
         "branches": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/branch"}},
         "facts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/fact"}},
-        "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
-        "security_checks": {"type": "array", "items": {"$ref": "#/$defs/security_check"}},
-        "evidence_refs": {"$ref": "#/$defs/refs"}
+        "security_checks": {"type": "array", "items": {"$ref": "#/$defs/security_check"}}
       },
       "allOf": [{
         "if": {"properties": {"capability_id": {"const": "CAP-DOS-001"}}},

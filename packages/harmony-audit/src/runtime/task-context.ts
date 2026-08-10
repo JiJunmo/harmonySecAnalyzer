@@ -94,7 +94,10 @@ export function validationTaskInput(db: Database.Database, raw: Row, entryId: st
     semantic_analysis: { summary: analysis?.summary ?? "", coverage: selectedCoverage, operation_groups: groups },
     validation_contract: {
       semantic_effect_hypotheses_are_untrusted: true,
-      dimensions_require_status_reason_evidence_level_and_refs: true,
+      semantic_refs_must_come_from_current_group_admissible_scope: true,
+      hypothesis_only_evidence_cannot_support_validation: true,
+      new_source_evidence_is_inline_and_runtime_numbered: true,
+      dimensions_require_status_reason_evidence_level_and_support: true,
       confirmed_effect_chain: ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
       confirmed_effect_chain_requires_fresh_validation_evidence: true,
       poc_produced_by_later_phase: true,
@@ -189,7 +192,8 @@ export function pocTaskInput(db: Database.Database, raw: Row, findingId: string)
       trigger_kind: ["adb_shell", "ability_want", "common_event", "ipc_client", "provider_query", "web_navigation", "jsbridge_call", "network", "crypto", "archive", "distributed", "generic"],
       forbidden_outputs: ["classification", "exploitability", "severity", "cwe", "impact"],
       form_selection: "受控值到敏感操作的完整触发链能用 hdc shell aa start 命令行表达时选 shell；需要应用上下文/复杂参数/回调/内部链路时选 arkts 并附最小工程复现步骤",
-      self_verification_required: "code/trigger.payload 引用的应用内符号必须逐一用 atlas 核验并写回 symbol_refs 与证据",
+      evidence_refs_scope: "evidence_refs 只能引用 inherited_evidence_ids 中已有的证据 id；新证据内联在 symbol_refs 的 evidence 数组，不创建证据 ID，编号和去重由运行时完成",
+      self_verification_required: "code/trigger.payload 引用的应用内符号必须逐一用 atlas 核验并写回 symbol_refs 与内联 evidence",
     },
   };
 }
