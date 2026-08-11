@@ -111,6 +111,10 @@ profile project + prepare Atlas index
 
 LangGraph 主图保存控制游标，`run.db` 保存任务、证据、Operation Group、Fact Edge、验证、Finding、PoC Artifact 和覆盖缺口。语义 Agent、验证 Agent 与 PoC Agent 使用独立任务上下文和 Atlas 工具集合；模型提交必须先通过 JSON Schema，再通过领域不变量，最后才能事务入库。三个阶段职责严格分离：路径发现只产事实，六维验证只做判断，PoC 生成只产出可复现触发套件（禁止重新判定），`findings` 表不含验证阶段以外的字段，PoC 工件独立存放于 `poc_artifacts`。
 
+组件语义阶段的 `entry_status` 判断候选是否形成真实组件输入，不替代外部可达性：任一候选成立为 `confirmed`，全部排除为 `excluded`，无法确认或排除为 `uncertain`。六维中的 `true` 必须有成立证据，`false` 必须有反向证据，缺少关键证明只能使用 `unknown`。基础路径被明确反证时使用 `no_exploitable_path`，与正常业务和证据不足分开。Agent Skill 说明判定标准，JSON Schema 限定输出形态，领域不变量校验状态、证据、防护结论和最终分类的一致性。
+
+PoC Agent 不输出可信状态。运行时接受产物后标记为 `generated_unverified`，表示仅通过结构、证据引用和静态触发检查，尚未编译或执行；生成失败显示为 `generation_failed`，但不构成审计覆盖缺口。后续编译或设备验证能力才可推进为 `build_verified` 或 `device_verified`。
+
 `RollingAgentPool` 实现通用滚动补槽，Harmony 插件把容量限制为最多 5。一个任务结束后立即补充下一个任务，不等待整批完成。
 
 ## 7. 状态与恢复

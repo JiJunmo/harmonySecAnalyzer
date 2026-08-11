@@ -33,7 +33,7 @@ function protectedValidation(task: Record<string, any>) {
     validations: [{
       group_id: group.group_id, capability_id: group.capability_id, classification: "protected_exposure", title: "所有者校验有效", security_check_outcome: "effective",
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence: support([]) },
-      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: false, reason: "owner check rejects another caller", evidence: support([]) },
+      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", reason: "owner check rejects another caller", evidence: support([]) },
       exploitability: sixDimensions({ security_check_bypassed_or_absent: false, boundary_violated: false, concrete_impact: false }),
       counter_evidence: [{ kind: "effective_security_check", reason: "owner check dominates query", evidence: support([]) }],
       demotion_reason: "owner check prevents unauthorized access", evidence: support([]),
@@ -144,7 +144,7 @@ describe("incremental audit migration", () => {
       group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "受保护的数据查询",
       security_check_outcome: "bypassable",
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "query one owned record", allowed_controls: ["recordId"], evidence: support([]) },
-      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", violation: true, reason: "owner check can be bypassed", evidence: support([]) },
+      security_boundary: { type: "data_owner", expected_boundary: "only owner may query", reason: "owner check can be bypassed", evidence: support([]) },
       exploitability: sixDimensions(), effect_chain: effectChain(),
       counter_evidence: [], impact: "读取他人记录", severity: "high", cwe: "CWE-89", evidence: support([]),
     };

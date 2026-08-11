@@ -12,6 +12,7 @@ tools: [symbol, explore, path, trace]
 ## 阶段边界
 
 - 本阶段只负责可复现触发套件。**不得输出** `classification`/`exploitability`/`severity`/`cwe`/`impact` 或任何判断性结论——这些由六维验证阶段定论。
+- 不得输出 `assurance_status` 或自行声称已经编译、安装或真机验证。运行时验收后只会标记为 `generated_unverified`，表示通过结构、证据引用和静态触发约束，但尚未编译或执行。
 - 不得新增或修改 validation、finding、operation_group 或语义事实。
 - `finding_id` 必须原样引用输入中的 finding_id；不得发明新的 finding。
 
@@ -32,9 +33,9 @@ tools: [symbol, explore, path, trace]
 - `language` 与形态一致：命令行触发为 `shell`，应用内代码为 `arkts`。
 - `code` 必须是完整可执行的片段（ArkTS 代码或 shell 命令），不允许出现“略”、“省略”、“…”、“TODO”或任何占位符，必须能直接复制运行。命令型 PoC 必须以 `hdc`/`adb`/`curl`/`aa` 命令开头。
 - `execution_hint` 必须给出 `step_by_step`（设备/模拟器上按序执行的复现步骤）、`device_required`（emulator/simulator/physical_device/none）和 `network_required`。arkts 形态的步骤必须包含“创建最小 DevEco 工程、放置代码、编译安装”等前置。
-- `prerequisites` 列出复现前提（debug 包、已安装依赖、设备/模拟器、签名、权限等）。
+- `prerequisites` 必须列出复现前提（debug 包、已安装依赖、设备/模拟器、签名、权限等）；没有额外前提时输出空数组。
 - `expected_observation` 具体写出复现成功后应观察到的现象（崩溃、返回越权数据、日志泄漏、敏感文件写入等），必须与验证中的 `concrete_impact` 对应。
-- `limitations` 明确标注该 PoC 未在真机/模拟器实际执行、需要人工验证的边界。
+- `limitations` 必须明确标注该 PoC 未经过编译和真机/模拟器实际执行，以及仍需人工验证的边界。
 - 证据内联在它所证明对象的 `evidence` 数组中（每条包含 `kind`、`source`、`summary` 和可选源码位置），不创建证据 ID，不输出顶层 `evidence` 目录。`evidence_refs` 只能引用输入 `inherited_evidence_ids` 中已有的证据 id。同一段源码用于多个符号时可以重复写相同证据，运行时会自动归并。
 
 ## 生成后自查（必须执行）
@@ -45,7 +46,7 @@ tools: [symbol, explore, path, trace]
 
 ## 约束
 
-- 只为 `confirmed_vulnerability` 生成；不得为降级结论生成 PoC。
+- 只为 `confirmed_vulnerability` 和 `residual_risk` 生成；不得为其他结论生成 PoC。
 - 触发方式必须真实反映可控参数到敏感操作的路径；不得编造 API 或能力。
 - 涉及目标源码具体符号、文件路径、参数名时保持原样，使用输入中 `operation_group` 与 `verification_scope` 提供的位置和符号。
 - 所有面向报告的描述使用中文；源码符号、路径、API、参数和 CWE 保持原样。

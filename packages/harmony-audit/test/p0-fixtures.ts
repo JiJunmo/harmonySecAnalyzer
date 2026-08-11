@@ -16,7 +16,7 @@ export function dimension(status: DimensionStatus, semanticRefs: readonly string
     status: status === "unknown" ? "unknown" : String(status),
     reason: status === "unknown" ? "证据不足" : isTrue ? "源码核验成立" : "源码核验不成立",
     evidence_level: status === "unknown" ? "hypothesis" : "direct",
-    evidence: support(semanticRefs, isTrue ? [evidenceRow()] : []),
+    evidence: support(semanticRefs, status === "unknown" ? [] : [evidenceRow()]),
   };
 }
 

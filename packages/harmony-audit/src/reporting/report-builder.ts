@@ -44,7 +44,7 @@ export function collectCoverageGaps(db: Database.Database): CoverageGap[] {
   return gaps;
 }
 
-const classificationRank = ["confirmed_vulnerability", "residual_risk", "insufficient_evidence", "protected_exposure", "benign_business_flow"];
+const classificationRank = ["confirmed_vulnerability", "residual_risk", "insufficient_evidence", "protected_exposure", "no_exploitable_path", "benign_business_flow"];
 
 function componentStatus(entryId: string, coverage: Row, groups: Row[]): string {
   const classifications = new Set(groups.filter((group) => group.entry_id === entryId).map((group) => String(group.classification ?? "verification_incomplete")));
@@ -82,7 +82,15 @@ export function buildReportModel(db: Database.Database, status: "complete" | "co
   const pocArtifacts: Row[] = (db.prepare("SELECT poc_id,finding_id,entry_type,payload_json FROM poc_artifacts ORDER BY poc_id").all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson) }; });
   const pocByFinding = new Map<string, Row>();
   for (const poc of pocArtifacts) if (!pocByFinding.has(String(poc.finding_id))) pocByFinding.set(String(poc.finding_id), poc);
-  for (const finding of findings) { const poc = pocByFinding.get(String(finding.finding_id)); finding.poc_artifact = poc ?? null; }
+  const pocTaskByFinding = new Map((db.prepare("SELECT subject_id,status FROM tasks WHERE kind='poc_generation' ORDER BY created_at").all() as { subject_id: string; status: string }[]).map((task) => [task.subject_id, task.status]));
+  for (const finding of findings) {
+    const poc = pocByFinding.get(String(finding.finding_id));
+    const payload = object(poc?.payload);
+    const taskStatus = pocTaskByFinding.get(String(finding.finding_id));
+    finding.poc_artifact = poc ?? null;
+    finding.poc_status = payload.assurance_status
+      ?? (taskStatus === "exhausted" ? "generation_failed" : ["queued", "running"].includes(taskStatus ?? "") ? "pending_generation" : null);
+  }
   const paths: Row[] = (db.prepare("SELECT path_id,root_entry_id,target_entry_id,fingerprint,cycle,payload_json FROM component_paths ORDER BY path_id").all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, cycle: Boolean(row.cycle), payload: parse(payloadJson) }; });
   const componentCalls: Row[] = (db.prepare(`SELECT c.component_call_id,c.semantic_analysis_id,c.target_component_id,c.payload_json,s.entry_id source_entry_id
     FROM component_calls c JOIN semantic_analyses s ON s.semantic_analysis_id=c.semantic_analysis_id ORDER BY c.component_call_id`).all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson) }; });

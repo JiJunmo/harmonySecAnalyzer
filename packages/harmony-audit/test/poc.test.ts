@@ -39,7 +39,7 @@ const validation = (task: Record<string, any>, severity = "high") => {
       group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "query injection",
       security_check_outcome: "absent",
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence: support(refs) },
-      security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence: support(refs) },
+      security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", reason: "query crosses owner boundary", evidence: support(refs) },
       ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence: support(refs) } } : {}),
       exploitability: sixDimensions({}, refs), effect_chain: effectChain(refs),
       counter_evidence: [], impact: "private data disclosure", severity, cwe: "CWE-89", evidence: support(refs),
@@ -83,13 +83,17 @@ describe("poc generation phase", () => {
     const report = await store.finalize();
     expect(report.summary).toMatchObject({ findings: 1, poc_artifacts: 1 });
     const finding = (report.findings as Record<string, unknown>[])[0]!;
-    expect(finding.poc_artifact).toMatchObject({ entry_type: "want", payload: expect.objectContaining({ code: expect.stringContaining("startAbility"), expected_observation: "返回越权数据" }) });
+    expect(finding).toMatchObject({
+      poc_status: "generated_unverified",
+      poc_artifact: { entry_type: "want", payload: expect.objectContaining({ code: expect.stringContaining("startAbility"), expected_observation: "返回越权数据", assurance_status: "generated_unverified" }) },
+    });
     const db = new Database(store.paths.db);
     expect((db.prepare("SELECT COUNT(*) n FROM poc_artifacts").get() as { n: number }).n).toBe(1);
     expect((db.pragma("foreign_key_check") as unknown[])).toHaveLength(0);
     db.close();
     const markdown = await readFile(store.paths.reportMarkdown, "utf8");
     expect(markdown).toContain("#### 验证方式 / PoC");
+    expect(markdown).toContain("已生成，未编译验证");
     expect(markdown).toContain("入口类型");
     expect(markdown).toContain("逐步复现");
     expect(await readFile(store.paths.reportHtml, "utf8")).toContain("预期现象");
@@ -110,6 +114,15 @@ describe("poc generation phase", () => {
     expect(outcome).toMatchObject({ accepted: false, status: "queued", error_code: "SCHEMA_INVALID" });
   });
 
+  it("rejects a poc that omits required reproducibility fields", async () => {
+    const { store, pocTask } = await confirmedStore();
+    const candidate = poc(pocTask);
+    delete candidate.limitations;
+    delete candidate.prerequisites;
+    expect(store.reconcile(pocTask.task_id, pocTask.attempt, candidate))
+      .toMatchObject({ accepted: false, status: "queued", error_code: "SCHEMA_INVALID" });
+  });
+
   it("rejects placeholder code instead of a runnable snippet", async () => {
     const { store, pocTask } = await confirmedStore();
     const outcome = store.reconcile(pocTask.task_id, pocTask.attempt, poc(pocTask, { code: "startAbility({ want: { uri: '略' } })" }));
@@ -124,6 +137,9 @@ describe("poc generation phase", () => {
     // validator-level guard remains for direct callers
     const candidate = poc(pocTask, { severity: "critical", classification: "confirmed_vulnerability" });
     expect(() => validatePocSubmission(candidate, { taskId: candidate.task_id, entryId: "PE-1", findingId: String(candidate.finding_id), allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
+      .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "POC_FORBIDDEN_OUTPUT" }));
+    const assurance = poc(pocTask, { assurance_status: "device_verified" });
+    expect(() => validatePocSubmission(assurance, { taskId: assurance.task_id, entryId: "PE-1", findingId: String(assurance.finding_id), allowedEntryTypes: new Set(["want"]), allowedEvidence: new Set() }))
       .toThrowError(expect.objectContaining<Partial<{ code: string }>>({ code: "POC_FORBIDDEN_OUTPUT" }));
   });
 
@@ -166,10 +182,10 @@ describe("poc generation phase", () => {
       task_id: validationTask!.task_id, entry_id: validationTask!.input.entry_id, summary: "not exploitable",
       validations: [{
         group_id: (validationTask!.input.operation_groups[0] as Record<string, unknown>).group_id,
-        capability_id: "CAP-INJ-001", classification: "insufficient_evidence", title: "query injection", security_check_outcome: "unknown",
+        capability_id: "CAP-INJ-001", classification: "no_exploitable_path", title: "query injection", security_check_outcome: "unknown",
         business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence: support([]) },
-        security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: false, reason: "missing trace", evidence: support([]) },
-        exploitability: sixDimensions({ externally_reachable: false, attacker_controlled: false, sink_reached: false, security_check_bypassed_or_absent: false, boundary_violated: false, concrete_impact: false }, []),
+        security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", reason: "missing trace", evidence: support([]) },
+        exploitability: sixDimensions({ externally_reachable: false, attacker_controlled: false, sink_reached: false, security_check_bypassed_or_absent: "unknown", boundary_violated: "unknown", concrete_impact: "unknown" }, []),
         counter_evidence: [], demotion_reason: "cannot confirm reachable chain", evidence_gap: "missing trace", evidence: support([]),
       }],
     };
@@ -177,7 +193,8 @@ describe("poc generation phase", () => {
     const [next] = (await store.claim(1)).tasks;
     expect(next).toBeUndefined();
     const report = await store.finalize();
-    expect(report.summary).toMatchObject({ findings: 0, poc_artifacts: 0 });
+    expect(report.summary).toMatchObject({ findings: 0, poc_artifacts: 0, classifications: { no_exploitable_path: 1 } });
+    expect(report.component_results).toEqual(expect.arrayContaining([expect.objectContaining({ status: "no_exploitable_path" })]));
   });
 
   it("schedules the poc task immediately after its entry's validation, without waiting for other validations to drain", async () => {
@@ -252,8 +269,8 @@ describe("poc generation phase", () => {
     expect((report.run as Record<string, unknown>).status).toBe("complete");
     expect((report.coverage as Record<string, unknown>).gaps).toEqual([]);
     expect(report.summary).toMatchObject({ findings: 1, poc_artifacts: 0 });
-    expect((report.findings as Record<string, unknown>[])[0]).toMatchObject({ poc_artifact: null });
+    expect((report.findings as Record<string, unknown>[])[0]).toMatchObject({ poc_artifact: null, poc_status: "generation_failed" });
     const markdown = await readFile(store.paths.reportMarkdown, "utf8");
-    expect(markdown).toContain("未生成 PoC");
+    expect(markdown).toContain("PoC 生成失败");
   });
 });

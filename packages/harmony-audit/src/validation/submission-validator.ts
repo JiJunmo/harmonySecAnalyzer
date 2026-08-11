@@ -93,8 +93,9 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
       const dimension = (dimensions[key] as Row | undefined) ?? {};
       const support = isRow(dimension.evidence) ? dimension.evidence : {};
       const hasSupport = strings(support.semantic_refs).length > 0 || rows(support.verification).length > 0;
-      if (dimension.status === "true") {
-        invariant(dimension.evidence_level !== "hypothesis" && hasSupport, "TRUE_DIMENSION_EVIDENCE_INSUFFICIENT", { groupId: validation.group_id, dimension: key });
+      if (dimension.status === "true" || dimension.status === "false") {
+        const code = dimension.status === "true" ? "TRUE_DIMENSION_EVIDENCE_INSUFFICIENT" : "FALSE_DIMENSION_EVIDENCE_INSUFFICIENT";
+        invariant(dimension.evidence_level !== "hypothesis" && hasSupport, code, { groupId: validation.group_id, dimension: key });
       }
     }
     if (classification === "confirmed_vulnerability") {
@@ -111,10 +112,31 @@ export function validateExploitabilitySubmission(candidate: Row, context: Valida
       }
     } else invariant(typeof validation.demotion_reason === "string" && validation.demotion_reason.length > 0, "DEMOTION_REASON_MISSING");
     if (["residual_risk", "insufficient_evidence"].includes(classification)) invariant(typeof validation.evidence_gap === "string" && validation.evidence_gap.length > 0, "EVIDENCE_GAP_MISSING");
-    if (classification === "protected_exposure") invariant(validation.security_check_outcome === "effective", "PROTECTION_OUTCOME_MISMATCH");
-    invariant(!(validation.security_check_outcome === "effective" && (((dimensions.security_check_bypassed_or_absent as Row | undefined) ?? {}).status === "true")), "SECURITY_CHECK_OUTCOME_CONFLICT");
-    const boundary = (validation.security_boundary as Row | undefined) ?? {};
-    invariant(boundary.violation === (((dimensions.boundary_violated as Row | undefined) ?? {}).status === "true"), "BOUNDARY_DIMENSION_MISMATCH");
+    const guardStatus = String(((dimensions.security_check_bypassed_or_absent as Row | undefined) ?? {}).status ?? "");
+    const expectedGuardStatus: Record<string, string> = { absent: "true", bypassable: "true", effective: "false", unknown: "unknown" };
+    invariant(guardStatus === expectedGuardStatus[String(validation.security_check_outcome)], "SECURITY_CHECK_OUTCOME_DIMENSION_MISMATCH", {
+      groupId: validation.group_id, securityCheckOutcome: validation.security_check_outcome, guardStatus,
+    });
+
+    const coreStatuses = ["externally_reachable", "attacker_controlled", "sink_reached"].map((key) => String(((dimensions[key] as Row | undefined) ?? {}).status ?? ""));
+    const finalStatuses = ["security_check_bypassed_or_absent", "boundary_violated", "concrete_impact"].map((key) => String(((dimensions[key] as Row | undefined) ?? {}).status ?? ""));
+    const publicApi = ((validation.business_intent as Row | undefined) ?? {}).is_public_api === true;
+    const classificationMatches = classification === "confirmed_vulnerability"
+      ? DIMENSIONS.every((key) => ((dimensions[key] as Row | undefined) ?? {}).status === "true")
+      : classification === "protected_exposure"
+        ? coreStatuses[0] === "true" && coreStatuses[1] === "true" && validation.security_check_outcome === "effective" && guardStatus === "false"
+        : classification === "no_exploitable_path"
+          ? coreStatuses.includes("false")
+          : classification === "benign_business_flow"
+            ? coreStatuses.every((status) => status === "true") && publicApi
+              && ((dimensions.boundary_violated as Row | undefined) ?? {}).status === "false"
+              && ((dimensions.concrete_impact as Row | undefined) ?? {}).status === "false"
+            : classification === "residual_risk"
+              ? coreStatuses.every((status) => status === "true") && !finalStatuses.includes("false")
+              : classification === "insufficient_evidence"
+                ? coreStatuses.includes("unknown") && !coreStatuses.includes("false")
+                : false;
+    invariant(classificationMatches, "CLASSIFICATION_DECISION_MISMATCH", { groupId: validation.group_id, classification, coreStatuses, finalStatuses });
     if (["protected_exposure", "benign_business_flow"].includes(classification)) invariant(rows(validation.counter_evidence).length > 0, "DEMOTION_REASON_MISSING", { reason: "counter_evidence_required" });
     if (group.capability_id === "CAP-DOS-001") {
       const availability = (validation.availability_analysis as Row | undefined) ?? {};
@@ -151,7 +173,7 @@ export interface PocValidationContext {
 }
 
 const PLACEHOLDER_PATTERN = /略|省略|\.\.\.|…|TODO|TBD|your[\s_-]?(code|command|payload)|[《<](?:填入|替换|your)[^》>]*[》>]/;
-const FORBIDDEN_POC_OUTPUTS = ["classification", "exploitability", "severity", "cwe", "impact"] as const;
+const FORBIDDEN_POC_OUTPUTS = ["classification", "exploitability", "severity", "cwe", "impact", "assurance_status"] as const;
 const SHELL_PREFIX = /^\s*(hdc|adb|curl|aa)\b/;
 const ARKTS_TRIGGER_API = /startAbility|rpc\.|commonEventManager|dataAbilityHelper|runJavaScript|webview|createChannel|requestSubmitJob|wifiManager/;
 

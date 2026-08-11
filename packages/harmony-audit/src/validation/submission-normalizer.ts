@@ -83,10 +83,10 @@ export function normalizePocSubmission(candidate: Row): Row {
   const normalized = structuredClone(candidate);
   for (const key of ["code", "expected_observation", "limitations", "prerequisites"] as const) {
     if (key === "prerequisites") {
-      normalized.prerequisites = unique(strings(normalized.prerequisites));
+      if (Array.isArray(normalized.prerequisites)) normalized.prerequisites = unique(strings(normalized.prerequisites));
     } else if (typeof normalized[key] === "string" && !String(normalized[key]).trim()) delete normalized[key];
   }
-  normalized.evidence_refs = unique(strings(normalized.evidence_refs));
+  if (Array.isArray(normalized.evidence_refs)) normalized.evidence_refs = unique(strings(normalized.evidence_refs));
   return normalized;
 }
 

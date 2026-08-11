@@ -26,7 +26,7 @@ function confirmed(groupInput: Record<string, any>): Record<string, unknown> {
   return {
     group_id: groupInput.group_id, capability_id: groupInput.capability_id, classification: "confirmed_vulnerability", title: "外部参数影响查询", security_check_outcome: "absent",
     business_intent: { is_public_api: true, declared_or_inferred_purpose: "query public records", allowed_controls: ["recordId"], evidence: support(refs) },
-    security_boundary: { type: "data_owner", expected_boundary: "private records remain isolated", violation: true, reason: "input changes query structure", evidence: support(refs) },
+    security_boundary: { type: "data_owner", expected_boundary: "private records remain isolated", reason: "input changes query structure", evidence: support(refs) },
     ...(cross ? { principal_analysis: { origin_principal: principal!.origin_principal, target_observed_principal: principal!.target_observed_principal, authority_used: principal!.authority_used, security_check_subjects: [], origin_bound_to_observed_principal: principal!.origin_binding === "preserved", delegation_risk: principal!.origin_binding === "replaced_by_caller", reason: "deterministic path identity", evidence: support(refs) } } : {}),
     exploitability: sixDimensions({}, refs), effect_chain: effectChain(refs),
     counter_evidence: [], impact: "读取私有记录", severity: cross ? "critical" : "high", cwe: "CWE-89", evidence: support(refs),

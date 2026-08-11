@@ -134,6 +134,7 @@ export function validationSemanticRefs(value: unknown): Set<string> {
 
 export function materializePoc(poc: Row, out: EvidenceCollector): Row {
   const materialized = structuredClone(poc) as Row;
+  materialized.assurance_status = "generated_unverified";
   const materializedRefs: string[] = [];
   for (const symbolRef of rows(materialized.symbol_refs)) {
     const refs = register(out, symbolRef.evidence);

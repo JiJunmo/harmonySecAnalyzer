@@ -46,7 +46,7 @@ function validation(task: Record<string, any>): Record<string, unknown> {
       group_id: group.group_id, capability_id: group.capability_id, classification: "confirmed_vulnerability", title: "query injection",
       security_check_outcome: "absent",
       business_intent: { is_public_api: true, declared_or_inferred_purpose: "open public data", allowed_controls: ["id"], evidence: support(refs) },
-      security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", violation: true, reason: "query crosses owner boundary", evidence: support(refs) },
+      security_boundary: { type: "data_owner", expected_boundary: "private data is isolated", reason: "query crosses owner boundary", evidence: support(refs) },
       exploitability: sixDimensions({}, refs), effect_chain: effectChain(refs),
       counter_evidence: [], impact: "private data disclosure", severity: "high", cwe: "CWE-89", evidence: support(refs),
     }],
@@ -210,7 +210,7 @@ describe("audit domain invariants", () => {
     const inheritedOnly = {
       task_id: "TASK-1", entry_id: "PE-1", validations: [{
         group_id: "GRP-1", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability",
-        security_boundary: { violation: true, evidence: support(["EV-1"], []) },
+        security_boundary: { evidence: support(["EV-1"], []) },
         exploitability: sixDimensions({}, ["EV-1"]), effect_chain: effectChain(["EV-1"], []),
         impact: "private data disclosure", severity: "high", cwe: "CWE-89", evidence: support(["EV-1"], []),
       }],
@@ -219,15 +219,47 @@ describe("audit domain invariants", () => {
       .toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "CONFIRMED_EFFECT_NOT_INDEPENDENTLY_VERIFIED" }));
   });
 
+  it("requires counter-evidence for false dimensions and keeps decisive core failures separate", () => {
+    const group = { group_id: "GRP-1", capability_id: "CAP-INJ-001" };
+    const dimensions = sixDimensions({
+      externally_reachable: false,
+      attacker_controlled: "unknown",
+      sink_reached: "unknown",
+      security_check_bypassed_or_absent: "unknown",
+      boundary_violated: "unknown",
+      concrete_impact: "unknown",
+    });
+    const candidate = {
+      task_id: "TASK-1", entry_id: "PE-1", validations: [{
+        group_id: "GRP-1", capability_id: "CAP-INJ-001", classification: "no_exploitable_path",
+        security_check_outcome: "unknown",
+        business_intent: { is_public_api: false },
+        exploitability: dimensions, counter_evidence: [], demotion_reason: "入口存在明确反证",
+      }],
+    };
+    expect(() => validateExploitabilitySubmission(candidate, directContext([group]))).not.toThrow();
+
+    const unsupported = structuredClone(candidate);
+    unsupported.validations[0]!.exploitability.externally_reachable.evidence = support([], []);
+    expect(() => validateExploitabilitySubmission(unsupported, directContext([group])))
+      .toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "FALSE_DIMENSION_EVIDENCE_INSUFFICIENT" }));
+
+    const misclassified = structuredClone(candidate);
+    misclassified.validations[0]!.classification = "insufficient_evidence";
+    misclassified.validations[0]!.evidence_gap = "错误地把反证当作缺证据";
+    expect(() => validateExploitabilitySubmission(misclassified, directContext([group])))
+      .toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "CLASSIFICATION_DECISION_MISMATCH" }));
+  });
+
   it("rejects DoS confirmations without availability semantics", () => {
     const group = { group_id: "GRP-DOS", capability_id: "CAP-DOS-001" };
-    const candidate = { task_id: "TASK-1", entry_id: "PE-1", validations: [{ group_id: "GRP-DOS", capability_id: "CAP-DOS-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "crash", severity: "high", cwe: "CWE-400" }] };
+    const candidate = { task_id: "TASK-1", entry_id: "PE-1", validations: [{ group_id: "GRP-DOS", capability_id: "CAP-DOS-001", classification: "confirmed_vulnerability", security_check_outcome: "absent", security_boundary: {}, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "crash", severity: "high", cwe: "CWE-400" }] };
     expect(() => validateExploitabilitySubmission(candidate, directContext([group]))).toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "DOS_SEMANTIC_MISMATCH" }));
   });
 
   it("INV-PRINCIPAL validates deterministic cross-component identity", () => {
     const group = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", scope: "cross_component", principal_state: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_binding: "replaced_by_caller" } };
-    const validation = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability", security_boundary: { violation: true }, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "impact", severity: "high", cwe: "CWE-441", principal_analysis: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_bound_to_observed_principal: false, delegation_risk: true } };
+    const validation = { group_id: "GRP-CROSS", capability_id: "CAP-INJ-001", classification: "confirmed_vulnerability", security_check_outcome: "absent", security_boundary: {}, exploitability: sixDimensions(), effect_chain: effectChain(), impact: "impact", severity: "high", cwe: "CWE-441", principal_analysis: { origin_principal: "external", target_observed_principal: "component-A", authority_used: "source_component", origin_bound_to_observed_principal: false, delegation_risk: true } };
     const candidate = { task_id: "TASK-1", entry_id: "PE-1", validations: [validation] };
     expect(() => validateExploitabilitySubmission(candidate, directContext([group]))).not.toThrow();
     const invalid = structuredClone(candidate); (invalid.validations[0]!.principal_analysis as Record<string, unknown>).delegation_risk = false;

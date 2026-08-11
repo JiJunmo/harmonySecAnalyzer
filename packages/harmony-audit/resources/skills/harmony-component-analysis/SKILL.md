@@ -13,7 +13,7 @@ tools: [search, symbol, explore, calls, path, trace, impact, file_dependencies]
 
 当 `entry.project_candidates` 包含 `project_scope` 时，本任务是唯一的项目级分析单元：使用 `project_context` 中的构建、模块、权限和依赖事实确定扫描边界，只分析 `analysis_scope=project` 的能力；可在生产源码和配置中进行按能力指导语句约束的有界检索。不得把测试/Mock/构建产物作为生产漏洞，不得仅因依赖名、API、算法或配置字符串存在就生成操作组。项目级操作组以真实配置或调用位置为 operation location，`component_calls` 必须为空；覆盖状态表示项目级审计范围是否得到源码确认。完成本段后不再套用下面的组件入口规则。
 
-1. 根据 `entry.project_candidates` 和 `entry.facets` 找到本组件的真实 callback、触发条件和输入。仅有 `component_scope` 时，只确认上游组件可调用的 callback 和调用者可控参数，不得声称组件外部可达。入口结论只能是 `confirmed`、`excluded` 或 `uncertain`。
+1. 根据 `entry.project_candidates` 和 `entry.facets` 找到本组件的真实 callback、触发条件和输入。`entry_status` 判断的是“候选是否对应真实组件输入”，不是“外部攻击者是否可达”：至少一个候选对应真实 callback 且调用方数据能够进入组件时为 `confirmed`；所有候选均经核查排除、没有真实组件输入时为 `excluded`；受动态注册、间接调用或源码缺失影响而无法确认或排除时为 `uncertain`。多个候选按 `confirmed > uncertain > excluded` 汇总。仅有 `component_scope` 时，只要上游可调用的 callback 和输入成立也应为 `confirmed`，但不得据此声称外部可达；外部可达性由后续六维验证判断。
 2. 在本组件边界内有界追踪可控数据，允许经过本组件使用的普通 helper 和异步回调。禁止全仓枚举危险 API，禁止构造 Entry 与敏感 API 的组合。
 3. 只记录实际可达的安全相关操作及沿途参数转换、条件、权限检查、白名单、身份检查和源码直接可观察的效果。参数名、函数名、类型名、注释和业务词义只能产生 `effect_hypotheses`，不得写成事实或 `direct_observed_effect`。每个假设必须列出 `missing_proofs`；没有找到字段读取、控制分支和受影响操作时，效果必须保持未知。每个 security check 必须用 `subject_kind` 标明它实际约束的主体或属性；本阶段不得判断其是否有效。
 4. 按“操作源码位置 + 关键受控参数集合”归并 operation group。普通分支进入组内 `branches`，不得生成重复组。`category` 必须使用 `audit_scope` 中对应 capability 的 `domain` 原值。
