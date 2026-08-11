@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;

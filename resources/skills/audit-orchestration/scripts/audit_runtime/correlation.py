@@ -12,7 +12,47 @@ from .task_context import semantic_group_context, validation_group_fingerprint
 
 MAX_CORRELATION_STATES_PER_ROOT = 2000
 PROPAGATING_STATES = {"preserved", "constrained"}
+PROPAGATING_INVOCATION_STATES = {"preserved", "constrained"}
+INVOCATION_CONTROL = "$invocation"
 PRINCIPAL_BINDING_RANK = {"preserved": 0, "not_observable": 1, "unknown": 2, "replaced_by_caller": 3}
+
+
+def _invocation_mapping(component_call):
+    invocation = component_call.get("invocation_control", {})
+    state = invocation.get("control_state")
+    if state not in PROPAGATING_INVOCATION_STATES:
+        return None
+    return {
+        "source_property": INVOCATION_CONTROL,
+        "target_property": INVOCATION_CONTROL,
+        "control_state": state,
+        "transform": invocation.get("condition") or component_call.get("condition") or "component invocation",
+        "control_kind": "invocation",
+    }
+
+
+def _initial_control_mappings(component_call):
+    mappings = [
+        {**mapping, "control_kind": "data"}
+        for mapping in component_call.get("parameter_mappings", [])
+        if mapping.get("control_state") in PROPAGATING_STATES
+    ]
+    invocation = _invocation_mapping(component_call)
+    if invocation:
+        mappings.append(invocation)
+    return mappings
+
+
+def _next_control_mappings(component_call, current_property):
+    if current_property == INVOCATION_CONTROL:
+        invocation = _invocation_mapping(component_call)
+        return [invocation] if invocation else []
+    return [
+        {**mapping, "control_kind": "data"}
+        for mapping in component_call.get("parameter_mappings", [])
+        if mapping.get("control_state") in PROPAGATING_STATES
+        and normalize_text(mapping.get("source_property")) == normalize_text(current_property)
+    ]
 
 
 def _advance_principal_state(state, component_call):
@@ -60,15 +100,16 @@ def _external_roots(conn, entries):
         for row in conn.execute("SELECT entry_id,coverage_json FROM semantic_analyses")
     }
     for entry_id, entry in entries.items():
-        if analyses.get(entry_id, {}).get("entry_status") != "confirmed":
+        coverage = analyses.get(entry_id, {})
+        if coverage.get("external_entry_status") != "confirmed":
             continue
-        if entry["root_eligible"]:
+        if entry["root_eligible"] and coverage.get("confirmed_external_candidate_ids"):
             roots.append(entry_id)
     return sorted(roots)
 
 
 def enqueue_component_call_targets(conn, project_model):
-    """Expand only components reached by a control-preserving component_call."""
+    """Expand components reached by data control or caller-controlled invocation."""
     component_entries = {}
     for row in conn.execute("SELECT entry_id,payload_json FROM entries ORDER BY entry_id"):
         component_id = row_json(row, "payload_json", {}).get("component_id")
@@ -81,8 +122,11 @@ def enqueue_component_call_targets(conn, project_model):
     }
     discovered = {}
     for row in conn.execute("SELECT * FROM component_calls ORDER BY call_id"):
+        payload = row_json(row, "payload_json", {})
         mappings = row_json(row, "parameter_mappings_json", [])
-        if not any(mapping.get("control_state") in PROPAGATING_STATES for mapping in mappings):
+        invocation_state = payload.get("invocation_control", {}).get("control_state")
+        if (not any(mapping.get("control_state") in PROPAGATING_STATES for mapping in mappings)
+                and invocation_state not in PROPAGATING_INVOCATION_STATES):
             continue
         target_entry_id = component_entries.get(row["target_component_id"])
         if target_entry_id and target_entry_id not in existing:
@@ -162,7 +206,7 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
         lineage.append({
             "call_id": component_call["call_id"], "source_property": mapping["source_property"],
             "target_property": mapping["target_property"], "control_state": mapping["control_state"],
-            "transform": mapping["transform"],
+            "transform": mapping["transform"], "control_kind": mapping.get("control_kind", "data"),
         })
         principal_lineage.append({
             "call_id": component_call["call_id"],
@@ -173,12 +217,16 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
             "evidence_refs": transition.get("evidence_refs", []),
         })
         component_chain.append(component_call["target_component_id"])
+        control_body = (
+            f"Caller-controlled invocation reaches {component_call['target_symbol']} "
+            f"({mapping['control_state']}: {mapping['transform']})"
+            if mapping.get("control_kind") == "invocation" else
+            f"{mapping['source_property']} is passed to {component_call['target_symbol']} as "
+            f"{mapping['target_property']} ({mapping['control_state']}: {mapping['transform']})"
+        )
         facts.append({
             "fact_key": f"component_call-{index}", "type": "transform",
-            "body": (
-                f"{mapping['source_property']} is passed to {component_call['target_symbol']} as "
-                f"{mapping['target_property']} ({mapping['control_state']}: {mapping['transform']})"
-            ),
+            "body": control_body,
             "location": component_call["call_location"], "evidence_refs": component_call.get("evidence_refs", []),
         })
         facts.append({
@@ -205,6 +253,7 @@ def _insert_composed_group(conn, root_entry_id, sink, sink_task_id, root_propert
         "category": sink["category"], "capability_id": sink.get("capability_id"),
         "title": sink["title"], "operation": sink["operation"],
         "controlled_properties": [root_property], "context": sink["context"],
+        "control_mode": "invocation" if root_property == INVOCATION_CONTROL else "data",
         "branches": branches, "facts": facts, "security_checks": security_checks,
         "evidence_refs": sorted(refs), "scope": "cross_component",
         "source_group_id": sink["group_id"], "component_chain": component_chain,
@@ -313,9 +362,7 @@ def correlate_components(conn, run_id, paths=None):
         queue = deque()
         visited = set()
         for component_call in adjacency.get(root_entry_id, []):
-            for mapping in component_call["parameter_mappings"]:
-                if mapping.get("control_state") not in PROPAGATING_STATES:
-                    continue
+            for mapping in _initial_control_mappings(component_call):
                 selected = {**component_call, "selected_mapping": mapping}
                 principal_state = _advance_principal_state({}, selected)
                 queue.append((
@@ -348,9 +395,13 @@ def correlate_components(conn, run_id, paths=None):
                     })
                 continue
             for sink in local_groups.get(current_entry, []):
-                if normalize_text(current_property) not in {
+                sink_properties = {
                     normalize_text(value) for value in sink.get("controlled_properties", [])
-                }:
+                }
+                if current_property == INVOCATION_CONTROL:
+                    if sink_properties:
+                        continue
+                elif normalize_text(current_property) not in sink_properties:
                     continue
                 group_id, created = _insert_composed_group(
                     conn, root_entry_id, sink, group_tasks[sink["group_id"]], root_property,
@@ -359,11 +410,7 @@ def correlate_components(conn, run_id, paths=None):
                 if created:
                     composed_ids.append(group_id)
             for component_call in adjacency.get(current_entry, []):
-                for mapping in component_call["parameter_mappings"]:
-                    if mapping.get("control_state") not in PROPAGATING_STATES:
-                        continue
-                    if normalize_text(mapping.get("source_property")) != normalize_text(current_property):
-                        continue
+                for mapping in _next_control_mappings(component_call, current_property):
                     selected = {**component_call, "selected_mapping": mapping}
                     next_principal_state = _advance_principal_state(principal_state, selected)
                     queue.append((

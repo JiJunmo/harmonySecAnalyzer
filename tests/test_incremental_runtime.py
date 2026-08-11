@@ -96,11 +96,13 @@ class IncrementalRuntimeTest(unittest.TestCase):
         }
 
     @staticmethod
-    def semantic_result(entry_id, task_id, symbol):
+    def semantic_result(entry_id, task_id, symbol, external_candidate_id):
         return {
             "task_id": task_id, "entry_id": entry_id, "summary": "组件未发现安全相关操作",
             "coverage": {
-                "entry_status": "confirmed", "entry_notes": ["入口已确认"],
+                "entry_status": "confirmed", "external_entry_status": "confirmed",
+                "confirmed_external_candidate_ids": [external_candidate_id],
+                "entry_notes": ["入口已确认"],
                 "entry_symbols_checked": [symbol], "operation_sites_checked": [], "unresolved_targets": [],
             },
             "operation_groups": [], "component_calls": [],
@@ -111,7 +113,14 @@ class IncrementalRuntimeTest(unittest.TestCase):
         semantics = {}
         for index, (entry_key, entry) in enumerate(sorted(entries.items())):
             entry_id = f"OLD-ENTRY-{index}"
-            result = self.semantic_result(entry_id, f"OLD-TASK-{index}", f"{entry['component_id']}.onCreate")
+            external_candidate_id = next(
+                row["candidate_id"] for row in entry["candidates"]
+                if row.get("type") != "component_scope"
+            )
+            result = self.semantic_result(
+                entry_id, f"OLD-TASK-{index}", f"{entry['component_id']}.onCreate",
+                external_candidate_id,
+            )
             semantics[entry_key] = {"entry_id": entry_id, "result": result}
         semantics.update(semantic_overrides or {})
         paths = baseline_paths(self.target)
@@ -251,7 +260,14 @@ class IncrementalRuntimeTest(unittest.TestCase):
         self.assertEqual(batch["count"], 2)
         for handle in batch["tasks"]:
             task = json.loads(Path(handle["task_file"]).read_text(encoding="utf-8"))
-            result = self.semantic_result(task["subject_id"], task["task_id"], task["input"]["entry"]["symbol"])
+            external_candidate_id = next(
+                row["candidate_id"] for row in task["input"]["entry"]["project_candidates"]
+                if row.get("type") != "component_scope"
+            )
+            result = self.semantic_result(
+                task["subject_id"], task["task_id"], task["input"]["entry"]["symbol"],
+                external_candidate_id,
+            )
             submission = Path(handle["submission_file"])
             submission.write_text(json.dumps(result), encoding="utf-8")
             accepted = submit_result(run, task["task_id"], submission, task["attempt"])
@@ -304,7 +320,8 @@ class IncrementalRuntimeTest(unittest.TestCase):
             }],
         }
         semantic = self.semantic_result(
-            semantic_task["subject_id"], semantic_task["task_id"], "EntryAbility.onCreate"
+            semantic_task["subject_id"], semantic_task["task_id"], "EntryAbility.onCreate",
+            "PE-entry-exported_component",
         )
         semantic["operation_groups"] = [group]
         semantic["coverage"]["operation_sites_checked"] = ["EntryAbility.ets:42"]

@@ -92,30 +92,6 @@ _TRANSPORT_BY_CANDIDATE = {
     "common_event_candidate": "common_event",
 }
 
-_CAPABILITY_ENTRY_TYPES = {
-    "exported_component": {"exported_ability", "want"},
-    "deeplink": {"deeplink"},
-    "implicit_want": {"want"},
-    "extension_uri": {"provider"},
-    "ipc_service_candidate": {"ipc_transaction"},
-    "common_event_candidate": {"common_event"},
-}
-
-
-def _capability_root(rows, capabilities):
-    accepted = {
-        entry_type
-        for capability in capabilities
-        for entry_type in capability.get("entry_types", [])
-    }
-    observed = {
-        entry_type
-        for row in rows
-        for entry_type in _CAPABILITY_ENTRY_TYPES.get(row.get("type"), set())
-    }
-    return bool(accepted.intersection(observed))
-
-
 def _candidate_groups(candidates):
     """Create deterministic component analysis units without source interpretation."""
     groups = {}
@@ -260,8 +236,8 @@ def initialize_run(run_dir, project_model):
                 initial_task = explicitly_selected
                 root_eligible = explicitly_selected and has_external_facet
             elif run["audit_mode"] == "capability":
-                initial_task = _capability_root(rows, capabilities)
-                root_eligible = initial_task
+                initial_task = True
+                root_eligible = has_external_facet
             else:
                 initial_task = True
                 root_eligible = has_external_facet

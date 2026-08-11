@@ -37,7 +37,8 @@ RESULT_LABELS = {
     "generated_unverified": "已生成，未编译验证", "build_verified": "已通过编译验证",
     "device_verified": "已通过设备验证", "generation_failed": "生成失败",
     "pending_generation": "生成中",
-    "entry_excluded": "入口已排除", "entry_uncertain": "入口状态不确定", "not_analyzed": "未完成分析",
+    "entry_excluded": "组件输入已排除", "entry_uncertain": "组件输入状态不确定",
+    "external_entry_excluded": "未确认外部入口", "not_analyzed": "未完成分析",
     "confirmed": "已确认", "excluded": "已排除", "uncertain": "不确定",
     "critical": "严重", "high": "高危", "medium": "中危", "low": "低危", "info": "提示",
     "injection": "注入", "filesystem": "文件系统", "web": "Web 安全",
@@ -117,10 +118,16 @@ def _component_result_status(analysis, coverage, groups):
     ):
         if status in classifications:
             return status
-    if groups and any(not row.get("classification") for row in groups):
-        return "verification_incomplete"
     if entry_status == "excluded":
         return "entry_excluded"
+    if coverage.get("external_entry_status") == "excluded":
+        return "external_entry_excluded"
+    if groups and any(
+        not row.get("classification")
+        and (coverage.get("external_entry_status") == "confirmed" or row.get("validation_required"))
+        for row in groups
+    ):
+        return "verification_incomplete"
     if entry_status == "uncertain":
         return "entry_uncertain"
     return "no_security_relevant_operation"
@@ -154,6 +161,8 @@ def _component_results(entries, analyses, semantic_groups, groups, component_cal
             review_notes.append("组件语义分析未完成，不能据此判断组件是否安全。")
         if coverage.get("entry_status") == "uncertain":
             review_notes.append("真实入口状态仍不确定，需要人工核对触发方式和回调实现。")
+        if coverage.get("external_entry_status") == "uncertain":
+            review_notes.append("外部入口状态仍不确定，本次不会把该组件作为攻击路径起点。")
         if coverage.get("unresolved_targets"):
             review_notes.append("存在未解析的调用目标，可能影响跨组件覆盖完整性。")
         if analysis and not related_groups:
@@ -278,6 +287,9 @@ def build_report(run_dir, live=False, report_status=None):
                 finding["poc_status"] = "pending_generation"
     classification_counts = Counter(row["classification"] for row in groups)
     entry_status_counts = Counter(row["coverage"].get("entry_status", "uncertain") for row in analyses)
+    external_entry_status_counts = Counter(
+        row["coverage"].get("external_entry_status", "uncertain") for row in analyses
+    )
     finding_classification_counts = Counter(row["classification"] for row in findings)
     findings.sort(key=finding_sort_key)
     finding_changes = {"status": "not_applicable", "added": [], "removed": [], "changed": [], "unchanged": []}
@@ -322,8 +334,11 @@ def build_report(run_dir, live=False, report_status=None):
             gaps.append({"type": "安全判定", "subject": group["group_id"], "description": group.get("evidence_gap") or group.get("demotion_reason")})
     for analysis in analyses:
         if analysis["coverage"].get("entry_status") == "uncertain":
-            gaps.append({"type": "入口确认", "subject": analysis["entry_id"],
-                         "description": "; ".join(analysis["coverage"].get("entry_notes", [])) or "入口状态不确定"})
+            gaps.append({"type": "组件输入确认", "subject": analysis["entry_id"],
+                         "description": "; ".join(analysis["coverage"].get("entry_notes", [])) or "组件输入状态不确定"})
+        if analysis["coverage"].get("external_entry_status") == "uncertain":
+            gaps.append({"type": "外部入口确认", "subject": analysis["entry_id"],
+                         "description": "; ".join(analysis["coverage"].get("entry_notes", [])) or "外部入口状态不确定"})
         for target in analysis["coverage"].get("unresolved_targets", []):
             gaps.append({"type": "未解析调用", "subject": analysis["entry_id"], "description": target})
     validated_group_ids = {row["group_id"] for row in groups}
@@ -392,7 +407,7 @@ def build_report(run_dir, live=False, report_status=None):
             "components_without_findings": sum(
                 row["status"] in {
                     "protected_exposure", "no_exploitable_path", "benign_business_flow",
-                    "no_security_relevant_operation", "entry_excluded",
+                    "no_security_relevant_operation", "entry_excluded", "external_entry_excluded",
                 }
                 for row in component_results
             ),
@@ -409,6 +424,7 @@ def build_report(run_dir, live=False, report_status=None):
             "operation_groups": len(semantic_groups),
             "component_calls": len(component_calls), "component_correlation": correlation,
             "entry_status": dict(sorted(entry_status_counts.items())),
+            "external_entry_status": dict(sorted(external_entry_status_counts.items())),
             "task_status": task_counts,
             "assessment_status": dict(sorted(classification_counts.items())),
             "gaps": gaps,
@@ -494,7 +510,8 @@ def _render_markdown(model):
             f"- 所属模块：`{component.get('module') or component.get('module_id') or '-'}`",
             f"- 审计结论：**{component['status_label']}**",
             f"- 组件功能：{component['function_summary']}",
-            f"- 入口状态：{_label(coverage.get('entry_status', 'uncertain'))}",
+            f"- 组件输入状态：{_label(coverage.get('entry_status', 'uncertain'))}",
+            f"- 外部入口状态：{_label(coverage.get('external_entry_status', 'uncertain'))}",
             f"- 已检查入口：{', '.join(coverage.get('entry_symbols_checked', [])) or '无'}",
             f"- 已检查操作位置：{', '.join(coverage.get('operation_sites_checked', [])) or '无'}", "",
             "#### 安全相关操作", "",
@@ -676,7 +693,7 @@ def _render_html(model):
 <div class="drawer-backdrop" id="drawer-backdrop"><aside class="drawer" role="dialog" aria-modal="true"><div class="drawer-head"><div><div class="muted" id="drawer-kind">详情</div><h2 id="drawer-title"></h2></div><button class="close" id="drawer-close" aria-label="关闭">×</button></div><div id="drawer-body"></div></aside></div>
 <script type="application/json" id="report-data">{report_data}</script><script>
 const D=JSON.parse(document.getElementById('report-data').textContent);const arr=v=>Array.isArray(v)?v:[];const obj=v=>v&&typeof v==='object'?v:{{}};const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
-const labels={{confirmed_vulnerability:'已确认漏洞',residual_risk:'残余风险',protected_exposure:'已有有效防护',benign_business_flow:'正常业务行为',insufficient_evidence:'证据不足',verification_incomplete:'验证未完成',no_exploitable_path:'未形成可利用路径',no_security_relevant_operation:'未发现安全相关操作',entry_excluded:'入口已排除',entry_uncertain:'入口状态不确定',not_analyzed:'未完成分析',generated_unverified:'已生成，未编译验证',build_verified:'已通过编译验证',device_verified:'已通过设备验证',generation_failed:'生成失败',pending_generation:'生成中',confirmed:'已确认',excluded:'已排除',uncertain:'不确定',component_semantic_analysis:'组件语义分析',exploitability_validation:'六维验证',poc_generation:'PoC 生成',reached:'已到达敏感操作',stopped:'路径已终止',open:'继续追踪',gap:'证据不足',complete:'已完成',completed:'已完成',exhausted:'未完成',queued:'等待中',running:'执行中',critical:'严重',high:'高危',medium:'中危',low:'低危',info:'提示',entrypoint:'入口',reachability:'可达性',control:'参数控制',transform:'参数传递',security_check:'安全检查',operation:'安全相关操作',effect:'实际影响',dead_end:'路径终止',deeplink:'深度链接',want:'Want 调用',exported_ability:'导出组件',provider:'数据提供组件',common_event:'公共事件',ipc_transaction:'IPC/RPC 调用',effective_security_check:'有效安全检查',business_intent:'业务意图',not_attacker_controlled:'参数不可控',sink_not_reached:'未到达敏感操作',no_boundary_violation:'未突破安全边界',no_concrete_impact:'未形成具体影响',origin_principal:'原始调用者',immediate_caller:'直接调用者',transferred_property:'传递参数',resource_owner:'资源所有者',security_boundary:'安全边界'}};const label=v=>labels[v]||v||'-';
+const labels={{confirmed_vulnerability:'已确认漏洞',residual_risk:'残余风险',protected_exposure:'已有有效防护',benign_business_flow:'正常业务行为',insufficient_evidence:'证据不足',verification_incomplete:'验证未完成',no_exploitable_path:'未形成可利用路径',no_security_relevant_operation:'未发现安全相关操作',entry_excluded:'组件输入已排除',entry_uncertain:'组件输入状态不确定',external_entry_excluded:'未确认外部入口',not_analyzed:'未完成分析',generated_unverified:'已生成，未编译验证',build_verified:'已通过编译验证',device_verified:'已通过设备验证',generation_failed:'生成失败',pending_generation:'生成中',confirmed:'已确认',excluded:'已排除',uncertain:'不确定',component_semantic_analysis:'组件语义分析',exploitability_validation:'六维验证',poc_generation:'PoC 生成',reached:'已到达敏感操作',stopped:'路径已终止',open:'继续追踪',gap:'证据不足',complete:'已完成',completed:'已完成',exhausted:'未完成',queued:'等待中',running:'执行中',critical:'严重',high:'高危',medium:'中危',low:'低危',info:'提示',entrypoint:'入口',reachability:'可达性',control:'控制关系',transform:'参数传递',security_check:'安全检查',operation:'安全相关操作',effect:'实际影响',dead_end:'路径终止',deeplink:'深度链接',want:'Want 调用',exported_ability:'导出组件',provider:'数据提供组件',common_event:'公共事件',ipc_transaction:'IPC/RPC 调用',effective_security_check:'有效安全检查',business_intent:'业务意图',not_attacker_controlled:'操作不受控',sink_not_reached:'未到达敏感操作',no_boundary_violation:'未突破安全边界',no_concrete_impact:'未形成具体影响',origin_principal:'原始调用者',immediate_caller:'直接调用者',transferred_property:'传递参数',resource_owner:'资源所有者',security_boundary:'安全边界','$invocation':'操作触发'}};const label=v=>labels[v]||v||'-';
 labels.not_externally_reachable='外部不可达';
 const findingById=Object.fromEntries(arr(D.findings).map(x=>[x.finding_id,x]));const resultRank={{confirmed_vulnerability:6,residual_risk:5,insufficient_evidence:4,protected_exposure:3,no_exploitable_path:2,benign_business_flow:1}};const pathResult=p=>arr(p.finding_ids).map(id=>findingById[id]).filter(Boolean)[0]||arr(p.assessments).slice().sort((a,b)=>(resultRank[b.classification]||0)-(resultRank[a.classification]||0))[0]||{{}};const metric=(v,t)=>`<div class="metric"><strong>${{esc(v)}}</strong><span>${{esc(t)}}</span></div>`;const badge=v=>`<span class="badge ${{esc(v)}}">${{esc(label(v))}}</span>`;
 document.getElementById('runmeta').innerHTML=`<span>运行编号 <b>${{esc(D.run.run_id)}}</b></span><span>审计模式 <b>${{esc(D.run.mode)}}</b></span><span>运行状态 <b>${{esc(label(D.run.status))}}</b></span><span>审计范围 <b>${{esc(arr(D.run.components).join(', ')||'全部组件')}}</b></span><span>覆盖状态 <b>${{esc(D.coverage.status)}}</b></span><span>更新时间 <b>${{esc(D.generated_at)}}</b></span>`;
@@ -687,7 +704,7 @@ const key=arr(D.findings).filter(x=>['confirmed_vulnerability','residual_risk'].
 const entryTypes={{}};arr(D.entries).forEach(x=>arr(x.facets).forEach(f=>entryTypes[f.entry_type]=(entryTypes[f.entry_type]||0)+1));document.getElementById('entry-summary').innerHTML=`<div class="structure-list">${{Object.entries(entryTypes).map(([k,v])=>`<div class="structure-item"><strong>${{esc(label(k))}}</strong><div class="muted">${{v}} 个入口渠道</div></div>`).join('')}}</div>`;
 const I=obj(D.run.incremental),CS=obj(I.change_set),IP=obj(I.impact_plan),RC=obj(I.risk_path_changes),CF=obj(CS.files),riskDelta=RC.status==='complete'?`新增 ${{arr(RC.added).length}} / 结论变化 ${{arr(RC.changed).length}} / 已消失 ${{arr(RC.removed).length}} / 未变 ${{arr(RC.unchanged).length}}`:'等待本轮审计完成后比较';if(!Object.keys(I).length){{document.getElementById('incremental-summary').style.display='none'}}else{{document.getElementById('incremental-summary-content').innerHTML=`<div class="structure-item"><strong>基线与变化</strong><div class="muted">${{esc(CS.source_type)}} 基线 ${{esc(CS.baseline_run_id||'-')}} · 新增 ${{arr(CF.added).length}} / 修改 ${{arr(CF.modified).length}} / 删除 ${{arr(CF.deleted).length}} 个文件</div></div><div class="structure-item"><strong>入口变化</strong><div class="muted">新增 ${{arr(IP.added_entries).length}} / 修改 ${{arr(IP.changed_entries).length}} / 删除 ${{arr(IP.deleted_entries).length}}</div></div><div class="structure-item"><strong>执行范围</strong><div class="muted">重新分析 ${{arr(IP.affected_entries).length}} 个组件 · 复用 ${{arr(IP.reusable_entries).length}} 个组件语义结果</div></div><div class="structure-item"><strong>风险路径变化</strong><div class="muted">${{esc(riskDelta)}}</div></div>`}};
 const componentSelect=document.getElementById('component-result');[...new Set(arr(D.component_results).map(x=>x.status))].forEach(k=>componentSelect.insertAdjacentHTML('beforeend',`<option value="${{esc(k)}}">${{esc(label(k))}}</option>`));
-function renderComponents(){{const q=document.getElementById('component-search').value.toLowerCase(),r=componentSelect.value;const rows=arr(D.component_results).filter(x=>{{const coverage=obj(x.coverage),facets=arr(x.facets).map(f=>label(f.entry_type)).join(' '),text=[x.component,x.module,x.module_id,x.symbol,x.function_summary,facets,...arr(coverage.entry_symbols_checked)].join(' ').toLowerCase();return(!q||text.includes(q))&&(!r||x.status===r)}});document.getElementById('component-count').textContent=`显示 ${{rows.length}} / ${{arr(D.component_results).length}} 个组件`;document.getElementById('component-result-body').innerHTML=rows.map(x=>{{const coverage=obj(x.coverage),entries=arr(x.facets).map(f=>label(f.entry_type)).join('、')||label(coverage.entry_status),operations=arr(x.operation_groups),checks=arr(x.security_checks);return`<tr class="component-row" data-entry-id="${{esc(x.entry_id)}}"><td>${{badge(x.status)}}</td><td><strong>${{esc(x.component||x.entry_id)}}</strong><br><span class="muted">${{esc(x.module||x.module_id||'-')}}</span><br><code>${{esc(x.symbol||'')}}</code></td><td>${{esc(x.function_summary)}}</td><td>${{esc(entries)}}<br><span class="muted">${{esc(label(coverage.entry_status))}}</span></td><td>${{operations.length}} 项</td><td>${{checks.length}} 项</td></tr>`}}).join('')||'<tr><td colspan="6"><div class="empty">没有符合条件的组件</div></td></tr>';document.querySelectorAll('.component-row').forEach(row=>row.onclick=()=>openComponent(row.dataset.entryId));}}
+function renderComponents(){{const q=document.getElementById('component-search').value.toLowerCase(),r=componentSelect.value;const rows=arr(D.component_results).filter(x=>{{const coverage=obj(x.coverage),facets=arr(x.facets).map(f=>label(f.entry_type)).join(' '),text=[x.component,x.module,x.module_id,x.symbol,x.function_summary,facets,...arr(coverage.entry_symbols_checked)].join(' ').toLowerCase();return(!q||text.includes(q))&&(!r||x.status===r)}});document.getElementById('component-count').textContent=`显示 ${{rows.length}} / ${{arr(D.component_results).length}} 个组件`;document.getElementById('component-result-body').innerHTML=rows.map(x=>{{const coverage=obj(x.coverage),entries=arr(x.facets).map(f=>label(f.entry_type)).join('、')||label(coverage.entry_status),operations=arr(x.operation_groups),checks=arr(x.security_checks);return`<tr class="component-row" data-entry-id="${{esc(x.entry_id)}}"><td>${{badge(x.status)}}</td><td><strong>${{esc(x.component||x.entry_id)}}</strong><br><span class="muted">${{esc(x.module||x.module_id||'-')}}</span><br><code>${{esc(x.symbol||'')}}</code></td><td>${{esc(x.function_summary)}}</td><td>${{esc(entries)}}<br><span class="muted">组件输入：${{esc(label(coverage.entry_status))}} · 外部入口：${{esc(label(coverage.external_entry_status))}}</span></td><td>${{operations.length}} 项</td><td>${{checks.length}} 项</td></tr>`}}).join('')||'<tr><td colspan="6"><div class="empty">没有符合条件的组件</div></td></tr>';document.querySelectorAll('.component-row').forEach(row=>row.onclick=()=>openComponent(row.dataset.entryId));}}
 ['component-search','component-result'].forEach(id=>document.getElementById(id).addEventListener(id==='component-search'?'input':'change',renderComponents));
 function openComponent(id){{const x=arr(D.component_results).find(row=>row.entry_id===id);if(!x)return;const coverage=obj(x.coverage);const refs=v=>arr(v).map(r=>`<code>${{esc(r)}}</code>`).join(' · ');const groups=arr(x.operation_groups).map(g=>{{const operation=obj(g.operation),context=obj(g.context),result=g.classification||'verification_incomplete',checks=arr(g.security_checks).map(c=>`<div class="structure-item"><strong>${{esc(label(c.type))}}</strong><div>${{esc(c.behavior||c.protects||'-')}}</div><div class="muted">校验对象：${{esc(c.validated_property||'-')}} · 约束主体：${{esc(label(c.subject_kind))}} · ${{esc(c.location||'-')}}</div></div>`).join('');const facts=arr(g.facts).map(f=>`<li><b>${{esc(label(f.type))}} · ${{esc(f.body)}}</b><code>${{esc(f.location||'')}}</code></li>`).join('');const conclusion=g.impact||g.demotion_reason||g.evidence_gap||'尚未形成六维验证结论';return`<div class="panel"><h3>${{esc(g.title||g.group_id)}} · ${{badge(result)}}</h3><dl class="kv"><dt>安全相关操作</dt><dd>${{esc(operation.body||g.operation_location||'-')}}</dd><dt>源码位置</dt><dd><code>${{esc(operation.location||g.operation_location||'-')}}</code></dd><dt>受控参数</dt><dd>${{esc(arr(g.controlled_properties).join('、')||'无外部受控参数')}}</dd><dt>业务用途</dt><dd>${{esc(context.intended_behavior||obj(g.business_intent).declared_or_inferred_purpose||'-')}}</dd><dt>验证结论</dt><dd>${{esc(conclusion)}}</dd></dl>${{checks?`<h3>该操作前的防护</h3><div class="structure-list">${{checks}}</div>`:''}}${{facts?`<h3>语义证据</h3><ol class="timeline">${{facts}}</ol>`:''}}</div>`}}).join('')||'<div class="empty">本次分析未识别到可达的安全相关操作。请结合组件功能和下方覆盖范围复核是否遗漏敏感行为。</div>';const defenses=arr(x.security_checks).map(c=>`<div class="structure-item"><strong>${{esc(label(c.type))}}</strong><div>${{esc(c.behavior||c.protects||'-')}}</div><div class="muted">保护目标：${{esc(c.protects||'-')}} · 校验对象：${{esc(c.validated_property||'-')}} · 约束主体：${{esc(label(c.subject_kind))}} · 位置：${{esc(c.location||'-')}}</div>${{arr(c.evidence_refs).length?`<div class="muted">证据：${{refs(c.evidence_refs)}}</div>`:''}}</div>`).join('')||'<div class="empty">未观察到显式防护事实；若组件未执行安全相关操作，这不表示组件存在漏洞。</div>';const calls=[...arr(x.outgoing_calls).map(c=>['调用下游组件',c.target_component_id,c]),...arr(x.incoming_calls).map(c=>['被上游组件调用',c.source_component_id,c])].map(([direction,target,c])=>`<div class="structure-item"><strong>${{esc(direction)}} · ${{esc(target||'-')}}</strong><div>${{esc(c.condition||'-')}}</div><div class="muted">方式：${{esc(c.transport||'-')}} · 位置：${{esc(c.call_location||'-')}}</div></div>`).join('')||'<div class="empty">未记录跨组件调用。</div>';const notes=arr(x.review_notes).map(n=>`<div class="gap-item">${{esc(n)}}</div>`).join('')||'<div class="empty">当前未记录额外覆盖缺口。</div>';document.getElementById('drawer-kind').textContent='组件审计详情';document.getElementById('drawer-title').textContent=x.component||x.entry_id;document.getElementById('drawer-body').innerHTML=`<dl class="kv"><dt>审计结论</dt><dd>${{badge(x.status)}}</dd><dt>所属模块</dt><dd>${{esc(x.module||x.module_id||'-')}}</dd><dt>组件功能</dt><dd>${{esc(x.function_summary)}}</dd><dt>入口状态</dt><dd>${{esc(label(coverage.entry_status))}}</dd><dt>入口渠道</dt><dd>${{esc(arr(x.facets).map(f=>label(f.entry_type)).join('、')||'-')}}</dd><dt>已检查入口</dt><dd>${{arr(coverage.entry_symbols_checked).map(v=>`<code>${{esc(v)}}</code>`).join('<br>')||'无'}}</dd><dt>已检查操作位置</dt><dd>${{arr(coverage.operation_sites_checked).map(v=>`<code>${{esc(v)}}</code>`).join('<br>')||'无'}}</dd></dl><h3>安全相关操作与验证</h3>${{groups}}<h3>防护事实</h3><div class="structure-list">${{defenses}}</div><h3>跨组件调用</h3><div class="structure-list">${{calls}}</div><h3>人工复核提示</h3><div class="gap-list">${{notes}}</div>`;document.getElementById('drawer-backdrop').classList.add('open');}}
 const resultSelect=document.getElementById('path-result');[...new Set(arr(D.paths).map(p=>pathResult(p).classification||p.status))].forEach(k=>resultSelect.insertAdjacentHTML('beforeend',`<option value="${{esc(k)}}">${{esc(label(k))}}</option>`));

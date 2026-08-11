@@ -57,12 +57,33 @@ def normalize_location(value):
 
 
 def operation_group_identity(entry_id, group):
-    """Semantic identity excludes later security judgments and ordinary branches."""
+    """Merge only operations with the same objective security semantics."""
     operation = group["operation"]
+    context = group.get("context", {})
+    checks = sorted(canonical_json([
+        normalize_text(check.get("type")),
+        normalize_location(check.get("location")),
+        normalize_text(check.get("subject_kind")),
+        normalize_text(check.get("validated_property")),
+        normalize_text(check.get("behavior")),
+    ]) for check in group.get("security_checks", []))
+    availability = group.get("availability", {})
+    availability_semantics = {
+        key: normalize_text(value)
+        for key, value in availability.items()
+        if key not in {"evidence", "evidence_refs"}
+    }
     return canonical_json([
         entry_id,
+        normalize_text(group.get("capability_id")),
         normalize_location(operation.get("location")) or normalize_text(operation.get("body")),
         sorted(normalize_text(value) for value in group.get("controlled_properties", [])),
+        normalize_text(context.get("external_actor")),
+        normalize_text(context.get("intended_behavior")),
+        sorted(normalize_text(value) for value in context.get("protected_assets", [])),
+        normalize_text(context.get("direct_observed_effect")),
+        checks,
+        availability_semantics,
     ])
 
 

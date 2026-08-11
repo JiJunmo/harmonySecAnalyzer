@@ -122,7 +122,8 @@ def normalize_submission(result, task, conn=None):
                 )
             identity = canonical_json([
                 component_call.get("target_component_id"), normalize_location(component_call.get("call_location")),
-                component_call.get("parameter_mappings", []), component_call.get("principal_transition", {}),
+                component_call.get("invocation_control", {}), component_call.get("parameter_mappings", []),
+                component_call.get("principal_transition", {}),
             ])
             normalized_calls.setdefault(identity, component_call)
         result["component_calls"] = list(normalized_calls.values())
@@ -174,10 +175,20 @@ def validate_semantic_analysis(result, task, conn):
         errors.append("entry_id_mismatch")
     coverage = result.get("coverage", {})
     entry_status = coverage.get("entry_status")
+    external_status = coverage.get("external_entry_status")
+    confirmed_external = coverage.get("confirmed_external_candidate_ids", [])
     if entry_status == "confirmed" and not coverage.get("entry_symbols_checked"):
         errors.append("confirmed_entry_requires_checked_symbol")
     if entry_status == "excluded" and (result.get("operation_groups") or result.get("component_calls")):
         errors.append("excluded_entry_cannot_have_semantic_outputs")
+    if entry_status == "excluded" and external_status != "excluded":
+        errors.append("excluded_entry_requires_excluded_external_entry")
+    if external_status == "confirmed" and entry_status != "confirmed":
+        errors.append("confirmed_external_entry_requires_confirmed_component_input")
+    if external_status == "confirmed" and not confirmed_external:
+        errors.append("confirmed_external_entry_requires_candidate")
+    if external_status != "confirmed" and confirmed_external:
+        errors.append("unconfirmed_external_entry_cannot_list_confirmed_candidates")
 
     model_keys = []
     identities = []
@@ -193,6 +204,16 @@ def validate_semantic_analysis(result, task, conn):
     if len(identities) != len(set(identities)):
         errors.append("equivalent_operation_groups_must_merge")
     payload = row_json(task, "input_json", {})
+    task_entry = task_context(conn, task).get("entry", {})
+    known_external_candidates = {
+        row.get("candidate_id") for row in task_entry.get("project_candidates", [])
+        if row.get("type") != "component_scope" and row.get("candidate_id")
+    }
+    if not known_external_candidates and external_status != "excluded":
+        errors.append("component_without_external_candidates_requires_excluded_external_entry")
+    unknown_confirmed = set(confirmed_external) - known_external_candidates
+    if unknown_confirmed:
+        errors.append("unknown_confirmed_external_candidates:" + ",".join(sorted(unknown_confirmed)))
     entry = conn.execute("SELECT profiles_json FROM entries WHERE entry_id=?", (task["subject_id"],)).fetchone()
     allowed_capabilities = set(row_json(entry, "profiles_json", [])) if entry else set()
     run = conn.execute("SELECT audit_mode FROM runs LIMIT 1").fetchone()
@@ -213,7 +234,8 @@ def validate_semantic_analysis(result, task, conn):
         call_keys.append(component_call.get("call_key"))
         call_identities.append(canonical_json([
             component_call.get("target_component_id"), normalize_location(component_call.get("call_location")),
-            component_call.get("parameter_mappings", []), component_call.get("principal_transition", {}),
+            component_call.get("invocation_control", {}), component_call.get("parameter_mappings", []),
+            component_call.get("principal_transition", {}),
         ]))
         if component_call.get("target_component_id") not in known_components:
             errors.append(f"{label}:unknown_target_component")

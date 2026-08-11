@@ -130,13 +130,21 @@ def task_context(conn, task):
     entry = entry_context(conn, task["subject_id"])
     if task["kind"] == "component_semantic_analysis":
         profile_ids = set(entry.get("profiles", [])) if entry else set()
-        profiles = [{key: row.get(key) for key in ("capability_id", "title", "domain")}
-                    for row in load_capabilities() if row["capability_id"] in profile_ids]
+        profiles = [{
+            **{key: row.get(key) for key in ("capability_id", "title", "domain", "entry_types")},
+            "analysis_scope": row.get("analysis_scope", "component"),
+        } for row in load_capabilities() if row["capability_id"] in profile_ids]
         analysis_contract = {
             "task_unit": "one deterministic component analysis unit",
             "phases": ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_calls", "merge_equivalent_operations", "record_gaps"],
-            "group_by": ["operation_location", "controlled_properties"],
+            "group_by": ["capability", "operation_location", "controlled_properties", "security_semantics"],
             "stop_at": "component_call",
+            "component_call_control": {
+                "invocation_control": "whether the current component input controls reaching the component call",
+                "parameter_mappings": "data mappings only; may be empty",
+            },
+            "capability_entry_types": "priority hints for investigation, never component exclusion rules",
+            "minimum_evidence_chain": "omit only irrelevant nodes; retain every branch, transform and security check that can change later validation",
             "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
             "evidence_model": {
                 "facts": "only directly observed source facts",
@@ -172,7 +180,7 @@ def task_context(conn, task):
         full_coverage = row_json(analysis, "coverage_json", {})
         coverage = {
             key: full_coverage.get(key)
-            for key in ("entry_status", "entry_notes", "unresolved_targets")
+            for key in ("entry_status", "external_entry_status", "confirmed_external_candidate_ids", "entry_notes", "unresolved_targets")
             if key in full_coverage
         }
         locations = set(full_coverage.get("operation_sites_checked", []))
@@ -195,6 +203,9 @@ def task_context(conn, task):
                 "hypothesis_only_evidence_cannot_support_validation": True,
                 "new_source_evidence_is_inline_and_runtime_numbered": True,
                 "dimensions_require_status_reason_evidence_level_and_support": True,
+                "attacker_controlled_accepts": ["security_critical_parameter", "operation_invocation"],
+                "source_read_scope": "all implementations needed to prove or disprove this operation group, including callers, callees, inheritance, dependencies and component-chain endpoints",
+                "forbidden_scope_expansion": ["discover_independent_operation", "create_operation_group", "construct_new_path", "rewrite_semantic_facts"],
                 "confirmed_effect_chain": ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
                 "confirmed_effect_chain_requires_fresh_validation_evidence": True,
                 "poc_produced_by_later_phase": True,

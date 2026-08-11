@@ -27,6 +27,13 @@ class DeployRenderTest(unittest.TestCase):
             validator = (base / ".opencode/agents/exploitability-validator.md").read_text(encoding="utf-8")
             poc = (base / ".opencode/agents/poc-generator.md").read_text(encoding="utf-8")
             self.assertIn("confirmed > uncertain > excluded", semantic)
+            self.assertIn("`external_entry_status`", semantic)
+            self.assertIn("`invocation_control`", semantic)
+            self.assertIn("不按源码目录、构建模块、依赖包、类名或类继承关系划分", semantic)
+            self.assertIn("笛卡尔组合", semantic)
+            self.assertIn("入口类型，不是组件排除条件", semantic)
+            self.assertIn("不得把该限制解释为禁止读取当前组定性所需的链路源码", validator)
+            self.assertIn("import、依赖包调用、继承、组合对象、普通函数调用和 `super` 调用都不是组件跳转", semantic)
             self.assertIn("`false` 表示存在反向证据", validator)
             self.assertIn("不得输出 `assurance_status`", poc)
 

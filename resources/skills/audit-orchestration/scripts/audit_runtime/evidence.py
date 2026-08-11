@@ -66,6 +66,7 @@ def semantic_hypothesis_refs(group):
 
 def component_call_refs(component_call):
     refs = list(component_call.get("evidence_refs", []))
+    refs.extend(component_call.get("invocation_control", {}).get("evidence_refs", []))
     refs.extend(component_call.get("principal_transition", {}).get("evidence_refs", []))
     for security_check in component_call.get("security_checks", []):
         refs.extend(security_check.get("evidence_refs", []))

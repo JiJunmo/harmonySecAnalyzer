@@ -141,11 +141,26 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         })
         return group
 
-    def semantic_result(self, task, groups, entry_status="confirmed", component_calls=None):
+    def semantic_result(self, task, groups, entry_status="confirmed", component_calls=None,
+                        external_entry_status=None):
+        external_candidate_ids = sorted({
+            row["candidate_id"]
+            for row in task["input"]["entry"].get("project_candidates", [])
+            if row.get("type") != "component_scope" and row.get("candidate_id")
+        })
+        if external_entry_status is None:
+            if entry_status == "excluded" or not external_candidate_ids:
+                external_entry_status = "excluded"
+            else:
+                external_entry_status = entry_status
         return {
             "task_id": task["task_id"], "entry_id": task["subject_id"], "summary": "语义分析完成",
             "coverage": {
-                "entry_status": entry_status, "entry_notes": ["callback checked"],
+                "entry_status": entry_status, "external_entry_status": external_entry_status,
+                "confirmed_external_candidate_ids": (
+                    external_candidate_ids if external_entry_status == "confirmed" else []
+                ),
+                "entry_notes": ["callback checked"],
                 "entry_symbols_checked": ["EntryAbility.onNewWant"] if entry_status == "confirmed" else [],
                 "operation_sites_checked": sorted({group["operation"]["location"] for group in groups}),
                 "unresolved_targets": [],
@@ -306,8 +321,11 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                          ["classification", "exploitability", "severity", "cwe", "poc"])
         self.assertEqual(
             set(semantic_task["input"]["audit_scope"][0]),
-            {"capability_id", "title", "domain"},
+            {"capability_id", "title", "domain", "entry_types", "analysis_scope"},
         )
+        self.assertEqual(semantic_task["input"]["audit_scope"][0]["entry_types"], ["deeplink", "want"])
+        self.assertIn("never component exclusion", semantic_task["input"]["analysis_contract"]["capability_entry_types"])
+        self.assertIn("all implementations needed", validation_task["input"]["validation_contract"]["source_read_scope"])
         self.assertNotIn("result_schema", semantic_task)
         self.assertTrue(semantic_task["result_schema_file"].endswith(
             "component-semantic-result.schema.json"
@@ -315,7 +333,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertNotIn("edges", validation_task["input"]["semantic_analysis"]["operation_groups"][0])
         self.assertEqual(
             set(validation_task["input"]["semantic_analysis"]["coverage"]),
-            {"entry_status", "entry_notes", "unresolved_targets"},
+            {"entry_status", "external_entry_status", "confirmed_external_candidate_ids",
+             "entry_notes", "unresolved_targets"},
         )
 
     def test_dos_capability_requires_availability_evidence_and_validation(self):
@@ -548,6 +567,23 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertTrue(submitted["accepted"], submitted)
         self.assertEqual(submitted["operation_groups_created"], 1)
 
+    def test_security_distinct_operation_groups_are_not_merged(self):
+        task = self.claim("component_semantic_analysis")
+        guarded = self.semantic_group()
+        guarded["group_key"] = "guarded-query"
+        guarded["security_checks"] = [{
+            "type": "owner check", "location": "Db.ets:35", "protects": "private records",
+            "subject_kind": "origin_principal", "validated_property": "record owner",
+            "behavior": "rejects records owned by another caller",
+            "evidence": [self.source_evidence("owner check", "Db.ets:35")],
+        }]
+        result = self.semantic_result(task, [self.semantic_group(), guarded])
+        submitted = submit_result(
+            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+        )
+        self.assertTrue(submitted["accepted"], submitted)
+        self.assertEqual(submitted["operation_groups_created"], 2)
+
     def test_confirmed_validation_requires_independent_effect_chain_not_effect_fact(self):
         group = self.semantic_group()
         group["facts"] = [fact for fact in group["facts"] if fact["type"] != "effect"]
@@ -669,6 +705,25 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         with database(self.run / "run.db") as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM tasks").fetchone()["n"], 1)
 
+    def test_component_input_without_confirmed_external_entry_is_not_a_validation_root(self):
+        task = self.claim("component_semantic_analysis")
+        result = self.semantic_result(
+            task, [self.semantic_group()], external_entry_status="excluded"
+        )
+        submitted = submit_result(
+            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+        )
+        self.assertTrue(submitted["accepted"], submitted)
+        self.assertEqual(claim_batch(self.run)["reason"], "no_queued")
+        with database(self.run / "run.db") as conn:
+            correlation = json.loads(conn.execute(
+                "SELECT correlation_json FROM runs"
+            ).fetchone()["correlation_json"])
+            self.assertEqual(correlation["roots"], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) n FROM operation_groups WHERE validation_required=1"
+            ).fetchone()["n"], 0)
+
     def test_validation_must_cover_every_semantic_group(self):
         self.submit_semantics([self.semantic_group()])
         task = self.claim("exploitability_validation")
@@ -771,12 +826,17 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             task = json.loads(Path(handle["task_file"]).read_text(encoding="utf-8"))
             tasks[task["input"]["entry"]["component"]] = task
 
-        def component_call(key, target, source_property, target_property, location, state="preserved"):
+        def component_call(key, target, source_property, target_property, location, state="preserved",
+                           invocation_state="preserved"):
             evidence = [self.source_evidence("组件调用及参数映射", location)]
             return {
                 "call_key": key, "target_component_id": target,
                 "target_symbol": f"{target}.onCreate", "transport": "startAbility",
                 "call_location": location, "condition": "always",
+                "invocation_control": {
+                    "control_state": invocation_state, "condition": "caller input selects this call",
+                    "evidence": evidence,
+                },
                 "parameter_mappings": [{
                     "source_property": source_property, "target_property": target_property,
                     "control_state": state, "transform": "direct copy",
@@ -794,7 +854,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         results = {
             "AAbility": self.semantic_result(tasks["AAbility"], [], component_calls=[
                 component_call("a-to-b", "CMP-B", "want.parameters.path", "want.parameters.forwardedPath", "A.ets:20"),
-                component_call("a-to-c-constant", "CMP-C", "want.parameters.path", "want.parameters.filePath", "A.ets:25", "constant"),
+                component_call("a-to-c-constant", "CMP-C", "want.parameters.path", "want.parameters.filePath", "A.ets:25", "constant", "independent"),
             ]),
             "BAbility": self.semantic_result(tasks["BAbility"], [], component_calls=[
                 component_call("b-to-a", "CMP-A", "want.parameters.forwardedPath", "want.parameters.path", "B.ets:30"),
@@ -840,14 +900,69 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM component_calls").fetchone()["n"], 4)
             self.assertEqual(conn.execute("SELECT COUNT(*) n FROM operation_groups WHERE scope='cross_component'").fetchone()["n"], 1)
             correlation = json.loads(conn.execute("SELECT correlation_json FROM runs").fetchone()["correlation_json"])
-            self.assertLessEqual(correlation["states_visited"], 4)
+            self.assertLessEqual(correlation["states_visited"], 6)
+
+    def test_component_correlation_keeps_trigger_only_calls_without_parameter_mapping(self):
+        model_data = self.cross_component_model()
+        model_data["entry_candidates"] = [
+            row for row in model_data["entry_candidates"]
+            if row["candidate_id"] != "PE-B-EXTERNAL"
+        ]
+        model = self.root / "trigger-only-component.json"
+        model.write_text(json.dumps(model_data), encoding="utf-8")
+        run = Path(new_run(
+            self.root / "trigger-only-reports", self.target, "full", [], ["AAbility"]
+        )["run_dir"])
+        initialize_run(run, model)
+
+        first = json.loads(Path(claim_batch(run, 5)["tasks"][0]["task_file"]).read_text())
+        evidence = [self.source_evidence("外部请求决定是否启动下游组件", "A.ets:20")]
+        component_call = {
+            "call_key": "a-triggers-b", "target_component_id": "CMP-B",
+            "target_symbol": "BAbility.onCreate", "transport": "startAbility",
+            "call_location": "A.ets:20", "condition": "action == reset",
+            "invocation_control": {
+                "control_state": "constrained", "condition": "action == reset", "evidence": evidence,
+            },
+            "parameter_mappings": [],
+            "principal_transition": {
+                "caller_principal": "A component", "callee_observed_principal": "A component",
+                "origin_binding": "replaced_by_caller", "authority_used": "source_component",
+                "evidence": evidence,
+            },
+            "security_checks": [], "evidence": evidence,
+        }
+        accepted = submit_result(
+            run, first["task_id"],
+            self.write_submission(first, self.semantic_result(first, [], component_calls=[component_call])),
+            first["attempt"],
+        )
+        self.assertTrue(accepted["accepted"], accepted)
+
+        second = json.loads(Path(claim_batch(run, 5)["tasks"][0]["task_file"]).read_text())
+        sink = self.semantic_group()
+        sink["controlled_properties"] = []
+        accepted = submit_result(
+            run, second["task_id"],
+            self.write_submission(second, self.semantic_result(second, [sink])),
+            second["attempt"],
+        )
+        self.assertTrue(accepted["accepted"], accepted)
+
+        validation = json.loads(Path(claim_batch(run, 5)["tasks"][0]["task_file"]).read_text())
+        groups = validation["input"]["semantic_analysis"]["operation_groups"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["scope"], "cross_component")
+        self.assertEqual(groups[0]["control_mode"], "invocation")
+        self.assertEqual(groups[0]["controlled_properties"], ["$invocation"])
+        self.assertEqual(groups[0]["parameter_lineage"][0]["control_kind"], "invocation")
 
     def test_all_command_modes_select_the_right_initial_component_scope(self):
         model = self.root / "command-modes.json"
         model.write_text(json.dumps(self.cross_component_model()), encoding="utf-8")
         cases = (
             ("full", [], [], 2),
-            ("capability", ["CAP-IPC-001"], [], 1),
+            ("capability", ["CAP-IPC-001"], [], 2),
             ("full", [], ["AAbility"], 1),
         )
         for index, (mode, capabilities, components, expected_tasks) in enumerate(cases):
@@ -860,13 +975,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 self.assertEqual(initialized["analysis_units"], 2)
                 self.assertEqual(len(initialized["task_ids"]), expected_tasks)
 
-    def test_capability_and_component_modes_expand_only_reached_components(self):
+    def test_component_mode_expands_only_reached_components(self):
         model = self.root / "scoped-cross-component.json"
         model.write_text(json.dumps(self.cross_component_model()), encoding="utf-8")
-        cases = (
-            ("capability", ["CAP-IPC-001"], []),
-            ("full", [], ["AAbility"]),
-        )
+        cases = (("full", [], ["AAbility"]),)
         for index, (mode, capabilities, components) in enumerate(cases):
             with self.subTest(mode=mode, components=components):
                 allocated = new_run(
@@ -883,6 +995,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                     "call_key": "a-to-b", "target_component_id": "CMP-B",
                     "target_symbol": "BAbility.onCreate", "transport": "startAbility",
                     "call_location": "A.ets:20", "condition": "always",
+                    "invocation_control": {
+                        "control_state": "preserved", "condition": "caller input selects this call",
+                        "evidence": [self.source_evidence("组件调用受入口控制", "A.ets:20")],
+                    },
                     "parameter_mappings": [{
                         "source_property": "want.parameters.path",
                         "target_property": "want.parameters.forwardedPath",
@@ -935,6 +1051,26 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                     ).fetchone()["correlation_json"])["roots"]
                 self.assertEqual(semantic_tasks, 2)
                 self.assertEqual(roots, 1)
+
+    def test_capability_mode_does_not_filter_components_by_entry_type(self):
+        model = self.root / "capability-all-components.json"
+        model.write_text(json.dumps(self.cross_component_model()), encoding="utf-8")
+        allocated = new_run(
+            self.root / "capability-all-components-reports", self.target,
+            "capability", ["CAP-IPC-001"], [],
+        )
+        run = Path(allocated["run_dir"])
+        initialize_run(run, model)
+
+        batch = claim_batch(run, 5)
+        self.assertEqual(batch["count"], 2, batch)
+        tasks = [json.loads(Path(handle["task_file"]).read_text()) for handle in batch["tasks"]]
+        self.assertEqual(sorted(task["input"]["entry"]["component"] for task in tasks),
+                         ["AAbility", "BAbility"])
+        for task in tasks:
+            profile = task["input"]["audit_scope"][0]
+            self.assertEqual(profile["entry_types"], ["ipc_transaction"])
+            self.assertEqual(profile["analysis_scope"], "component")
 
     @staticmethod
     def cross_component_model():

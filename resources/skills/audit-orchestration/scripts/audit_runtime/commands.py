@@ -132,7 +132,8 @@ def _merge_semantic_analysis(conn, task, result):
         component_call = materialize_component_call(conn, task["task_id"], source)
         identity = canonical_json([
             task["subject_id"], component_call["target_component_id"],
-            normalize_location(component_call["call_location"]), component_call["parameter_mappings"],
+            normalize_location(component_call["call_location"]), component_call["invocation_control"],
+            component_call["parameter_mappings"],
             component_call["principal_transition"],
         ])
         call_id = stable_id("CALL", identity)
