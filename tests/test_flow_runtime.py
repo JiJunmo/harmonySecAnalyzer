@@ -165,24 +165,53 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         confirmed = classification == "confirmed_vulnerability"
         verification = [SplitPipelineRuntimeTest.verification_evidence()] if include_verification else []
         evidence = SplitPipelineRuntimeTest.evidence_support(group)
+        statuses = {
+            "confirmed_vulnerability": dict.fromkeys(SIX_EXPLOITABILITY_CHECKS, "true"),
+            "protected_exposure": {
+                "externally_reachable": "true", "attacker_controlled": "true", "sink_reached": "false",
+                "security_check_bypassed_or_absent": "false", "boundary_violated": "false",
+                "concrete_impact": "false",
+            },
+            "no_exploitable_path": {
+                "externally_reachable": "false", "attacker_controlled": "unknown", "sink_reached": "unknown",
+                "security_check_bypassed_or_absent": "unknown", "boundary_violated": "unknown",
+                "concrete_impact": "unknown",
+            },
+            "benign_business_flow": {
+                "externally_reachable": "true", "attacker_controlled": "true", "sink_reached": "true",
+                "security_check_bypassed_or_absent": "true", "boundary_violated": "false",
+                "concrete_impact": "false",
+            },
+            "residual_risk": {
+                "externally_reachable": "true", "attacker_controlled": "true", "sink_reached": "true",
+                "security_check_bypassed_or_absent": "unknown", "boundary_violated": "unknown",
+                "concrete_impact": "unknown",
+            },
+            "insufficient_evidence": dict.fromkeys(SIX_EXPLOITABILITY_CHECKS, "unknown"),
+        }[classification]
         checks = {name: {
-            "status": str(confirmed).lower(),
-            "reason": "源码核验成立" if confirmed else "源码核验不成立",
+            "status": statuses[name],
+            "reason": "源码事实支持当前状态",
             "evidence_level": "direct",
             "evidence": evidence,
         } for name in SIX_EXPLOITABILITY_CHECKS}
+        outcome = {
+            "confirmed_vulnerability": "absent", "protected_exposure": "effective",
+            "no_exploitable_path": "unknown", "benign_business_flow": "absent",
+            "residual_risk": "unknown", "insufficient_evidence": "unknown",
+        }[classification]
         validation = {
             "group_id": group["group_id"], "capability_id": group.get("capability_id"),
             "classification": classification,
             "title": "外部参数可控制私有数据查询",
-            "security_check_outcome": "absent" if confirmed else "effective",
+            "security_check_outcome": outcome,
             "business_intent": {
                 "is_public_api": True, "declared_or_inferred_purpose": "打开公开内容",
                 "allowed_controls": ["recordId"], "evidence": evidence,
             },
             "security_boundary": {
                 "type": "data_owner", "expected_boundary": "外部调用者不能查询私有记录",
-                "violation": confirmed, "reason": "查询是否越过私有数据边界", "evidence": evidence,
+                "reason": "查询是否越过私有数据边界", "evidence": evidence,
             },
             "exploitability": checks, "counter_evidence": [], "evidence": evidence,
         }
@@ -202,11 +231,13 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 },
             })
         else:
-            validation.update({
-                "demotion_reason": "防护阻止了越权查询",
-                "counter_evidence": [{"kind": "effective_security_check", "reason": "校验覆盖受控参数",
-                                      "evidence": evidence}],
-            })
+            validation["demotion_reason"] = "六维条件未达到确认漏洞标准"
+            if classification == "protected_exposure":
+                validation["counter_evidence"] = [{
+                    "kind": "effective_security_check", "reason": "校验覆盖受控参数", "evidence": evidence,
+                }]
+            if classification in {"residual_risk", "insufficient_evidence"}:
+                validation["evidence_gap"] = "仍缺少关键源码或运行时证明"
         if group.get("scope") == "cross_component":
             principal_state = group.get("principal_state", {})
             validation["principal_analysis"] = {
@@ -243,6 +274,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "trigger": {"kind": "ability_want", "payload": {"uri": "demo://query?q=1"}},
             "language": "shell", "code": "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://query?q=1'",
             "expected_observation": "返回私有记录", "limitations": "未在真机验证",
+            "prerequisites": [],
             "execution_hint": {"step_by_step": ["安装 debug 包", "执行命令", "观察返回"],
                                "device_required": "emulator", "network_required": False},
             "symbol_refs": [], "evidence_refs": [],
@@ -253,9 +285,11 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
 
     def test_semantics_are_persisted_before_small_validation_task(self):
         semantic_task, submitted = self.submit_semantics([self.semantic_group()])
+        self.assertNotIn("decision_contract", semantic_task["input"]["analysis_contract"])
         self.assertNotIn("validation_task_id", submitted)
         validation_task = self.claim("exploitability_validation")
         self.assertEqual(set(validation_task["input"]), {"semantic_analysis", "verification_scope", "validation_contract"})
+        self.assertNotIn("decision_contract", validation_task["input"]["validation_contract"])
         self.assertNotIn("pattern_cards", validation_task["input"])
         self.assertNotIn("project_model", validation_task["input"])
         self.assertNotIn("entry", validation_task["input"]["semantic_analysis"])
@@ -590,6 +624,37 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         )
         self.assertFalse(rejected["accepted"])
         self.assertIn("confirmed_effect_not_independently_verified", rejected["error"])
+
+    def test_false_dimension_requires_counter_evidence(self):
+        self.submit_semantics([self.semantic_group()])
+        task = self.claim("exploitability_validation")
+        group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        validation = self.validation_for(group, "protected_exposure")
+        validation["exploitability"]["sink_reached"]["evidence"] = {
+            "semantic_refs": [], "verification": [],
+        }
+        rejected = submit_result(self.run, task["task_id"], self.write_submission(task, {
+            "task_id": task["task_id"], "entry_id": task["subject_id"],
+            "summary": "缺少反证", "validations": [validation],
+        }), task["attempt"])
+        self.assertFalse(rejected["accepted"])
+        self.assertIn("false_dimension_evidence_insufficient:sink_reached", rejected["error"])
+
+    def test_decisive_core_false_has_its_own_classification(self):
+        self.submit_semantics([self.semantic_group()])
+        task = self.claim("exploitability_validation")
+        group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        validation = self.validation_for(group, "no_exploitable_path")
+        accepted = submit_result(self.run, task["task_id"], self.write_submission(task, {
+            "task_id": task["task_id"], "entry_id": task["subject_id"],
+            "summary": "入口存在明确反证", "validations": [validation],
+        }), task["attempt"])
+        self.assertTrue(accepted["accepted"], accepted)
+        report = build_report_ready(self.run)
+        self.assertEqual(report["summary"]["no_exploitable_paths"], 1)
+        self.assertEqual(report["summary"]["findings"], 0)
+        model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
+        self.assertEqual(model["component_results"][0]["status"], "no_exploitable_path")
 
     def test_excluded_entry_finishes_without_validation_task(self):
         self.submit_semantics([], "excluded")

@@ -23,6 +23,13 @@ class DeployRenderTest(unittest.TestCase):
                 self.assertNotIn('    "*": deny', content, name)
                 self.assertNotIn('    "**/reports/**": allow', content, name)
 
+            semantic = (base / ".opencode/agents/component-semantic-analyzer.md").read_text(encoding="utf-8")
+            validator = (base / ".opencode/agents/exploitability-validator.md").read_text(encoding="utf-8")
+            poc = (base / ".opencode/agents/poc-generator.md").read_text(encoding="utf-8")
+            self.assertIn("confirmed > uncertain > excluded", semantic)
+            self.assertIn("`false` 表示存在反向证据", validator)
+            self.assertIn("不得输出 `assurance_status`", poc)
+
     def test_opencode_internal_skills_are_not_exposed_as_slash_commands(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

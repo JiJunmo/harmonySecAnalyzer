@@ -148,4 +148,5 @@ def materialize_poc(conn, task_id, source):
             symbol_ref.pop("evidence", None)
             materialized_refs.extend(refs)
     poc["evidence_refs"] = sorted(set(poc.get("evidence_refs", [])) | set(materialized_refs))
+    poc["assurance_status"] = "generated_unverified"
     return poc

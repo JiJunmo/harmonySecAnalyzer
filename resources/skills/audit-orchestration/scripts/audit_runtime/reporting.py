@@ -26,7 +26,7 @@ def _decode(row, *fields):
 
 CLASSIFICATION_RANK = {
     "confirmed_vulnerability": 0, "residual_risk": 1, "insufficient_evidence": 2,
-    "protected_exposure": 3, "benign_business_flow": 4,
+    "protected_exposure": 3, "no_exploitable_path": 4, "benign_business_flow": 5,
 }
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 RESULT_LABELS = {
@@ -34,6 +34,9 @@ RESULT_LABELS = {
     "insufficient_evidence": "证据不足", "protected_exposure": "已有有效防护",
     "benign_business_flow": "正常业务行为", "verification_incomplete": "验证未完成",
     "no_exploitable_path": "未形成可利用路径", "no_security_relevant_operation": "未发现安全相关操作",
+    "generated_unverified": "已生成，未编译验证", "build_verified": "已通过编译验证",
+    "device_verified": "已通过设备验证", "generation_failed": "生成失败",
+    "pending_generation": "生成中",
     "entry_excluded": "入口已排除", "entry_uncertain": "入口状态不确定", "not_analyzed": "未完成分析",
     "confirmed": "已确认", "excluded": "已排除", "uncertain": "不确定",
     "critical": "严重", "high": "高危", "medium": "中危", "low": "低危", "info": "提示",
@@ -42,6 +45,7 @@ RESULT_LABELS = {
     "archive": "压缩包", "privacy": "隐私", "network": "网络",
     "crypto": "密码学", "distributed": "分布式",
     "native_dependency": "Native 与依赖",
+    "not_externally_reachable": "外部不可达",
 }
 
 
@@ -109,7 +113,7 @@ def _component_result_status(analysis, coverage, groups):
     classifications = {row.get("classification") for row in groups if row.get("classification")}
     for status in (
         "confirmed_vulnerability", "residual_risk", "insufficient_evidence",
-        "protected_exposure", "benign_business_flow",
+        "protected_exposure", "no_exploitable_path", "benign_business_flow",
     ):
         if status in classifications:
             return status
@@ -156,7 +160,7 @@ def _component_results(entries, analyses, semantic_groups, groups, component_cal
             review_notes.append("未识别到安全相关操作，建议结合组件功能和已检查符号复核是否遗漏敏感行为。")
         if security_checks:
             review_notes.append("已观察到防护代码，需核对其约束主体、受控属性和生效路径是否与安全边界一致。")
-        if status in {"protected_exposure", "benign_business_flow"}:
+        if status in {"protected_exposure", "no_exploitable_path", "benign_business_flow"}:
             review_notes.append("当前证据未形成漏洞结论；该结果表示已检查范围内未发现可利用问题，不等同于形式化安全证明。")
         if status == "verification_incomplete":
             review_notes.append("已识别到安全相关操作，正在等待六维有效性验证，当前不能判定是否存在漏洞。")
@@ -259,10 +263,19 @@ def build_report(run_dir, live=False, report_status=None):
         for row in poc_rows:
             row["payload"] = json.loads(row.pop("payload_json"))
             poc_by_finding.setdefault(row["finding_id"], row)
-        for finding in findings:
-            finding["poc_artifact"] = poc_by_finding.get(finding["finding_id"])
         tasks = _rows(conn, "SELECT task_id,kind,subject_id,status,attempts,error FROM tasks ORDER BY created_at,task_id")
         task_counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
+        poc_tasks = {row["subject_id"]: row for row in tasks if row["kind"] == "poc_generation"}
+        for finding in findings:
+            artifact = poc_by_finding.get(finding["finding_id"])
+            task = poc_tasks.get(finding["finding_id"])
+            finding["poc_artifact"] = artifact
+            if artifact:
+                finding["poc_status"] = artifact["payload"].get("assurance_status", "generated_unverified")
+            elif task and task["status"] == "exhausted":
+                finding["poc_status"] = "generation_failed"
+            else:
+                finding["poc_status"] = "pending_generation"
     classification_counts = Counter(row["classification"] for row in groups)
     entry_status_counts = Counter(row["coverage"].get("entry_status", "uncertain") for row in analyses)
     finding_classification_counts = Counter(row["classification"] for row in findings)
@@ -331,7 +344,7 @@ def build_report(run_dir, live=False, report_status=None):
             "description": descriptions.get(gap_type, gap_type or str(gap)),
         })
     for row in tasks:
-        if row["status"] == "exhausted":
+        if row["status"] == "exhausted" and row["kind"] != "poc_generation":
             gaps.append({"type": "任务未完成", "subject": row["task_id"],
                          "description": row.get("error") or "任务达到最大尝试次数"})
     coverage_status = "完整" if not gaps else "部分完成"
@@ -370,6 +383,7 @@ def build_report(run_dir, live=False, report_status=None):
             "confirmed_vulnerabilities": finding_classification_counts.get("confirmed_vulnerability", 0),
             "residual_risks": finding_classification_counts.get("residual_risk", 0),
             "protected_exposures": classification_counts.get("protected_exposure", 0),
+            "no_exploitable_paths": classification_counts.get("no_exploitable_path", 0),
             "benign_business_flows": classification_counts.get("benign_business_flow", 0),
             "insufficient_evidence": classification_counts.get("insufficient_evidence", 0),
             "components_with_findings": sum(
@@ -377,7 +391,7 @@ def build_report(run_dir, live=False, report_status=None):
             ),
             "components_without_findings": sum(
                 row["status"] in {
-                    "protected_exposure", "benign_business_flow",
+                    "protected_exposure", "no_exploitable_path", "benign_business_flow",
                     "no_security_relevant_operation", "entry_excluded",
                 }
                 for row in component_results
@@ -450,6 +464,7 @@ def _render_markdown(model):
         f"- 已确认漏洞：{summary['confirmed_vulnerabilities']}",
         f"- 残余风险：{summary['residual_risks']}",
         f"- 已有有效防护：{summary['protected_exposures']}",
+        f"- 未形成可利用路径：{summary['no_exploitable_paths']}",
         f"- 正常业务行为：{summary['benign_business_flows']}",
         f"- 证据不足：{summary['insufficient_evidence']}", "",
     ]
@@ -542,7 +557,10 @@ def poc_markdown(finding):
     poc = artifact.get("payload") or {}
     if not poc:
         if finding["classification"] in ("confirmed_vulnerability", "residual_risk"):
-            return ["#### 验证方式 / PoC", "", "未生成 PoC"]
+            return [
+                "#### 验证方式 / PoC", "",
+                f"- 状态：`{_label(finding.get('poc_status') or 'pending_generation')}`",
+            ]
         return []
     trigger = poc.get("trigger") or {}
     hint = poc.get("execution_hint") or {}
@@ -564,6 +582,7 @@ def poc_markdown(finding):
         preamble.append(f"- 前置条件：{'、'.join(f'`{item}`' for item in prereqs)}")
     device = hint.get("device_required")
     lines = ["#### 验证方式 / PoC", ""]
+    lines.append(f"- 可信度：`{_label(finding.get('poc_status') or poc.get('assurance_status'))}`")
     lines.extend(preamble)
     if preamble:
         lines.append("")
@@ -579,7 +598,7 @@ def poc_markdown(finding):
     return lines
 
 
-_POC_JS = """const pocF=arr(D.findings).find(f=>arr(p.finding_ids).includes(f.finding_id));const pocA=obj(pocF?.poc_artifact);const poc=obj(pocA.payload||pocA);const pocSteps=arr(obj(poc.execution_hint).step_by_step);const pocHtml=poc.code?`<h3>验证方式 / PoC</h3><div class="structure-item"><dl class="kv"><dt>入口 / 触发 / 语言</dt><dd>${[poc.entry_type,poc.trigger?.kind,poc.language].filter(Boolean).map(esc).join(' · ')}</dd>${poc.expected_observation?`<dt>预期现象</dt><dd>${esc(poc.expected_observation)}</dd>`:''}${poc.limitations?`<dt>复现限制</dt><dd>${esc(poc.limitations)}</dd>`:''}${arr(poc.prerequisites).length?`<dt>前置条件</dt><dd>${arr(poc.prerequisites).map(esc).join('、')}</dd>`:''}${pocSteps.length?`<dt>逐步复现</dt><dd><ol>${pocSteps.map(s=>`<li>${esc(s)}</li>`).join('')}</ol></dd>`:''}</dl><pre><code>${esc(poc.code)}</code></pre></div>`:((x.classification==='confirmed_vulnerability'||x.classification==='residual_risk')?`<h3>验证方式 / PoC</h3><div class="empty">未生成 PoC</div>`:'');"""
+_POC_JS = """const pocF=arr(D.findings).find(f=>arr(p.finding_ids).includes(f.finding_id));const pocA=obj(pocF?.poc_artifact);const poc=obj(pocA.payload||pocA);const pocStatus=pocF?.poc_status||poc.assurance_status||'pending_generation';const pocSteps=arr(obj(poc.execution_hint).step_by_step);const pocHtml=poc.code?`<h3>验证方式 / PoC</h3><div class="structure-item"><dl class="kv"><dt>可信度</dt><dd>${badge(pocStatus)}</dd><dt>入口 / 触发 / 语言</dt><dd>${[poc.entry_type,poc.trigger?.kind,poc.language].filter(Boolean).map(esc).join(' · ')}</dd>${poc.expected_observation?`<dt>预期现象</dt><dd>${esc(poc.expected_observation)}</dd>`:''}${poc.limitations?`<dt>复现限制</dt><dd>${esc(poc.limitations)}</dd>`:''}${arr(poc.prerequisites).length?`<dt>前置条件</dt><dd>${arr(poc.prerequisites).map(esc).join('、')}</dd>`:''}${pocSteps.length?`<dt>逐步复现</dt><dd><ol>${pocSteps.map(s=>`<li>${esc(s)}</li>`).join('')}</ol></dd>`:''}</dl><pre><code>${esc(poc.code)}</code></pre></div>`:((x.classification==='confirmed_vulnerability'||x.classification==='residual_risk')?`<h3>验证方式 / PoC</h3><div class="empty">${badge(pocStatus)}</div>`:'');"""
 
 
 def _render_html(model):
@@ -634,7 +653,7 @@ def _render_html(model):
             key: finding.get(key) for key in (
                 "finding_id", "path_id", "classification", "title", "severity", "cwe",
                 "impact", "boundary", "controlled_property", "operation_location", "evidence",
-                "poc_artifact",
+                "poc_artifact", "poc_status",
             )
         } | {"payload": {
             key: finding["payload"].get(key) for key in (
@@ -647,6 +666,7 @@ def _render_html(model):
     report_data = json.dumps(view_model, ensure_ascii=False).replace("</", "<\\/")
     return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>
 :root{{--ink:#17201d;--muted:#66736e;--line:#d9e0dc;--paper:#f5f7f5;--surface:#fff;--accent:#087f5b;--danger:#b42318;--warn:#b54708;--safe:#287a50}}*{{box-sizing:border-box}}body{{margin:0;background:var(--paper);color:var(--ink);font:14px/1.55 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}}button,input,select{{font:inherit}}header.top{{background:var(--surface);border-bottom:1px solid var(--line)}}.top-inner,nav,.view{{max-width:1180px;margin:auto}}.top-inner{{padding:26px 24px 20px}}h1{{font-size:27px;margin:3px 0 7px}}h2{{font-size:18px;margin:0 0 14px}}h3{{font-size:15px;margin:0 0 8px}}.muted{{color:var(--muted)}}.runmeta{{display:flex;flex-wrap:wrap;gap:8px 20px;color:var(--muted)}}nav{{padding:0 24px}}.tabs{{display:flex;gap:2px;overflow:auto}}.tab{{border:0;border-bottom:3px solid transparent;background:transparent;padding:12px 18px;white-space:nowrap;cursor:pointer;color:var(--muted)}}.tab.active{{border-color:var(--accent);color:var(--ink);font-weight:650}}.view{{display:none;padding:26px 24px 72px}}.view.active{{display:block}}.metrics{{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border:1px solid var(--line);background:var(--line);gap:1px;margin-bottom:24px}}.metric{{background:var(--surface);padding:16px;min-width:0}}.metric strong{{display:block;font-size:25px;overflow-wrap:anywhere}}.metric span{{color:var(--muted)}}.grid-2{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}.panel{{background:var(--surface);border:1px solid var(--line);padding:18px;margin-bottom:20px}}.summary-list{{display:grid;gap:10px}}.summary-item{{border-left:3px solid var(--accent);padding:7px 10px;background:#f8faf8}}.summary-item.danger{{border-color:var(--danger)}}.summary-item h3{{margin:0}}.summary-item p{{margin:4px 0 0;color:var(--muted)}}.toolbar{{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}}.control{{height:38px;border:1px solid var(--line);background:var(--surface);padding:0 11px;min-width:160px}}input.control{{flex:1;min-width:240px}}.count{{color:var(--muted);margin:0 0 8px}}.table-wrap{{overflow:auto;border:1px solid var(--line);background:var(--surface)}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}}th{{font-size:12px;color:var(--muted);background:#fafbfa;white-space:nowrap}}tr.path-row,tr.component-row{{cursor:pointer}}tr.path-row:hover,tr.component-row:hover{{background:#f2f7f4}}code{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}}.badge{{display:inline-block;border:1px solid var(--line);padding:2px 7px;font-size:12px;white-space:nowrap}}.badge.confirmed_vulnerability{{color:var(--danger);border-color:#efb4ae;background:#fff5f4}}.badge.residual_risk,.badge.gap,.badge.insufficient_evidence,.badge.verification_incomplete,.badge.entry_uncertain{{color:var(--warn);border-color:#e8c39c;background:#fff9f0}}.badge.protected_exposure,.badge.no_exploitable_path,.badge.no_security_relevant_operation,.badge.stopped{{color:var(--safe);border-color:#aed8c0;background:#f1faf5}}.badge.benign_business_flow,.badge.entry_excluded,.badge.reached{{color:#42665a;background:#f4f8f6}}.badge.not_analyzed{{color:var(--muted);background:#f5f6f5}}.structure-list{{display:grid;gap:10px}}.structure-item{{border-bottom:1px solid var(--line);padding:0 0 10px}}.structure-item:last-child{{border:0;padding-bottom:0}}.kv{{display:grid;grid-template-columns:150px 1fr;gap:7px 14px}}.kv dt{{color:var(--muted)}}.kv dd{{margin:0;overflow-wrap:anywhere}}.gap-list{{display:grid;gap:9px}}.gap-item{{border-left:3px solid var(--warn);background:#fffaf3;padding:10px 12px}}.empty{{padding:22px;color:var(--muted);text-align:center;background:var(--surface);border:1px solid var(--line)}}.drawer-backdrop{{display:none;position:fixed;inset:0;background:rgba(17,28,23,.34);z-index:10}}.drawer-backdrop.open{{display:block}}.drawer{{position:absolute;right:0;top:0;width:min(760px,94vw);height:100%;overflow:auto;background:var(--surface);padding:24px;box-shadow:-12px 0 40px rgba(0,0,0,.16)}}.drawer-head{{display:flex;justify-content:space-between;gap:16px;align-items:start;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:18px}}.close{{border:1px solid var(--line);background:var(--surface);width:34px;height:34px;font-size:21px;cursor:pointer}}.timeline{{list-style:none;margin:0;padding:0}}.timeline li{{position:relative;margin-left:7px;padding:0 0 16px 24px;border-left:1px solid var(--line)}}.timeline li:before{{content:"";position:absolute;left:-5px;top:5px;width:9px;height:9px;background:var(--accent)}}.timeline li:last-child{{border-left-color:transparent}}.timeline b{{display:block}}@media(max-width:900px){{.metrics{{grid-template-columns:repeat(3,minmax(0,1fr))}}.grid-2{{grid-template-columns:1fr}}}}@media(max-width:600px){{.top-inner,.view,nav{{padding-left:14px;padding-right:14px}}.metrics{{grid-template-columns:repeat(2,minmax(0,1fr))}}.kv{{grid-template-columns:1fr}}}}
+.badge.generation_failed{{color:var(--danger);border-color:#efb4ae;background:#fff5f4}}.badge.generated_unverified,.badge.pending_generation{{color:var(--warn);border-color:#e8c39c;background:#fff9f0}}.badge.build_verified,.badge.device_verified{{color:var(--safe);border-color:#aed8c0;background:#f1faf5}}
 </style></head><body><header class="top"><div class="top-inner"><div class="muted">HarmonyOS 应用安全审计报告</div><h1>{title}</h1><div class="runmeta" id="runmeta"></div></div><nav><div class="tabs"><button class="tab active" data-view="overview">概览</button><button class="tab" data-view="components">组件审计</button><button class="tab" data-view="paths">攻击路径</button><button class="tab" data-view="project">项目结构</button><button class="tab" data-view="coverage">覆盖与缺口</button></div></nav></header>
 <main><section id="overview" class="view active"><div class="metrics" id="overview-metrics"></div><div id="incremental-summary" class="panel"><h2>增量分析</h2><div class="structure-list" id="incremental-summary-content"></div></div><div class="grid-2"><div class="panel"><h2>分析结果</h2><div id="result-summary" class="summary-list"></div></div><div class="panel"><h2>重点结论</h2><div id="key-findings" class="summary-list"></div></div></div><div class="panel"><h2>入口与路径概况</h2><div id="entry-summary"></div></div></section>
 <section id="components" class="view"><h2>组件审计结果</h2><p class="muted">所有已识别组件均在此展示，包括未发现漏洞、已有有效防护、正常业务和证据不足的组件。点击组件可查看功能、防护与覆盖事实。</p><div class="toolbar"><input id="component-search" class="control" placeholder="搜索组件、模块、功能或入口"><select id="component-result" class="control"><option value="">全部结果</option></select></div><p class="count" id="component-count"></p><div class="table-wrap"><table><thead><tr><th>审计结论</th><th>组件</th><th>组件功能</th><th>真实入口</th><th>安全相关操作</th><th>防护事实</th></tr></thead><tbody id="component-result-body"></tbody></table></div></section>
@@ -656,12 +676,13 @@ def _render_html(model):
 <div class="drawer-backdrop" id="drawer-backdrop"><aside class="drawer" role="dialog" aria-modal="true"><div class="drawer-head"><div><div class="muted" id="drawer-kind">详情</div><h2 id="drawer-title"></h2></div><button class="close" id="drawer-close" aria-label="关闭">×</button></div><div id="drawer-body"></div></aside></div>
 <script type="application/json" id="report-data">{report_data}</script><script>
 const D=JSON.parse(document.getElementById('report-data').textContent);const arr=v=>Array.isArray(v)?v:[];const obj=v=>v&&typeof v==='object'?v:{{}};const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
-const labels={{confirmed_vulnerability:'已确认漏洞',residual_risk:'残余风险',protected_exposure:'已有有效防护',benign_business_flow:'正常业务行为',insufficient_evidence:'证据不足',verification_incomplete:'验证未完成',no_exploitable_path:'未形成可利用路径',no_security_relevant_operation:'未发现安全相关操作',entry_excluded:'入口已排除',entry_uncertain:'入口状态不确定',not_analyzed:'未完成分析',confirmed:'已确认',excluded:'已排除',uncertain:'不确定',component_semantic_analysis:'组件语义分析',exploitability_validation:'六维验证',reached:'已到达敏感操作',stopped:'路径已终止',open:'继续追踪',gap:'证据不足',complete:'已完成',completed:'已完成',exhausted:'未完成',queued:'等待中',running:'执行中',critical:'严重',high:'高危',medium:'中危',low:'低危',info:'提示',entrypoint:'入口',reachability:'可达性',control:'参数控制',transform:'参数传递',security_check:'安全检查',operation:'安全相关操作',effect:'实际影响',dead_end:'路径终止',deeplink:'深度链接',want:'Want 调用',exported_ability:'导出组件',provider:'数据提供组件',common_event:'公共事件',ipc_transaction:'IPC/RPC 调用',effective_security_check:'有效安全检查',business_intent:'业务意图',not_attacker_controlled:'参数不可控',sink_not_reached:'未到达敏感操作',no_boundary_violation:'未突破安全边界',no_concrete_impact:'未形成具体影响',origin_principal:'原始调用者',immediate_caller:'直接调用者',transferred_property:'传递参数',resource_owner:'资源所有者',security_boundary:'安全边界'}};const label=v=>labels[v]||v||'-';
-const findingById=Object.fromEntries(arr(D.findings).map(x=>[x.finding_id,x]));const resultRank={{confirmed_vulnerability:5,residual_risk:4,insufficient_evidence:3,protected_exposure:2,benign_business_flow:1}};const pathResult=p=>arr(p.finding_ids).map(id=>findingById[id]).filter(Boolean)[0]||arr(p.assessments).slice().sort((a,b)=>(resultRank[b.classification]||0)-(resultRank[a.classification]||0))[0]||{{}};const metric=(v,t)=>`<div class="metric"><strong>${{esc(v)}}</strong><span>${{esc(t)}}</span></div>`;const badge=v=>`<span class="badge ${{esc(v)}}">${{esc(label(v))}}</span>`;
+const labels={{confirmed_vulnerability:'已确认漏洞',residual_risk:'残余风险',protected_exposure:'已有有效防护',benign_business_flow:'正常业务行为',insufficient_evidence:'证据不足',verification_incomplete:'验证未完成',no_exploitable_path:'未形成可利用路径',no_security_relevant_operation:'未发现安全相关操作',entry_excluded:'入口已排除',entry_uncertain:'入口状态不确定',not_analyzed:'未完成分析',generated_unverified:'已生成，未编译验证',build_verified:'已通过编译验证',device_verified:'已通过设备验证',generation_failed:'生成失败',pending_generation:'生成中',confirmed:'已确认',excluded:'已排除',uncertain:'不确定',component_semantic_analysis:'组件语义分析',exploitability_validation:'六维验证',poc_generation:'PoC 生成',reached:'已到达敏感操作',stopped:'路径已终止',open:'继续追踪',gap:'证据不足',complete:'已完成',completed:'已完成',exhausted:'未完成',queued:'等待中',running:'执行中',critical:'严重',high:'高危',medium:'中危',low:'低危',info:'提示',entrypoint:'入口',reachability:'可达性',control:'参数控制',transform:'参数传递',security_check:'安全检查',operation:'安全相关操作',effect:'实际影响',dead_end:'路径终止',deeplink:'深度链接',want:'Want 调用',exported_ability:'导出组件',provider:'数据提供组件',common_event:'公共事件',ipc_transaction:'IPC/RPC 调用',effective_security_check:'有效安全检查',business_intent:'业务意图',not_attacker_controlled:'参数不可控',sink_not_reached:'未到达敏感操作',no_boundary_violation:'未突破安全边界',no_concrete_impact:'未形成具体影响',origin_principal:'原始调用者',immediate_caller:'直接调用者',transferred_property:'传递参数',resource_owner:'资源所有者',security_boundary:'安全边界'}};const label=v=>labels[v]||v||'-';
+labels.not_externally_reachable='外部不可达';
+const findingById=Object.fromEntries(arr(D.findings).map(x=>[x.finding_id,x]));const resultRank={{confirmed_vulnerability:6,residual_risk:5,insufficient_evidence:4,protected_exposure:3,no_exploitable_path:2,benign_business_flow:1}};const pathResult=p=>arr(p.finding_ids).map(id=>findingById[id]).filter(Boolean)[0]||arr(p.assessments).slice().sort((a,b)=>(resultRank[b.classification]||0)-(resultRank[a.classification]||0))[0]||{{}};const metric=(v,t)=>`<div class="metric"><strong>${{esc(v)}}</strong><span>${{esc(t)}}</span></div>`;const badge=v=>`<span class="badge ${{esc(v)}}">${{esc(label(v))}}</span>`;
 document.getElementById('runmeta').innerHTML=`<span>运行编号 <b>${{esc(D.run.run_id)}}</b></span><span>审计模式 <b>${{esc(D.run.mode)}}</b></span><span>运行状态 <b>${{esc(label(D.run.status))}}</b></span><span>审计范围 <b>${{esc(arr(D.run.components).join(', ')||'全部组件')}}</b></span><span>覆盖状态 <b>${{esc(D.coverage.status)}}</b></span><span>更新时间 <b>${{esc(D.generated_at)}}</b></span>`;
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===b.dataset.view));}});
 const S=D.summary;document.getElementById('overview-metrics').innerHTML=metric(S.confirmed_vulnerabilities,'已确认漏洞')+metric(S.residual_risks,'残余风险')+metric(S.components_without_findings,'未发现漏洞组件')+metric(S.protected_exposures,'有效防护')+metric(S.analyzed_components,'已分析组件')+metric(S.paths,'攻击路径');
-const resultRows=[['confirmed_vulnerability',S.confirmed_vulnerabilities],['residual_risk',S.residual_risks],['protected_exposure',S.protected_exposures],['benign_business_flow',S.benign_business_flows],['insufficient_evidence',S.insufficient_evidence]];document.getElementById('result-summary').innerHTML=resultRows.map(([k,v])=>`<div class="summary-item"><h3>${{badge(k)}} ${{esc(v)}} 条</h3></div>`).join('');
+const resultRows=[['confirmed_vulnerability',S.confirmed_vulnerabilities],['residual_risk',S.residual_risks],['protected_exposure',S.protected_exposures],['no_exploitable_path',S.no_exploitable_paths],['benign_business_flow',S.benign_business_flows],['insufficient_evidence',S.insufficient_evidence]];document.getElementById('result-summary').innerHTML=resultRows.map(([k,v])=>`<div class="summary-item"><h3>${{badge(k)}} ${{esc(v)}} 条</h3></div>`).join('');
 const key=arr(D.findings).filter(x=>['confirmed_vulnerability','residual_risk'].includes(x.classification)).slice(0,6);document.getElementById('key-findings').innerHTML=key.map(x=>`<div class="summary-item danger"><h3>${{esc(x.title)}}</h3><p>${{badge(x.classification)}} · ${{esc(label(x.severity||'未定级'))}} · ${{esc(x.operation_location)}}</p></div>`).join('')||'<div class="empty">未发现需要处置的安全问题</div>';
 const entryTypes={{}};arr(D.entries).forEach(x=>arr(x.facets).forEach(f=>entryTypes[f.entry_type]=(entryTypes[f.entry_type]||0)+1));document.getElementById('entry-summary').innerHTML=`<div class="structure-list">${{Object.entries(entryTypes).map(([k,v])=>`<div class="structure-item"><strong>${{esc(label(k))}}</strong><div class="muted">${{v}} 个入口渠道</div></div>`).join('')}}</div>`;
 const I=obj(D.run.incremental),CS=obj(I.change_set),IP=obj(I.impact_plan),RC=obj(I.risk_path_changes),CF=obj(CS.files),riskDelta=RC.status==='complete'?`新增 ${{arr(RC.added).length}} / 结论变化 ${{arr(RC.changed).length}} / 已消失 ${{arr(RC.removed).length}} / 未变 ${{arr(RC.unchanged).length}}`:'等待本轮审计完成后比较';if(!Object.keys(I).length){{document.getElementById('incremental-summary').style.display='none'}}else{{document.getElementById('incremental-summary-content').innerHTML=`<div class="structure-item"><strong>基线与变化</strong><div class="muted">${{esc(CS.source_type)}} 基线 ${{esc(CS.baseline_run_id||'-')}} · 新增 ${{arr(CF.added).length}} / 修改 ${{arr(CF.modified).length}} / 删除 ${{arr(CF.deleted).length}} 个文件</div></div><div class="structure-item"><strong>入口变化</strong><div class="muted">新增 ${{arr(IP.added_entries).length}} / 修改 ${{arr(IP.changed_entries).length}} / 删除 ${{arr(IP.deleted_entries).length}}</div></div><div class="structure-item"><strong>执行范围</strong><div class="muted">重新分析 ${{arr(IP.affected_entries).length}} 个组件 · 复用 ${{arr(IP.reusable_entries).length}} 个组件语义结果</div></div><div class="structure-item"><strong>风险路径变化</strong><div class="muted">${{esc(riskDelta)}}</div></div>`}};
@@ -677,6 +698,10 @@ const closeDrawer=()=>document.getElementById('drawer-backdrop').classList.remov
 const A=obj(D.project.application);document.getElementById('project-info').innerHTML=[['应用包名',A.bundle_name],['版本',`${{A.version_name||'-'}} (${{A.version_code??'-'}})`],['厂商',A.vendor],['目标仓库',D.run.target_repo],['模块',D.project.summary?.modules],['组件',D.project.summary?.components]].map(([k,v])=>`<dt>${{esc(k)}}</dt><dd>${{esc(v??'-')}}</dd>`).join('');
 const perms=[...arr(D.project.requested_permissions).map(x=>['申请权限',x]),...arr(D.project.defined_permissions).map(x=>['自定义权限',x])];const deps=arr(D.project.dependencies);document.getElementById('permission-list').innerHTML=perms.map(([k,x])=>`<div class="structure-item"><strong>${{esc(x.name)}}</strong><div class="muted">${{esc(k)}} · ${{esc(x.grant_mode||x.available_level||'')}}</div></div>`).join('')+deps.map(x=>`<div class="structure-item"><strong>${{esc(x.name)}} ${{esc(x.version||'')}}</strong><div class="muted">依赖 · ${{esc(x.group||'')}}</div></div>`).join('')||'<div class="empty">无权限与依赖信息</div>';
 document.getElementById('module-list').innerHTML=arr(D.project.modules).map(x=>`<div class="structure-item"><strong>${{esc(x.name)}} · ${{esc((x.output_kind||x.type||'未知类型').toUpperCase())}}</strong><div class="muted">${{esc(x.root||x.source_scope||x.file)}} · ${{esc(arr(x.products).join(', ')||'全部产品')}} · <code>${{esc(x.module_id||'')}}</code></div></div>`).join('')||'<div class="empty">无模块信息</div>';document.getElementById('component-body').innerHTML=arr(D.project.components).map(x=>`<tr><td><strong>${{esc(x.name)}}</strong></td><td>${{esc(x.extension_type||x.kind)}}</td><td>${{esc(x.module_name)}}<br><code>${{esc(x.module_id||'')}}</code></td><td>${{x.exported===true?'是':x.exported===false?'否':'-'}}</td><td>${{esc(arr(x.permissions).join(', ')||'-')}}</td><td><code>${{esc(x.source_file_hint||x.src_entry||'-')}}</code></td></tr>`).join('');
-const C=D.coverage,es=obj(C.entry_status),ac=obj(C.assessment_status),tc=obj(C.task_status),cc=obj(C.component_correlation);document.getElementById('coverage-metrics').innerHTML=metric(C.status,'覆盖状态')+metric(C.component_catalog||0,'组件目录')+metric(C.analysis_units||0,'实际分析组件')+metric(es.confirmed||0,'已确认输入')+metric(es.excluded||0,'已排除输入')+metric(es.uncertain||0,'不确定输入')+metric(arr(C.gaps).length,'缺口与注记');document.getElementById('coverage-summary').innerHTML=`<div class="structure-item"><strong>组件语义分析</strong><div class="muted">已完成 ${{C.semantic_analyses||0}} 个组件 · 归并 ${{C.operation_groups||0}} 个安全相关操作组</div></div><div class="structure-item"><strong>组件连接</strong><div class="muted">记录 ${{C.component_calls||0}} 条组件传递 · 生成 ${{S.cross_component_groups||0}} 个跨组件操作组 · 检查 ${{cc.states_visited||0}} 个连接状态</div></div><div class="structure-item"><strong>六维验证</strong><div class="muted">漏洞 ${{ac.confirmed_vulnerability||0}} · 风险 ${{ac.residual_risk||0}} · 防护 ${{ac.protected_exposure||0}} · 正常 ${{ac.benign_business_flow||0}} · 缺证据 ${{ac.insufficient_evidence||0}}</div></div>`;document.getElementById('task-summary').innerHTML=Object.entries(tc).map(([k,v])=>`<div class="structure-item"><strong>${{esc(label(k))}}</strong><div class="muted">${{v}} 个任务</div></div>`).join('')||'<div class="empty">无任务信息</div>';document.getElementById('gap-list').innerHTML=arr(C.gaps).map(x=>`<div class="gap-item"><strong>${{esc(x.type)}} · ${{esc(x.subject)}}</strong><div>${{esc(x.description)}}</div></div>`).join('')||'<div class="empty">未发现覆盖缺口</div>';
+const C=D.coverage,es=obj(C.entry_status),ac=obj(C.assessment_status),tc=obj(C.task_status),cc=obj(C.component_correlation);
+document.getElementById('coverage-metrics').innerHTML=metric(C.status,'覆盖状态')+metric(C.component_catalog||0,'组件目录')+metric(C.analysis_units||0,'实际分析组件')+metric(es.confirmed||0,'已确认输入')+metric(es.excluded||0,'已排除输入')+metric(es.uncertain||0,'不确定输入')+metric(arr(C.gaps).length,'缺口与注记');
+document.getElementById('coverage-summary').innerHTML=`<div class="structure-item"><strong>组件语义分析</strong><div class="muted">已完成 ${{C.semantic_analyses||0}} 个组件 · 归并 ${{C.operation_groups||0}} 个安全相关操作组</div></div><div class="structure-item"><strong>组件连接</strong><div class="muted">记录 ${{C.component_calls||0}} 条组件传递 · 生成 ${{S.cross_component_groups||0}} 个跨组件操作组 · 检查 ${{cc.states_visited||0}} 个连接状态</div></div><div class="structure-item"><strong>六维验证</strong><div class="muted">漏洞 ${{ac.confirmed_vulnerability||0}} · 风险 ${{ac.residual_risk||0}} · 防护 ${{ac.protected_exposure||0}} · 不可利用 ${{ac.no_exploitable_path||0}} · 正常 ${{ac.benign_business_flow||0}} · 缺证据 ${{ac.insufficient_evidence||0}}</div></div>`;
+document.getElementById('task-summary').innerHTML=Object.entries(tc).map(([k,v])=>`<div class="structure-item"><strong>${{esc(label(k))}}</strong><div class="muted">${{v}} 个任务</div></div>`).join('')||'<div class="empty">无任务信息</div>';
+document.getElementById('gap-list').innerHTML=arr(C.gaps).map(x=>`<div class="gap-item"><strong>${{esc(x.type)}} · ${{esc(x.subject)}}</strong><div>${{esc(x.description)}}</div></div>`).join('')||'<div class="empty">未发现覆盖缺口</div>';
 renderComponents();renderPaths();
 </script></body></html>'''

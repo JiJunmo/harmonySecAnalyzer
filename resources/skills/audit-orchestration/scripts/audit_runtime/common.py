@@ -26,7 +26,7 @@ MAX_TASK_ATTEMPTS = 3
 MAX_CONCURRENT_TASKS = 5
 FINAL_CLASSIFICATIONS = {
     "confirmed_vulnerability", "protected_exposure", "benign_business_flow",
-    "insufficient_evidence", "residual_risk",
+    "no_exploitable_path", "insufficient_evidence", "residual_risk",
 }
 SIX_EXPLOITABILITY_CHECKS = (
     "externally_reachable", "attacker_controlled", "sink_reached",

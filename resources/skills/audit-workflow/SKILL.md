@@ -10,7 +10,7 @@
 
 全部语义结果落盘后，脚本从已确认的外部入口连接组件参数映射以及身份、权限变化，只把外部可达的本地操作和成功连接的跨组件操作交给独立验证任务。未导出组件可以作为下游节点，但不能作为外部根入口。验证任务对每个操作组检查反证并记录业务意图、安全边界、安全检查 结论和六维判断；跨组件组还必须判断下游校验约束的是原始主体还是仅约束了被借权的中间组件。它可以读取语义证据引用的源码并使用 Atlas 定点核实，但不能重新发现路径、新增操作组或改写已落盘语义事实。
 
-只有 `confirmed_vulnerability` 要求六项全部为 true。有效 安全检查 为 `protected_exposure`；正常公开业务且未越界为 `benign_business_flow`；可疑但缺关键证据为 `residual_risk`；无法判断为 `insufficient_evidence`。
+只有 `confirmed_vulnerability` 要求六项全部为 true。有效安全检查为 `protected_exposure`；外部可达、参数控制或操作可达被明确反证为 `no_exploitable_path`；正常公开业务且未越界为 `benign_business_flow`；基础路径成立但后续缺关键证据为 `residual_risk`；基础路径本身无法建立为 `insufficient_evidence`。`true/false` 均必须有非假设证据，没有找到证据只能使用 `unknown`。
 
 根因身份由操作位置、关键受控参数和安全边界组成。普通分支、入口别名和能力 ID 不参与根因身份。路径只为 confirmed vulnerability 和 residual risk 生成，作为报告证据，不作为调度对象。
 

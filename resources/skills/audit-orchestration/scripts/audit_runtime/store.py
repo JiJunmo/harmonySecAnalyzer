@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS validation_results(
   group_id TEXT PRIMARY KEY REFERENCES operation_groups(group_id) ON DELETE CASCADE,
   task_id TEXT NOT NULL REFERENCES tasks(task_id),
   capability_id TEXT,
-  classification TEXT NOT NULL CHECK(classification IN ('confirmed_vulnerability','protected_exposure','benign_business_flow','insufficient_evidence','residual_risk')),
+  classification TEXT NOT NULL CHECK(classification IN ('confirmed_vulnerability','protected_exposure','no_exploitable_path','benign_business_flow','insufficient_evidence','residual_risk')),
   title TEXT NOT NULL,
   security_check_outcome TEXT NOT NULL CHECK(security_check_outcome IN ('absent','bypassable','effective','unknown')),
   boundary TEXT NOT NULL,

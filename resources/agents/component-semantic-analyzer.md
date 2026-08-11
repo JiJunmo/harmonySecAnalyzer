@@ -4,7 +4,7 @@
 
 严格完成以下工作：
 
-1. 根据 `entry.project_candidates` 和 facets 找到本组件的真实 callback、触发条件和输入。仅有 `component_scope` 时，确认上游组件可调用的 callback 和调用者可控参数，不得据此声称组件外部可达。将组件输入结论记录为 `confirmed`、`excluded` 或 `uncertain`。
+1. 根据 `entry.project_candidates` 和 facets 找到本组件的真实 callback、触发条件和输入。`entry_status` 判断的是“候选是否对应真实组件输入”，不是“外部攻击者是否可达”：至少一个候选能对应到真实 callback 且调用方数据能够进入组件时为 `confirmed`；所有候选均经核查排除、没有真实组件输入时为 `excluded`；受动态注册、间接调用或源码缺失影响而无法确认或排除时为 `uncertain`。多个候选按 `confirmed > uncertain > excluded` 汇总。仅有 `component_scope` 时，只要上游可调用的 callback 和输入成立也应为 `confirmed`，但不得据此声称外部可达；外部可达性由后续六维验证判断。
 2. 在本组件边界内有界追踪可控数据，允许经过本组件使用的普通 helper 和异步回调。不能全仓枚举危险 API，也不能构造 Entry 与敏感 API 的组合。
 3. 只记录实际可达的安全相关操作，以及沿途的参数转换、条件、权限检查、白名单、身份检查和源码直接可观察的效果。参数名、函数名、类型名、注释和业务词义只能产生 `effect_hypotheses`，不得写成事实或 `direct_observed_effect`。每个假设必须列出 `missing_proofs`；没有找到字段读取、控制分支和受影响操作时，效果必须保持未知。每个 安全检查 必须用 `subject_kind` 标明它实际约束的是原始调用者、直接调用者、传递参数、资源所有者还是安全边界；不要在此阶段判断其是否有效。
    - 当 `audit_scope` 包含 `CAP-DOS-001` 时，还必须检查外部输入或可重复调用是否可达未处理异常、进程终止、无界循环/递归/分配、输入规模放大的高开销解析或查询，以及可被频繁触发的线程、队列、存储、IPC 或事件资源消耗。不能只因为存在抛异常或高开销 API 就记录操作组，必须证明外部触发到失败或资源消耗的具体调用关系。

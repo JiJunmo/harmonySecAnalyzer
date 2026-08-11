@@ -264,9 +264,10 @@ def validate_exploitability(result, task, conn):
             dimension = checks.get(name, {})
             support = dimension.get("evidence", {})
             has_support = bool(support.get("semantic_refs") or support.get("verification"))
-            if dimension.get("status") == "true" and (
+            status = dimension.get("status")
+            if status in {"true", "false"} and (
                     dimension.get("evidence_level") == "hypothesis" or not has_support):
-                errors.append(f"{label}:true_dimension_evidence_insufficient:{name}")
+                errors.append(f"{label}:{status}_dimension_evidence_insufficient:{name}")
         if group.get("scope") == "cross_component" and not validation.get("principal_analysis"):
             errors.append(f"{label}:cross_component_requires_principal_analysis")
         if validation.get("capability_id") != group.get("capability_id"):
@@ -287,14 +288,46 @@ def validate_exploitability(result, task, conn):
         if (validation.get("security_check_outcome") == "effective"
                 and checks.get("security_check_bypassed_or_absent", {}).get("status") == "true"):
             errors.append(f"{label}:effective_security_check_conflicts_with_exploitability")
-        if validation.get("security_boundary", {}).get("violation") != (
-                checks.get("boundary_violated", {}).get("status") == "true"):
-            errors.append(f"{label}:boundary_dimension_mismatch")
+        guard_status = checks.get("security_check_bypassed_or_absent", {}).get("status")
+        outcome = validation.get("security_check_outcome")
+        expected_guard_status = {
+            "absent": "true", "bypassable": "true", "effective": "false", "unknown": "unknown",
+        }.get(outcome)
+        if expected_guard_status and guard_status != expected_guard_status:
+            errors.append(f"{label}:security_check_outcome_dimension_mismatch")
+
+        classification = validation.get("classification")
+        core_statuses = [checks.get(name, {}).get("status") for name in (
+            "externally_reachable", "attacker_controlled", "sink_reached",
+        )]
+        final_statuses = [checks.get(name, {}).get("status") for name in (
+            "security_check_bypassed_or_absent", "boundary_violated", "concrete_impact",
+        )]
+        if classification == "protected_exposure" and not (
+                core_statuses[:2] == ["true", "true"] and outcome == "effective"
+                and guard_status == "false"):
+            errors.append(f"{label}:protected_exposure_decision_mismatch")
+        elif classification == "no_exploitable_path" and "false" not in core_statuses:
+            errors.append(f"{label}:no_exploitable_path_requires_decisive_core_false")
+        elif classification == "benign_business_flow" and not (
+                core_statuses == ["true", "true", "true"]
+                and validation.get("business_intent", {}).get("is_public_api") is True
+                and checks.get("boundary_violated", {}).get("status") == "false"
+                and checks.get("concrete_impact", {}).get("status") == "false"):
+            errors.append(f"{label}:benign_business_flow_decision_mismatch")
+        elif classification == "residual_risk" and not (
+                core_statuses == ["true", "true", "true"] and "false" not in final_statuses):
+            errors.append(f"{label}:residual_risk_requires_established_core_path")
+        elif classification == "insufficient_evidence" and not (
+                "unknown" in core_statuses and "false" not in core_statuses):
+            errors.append(f"{label}:insufficient_evidence_requires_unknown_core_path")
     return errors
 
 
 PLACEHOLDER_PATTERN = re.compile(r"略|省略|\.\.\.|…|TODO|TBD|your[\s_-]?(?:code|command|payload)|[《<](?:填入|替换|your)[^》>]*[》>]")
-FORBIDDEN_POC_OUTPUTS = ("classification", "exploitability", "severity", "cwe", "impact")
+FORBIDDEN_POC_OUTPUTS = (
+    "classification", "exploitability", "severity", "cwe", "impact", "assurance_status",
+)
 SHELL_PREFIX = re.compile(r"^\s*(?:hdc|adb|curl|aa)\b")
 ARKTS_TRIGGER_API = re.compile(r"startAbility|rpc\.|commonEventManager|dataAbilityHelper|runJavaScript|webview|createChannel|requestSubmitJob|wifiManager")
 

@@ -334,7 +334,7 @@ class IncrementalRuntimeTest(unittest.TestCase):
             },
             "security_boundary": {
                 "type": "data_owner", "expected_boundary": "only the owner may query the record",
-                "violation": False, "reason": "owner check rejects another caller",
+                "reason": "owner check rejects another caller",
                 "evidence": evidence,
             },
             "exploitability": checks,

@@ -33,6 +33,7 @@ def poc_result_for(task, **overrides):
         "trigger": {"kind": "ability_want", "payload": {"uri": "demo://query?q=1"}},
         "language": "arkts", "code": "startAbility({ want: { uri: 'demo://query?q=1' } })",
         "expected_observation": "返回私有记录", "limitations": "未在真机验证",
+        "prerequisites": [],
         "execution_hint": {"step_by_step": ["安装 debug 包", "运行代码"],
                            "device_required": "emulator", "network_required": False},
         "symbol_refs": [], "evidence_refs": [],
@@ -58,6 +59,7 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
         self.assertIn("allowed_entry_types", poc_task["input"])
         self.assertIn("inherited_evidence", poc_task["input"])
         self.assertIn("output_contract", poc_task["input"])
+        self.assertNotIn("assurance_contract", poc_task["input"]["output_contract"])
         finding_id = poc_task["input"]["finding"]["finding_id"]
         with database(self.run / "run.db") as conn:
             row = conn.execute(
@@ -66,6 +68,7 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
             self.assertIsNotNone(row)
             payload = json.loads(row["payload_json"])
             self.assertEqual(payload["code"], "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://query?q=1'")
+            self.assertEqual(payload["assurance_status"], "generated_unverified")
 
         report = finalize_run(self.run)
         self.assertEqual(report["summary"]["poc_artifacts"], 1)
@@ -73,6 +76,7 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
         self.assertIn("#### 验证方式 / PoC", markdown)
         self.assertIn("逐步复现", markdown)
         self.assertIn("入口类型", markdown)
+        self.assertIn("已生成，未编译验证", markdown)
         html = (self.run / "report.html").read_text(encoding="utf-8")
         self.assertIn("验证方式 / PoC", html)
 
@@ -169,7 +173,7 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
         report = finalize_run(self.run)
         self.assertEqual(report["summary"]["poc_artifacts"], 0)
         markdown = (self.run / "report.md").read_text(encoding="utf-8")
-        self.assertIn("未生成 PoC", markdown)
+        self.assertIn("生成失败", markdown)
 
     def test_repairs_completed_poc_task_when_finding_changes(self):
         self.submit_semantics([self.semantic_group()])
@@ -256,7 +260,7 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
             },
             "security_boundary": {
                 "type": "data_owner", "expected_boundary": "only the owner may query the record",
-                "violation": True, "reason": "recordId is not owner-checked", "evidence": evidence,
+                "reason": "recordId is not owner-checked", "evidence": evidence,
             },
             "exploitability": checks,
             "effect_chain": {
