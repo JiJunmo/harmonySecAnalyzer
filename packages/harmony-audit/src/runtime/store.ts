@@ -13,7 +13,7 @@ import type {
   PoolClaim,
   PoolTaskHandle,
 } from "@agent-platform/core";
-import { buildCrossComponentGroup, extendPath, seedPath, type ComponentPath } from "../correlation/engine.js";
+import { buildCrossComponentGroup, extendPath, isPathControllable, seedPath, type ComponentPath } from "../correlation/engine.js";
 import { listCapabilities } from "../capabilities.js";
 import {
   attachIncrementalReport,
@@ -60,7 +60,7 @@ const executionTitle = (kind: string): string => kind === "component_semantic_an
 
 const schema = `
 PRAGMA foreign_keys=ON;
-CREATE TABLE schema_meta(version INTEGER PRIMARY KEY CHECK(version=4),contract_version TEXT NOT NULL,migrated_at TEXT NOT NULL);
+CREATE TABLE schema_meta(version INTEGER PRIMARY KEY CHECK(version=5),contract_version TEXT NOT NULL,migrated_at TEXT NOT NULL);
 CREATE TABLE runs(run_id TEXT PRIMARY KEY,target_repo TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('created','running','complete','complete_with_gaps','failed','cancelled')),error TEXT,project_model_version TEXT NOT NULL,audit_scope_json TEXT NOT NULL,resume_generation INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,finalized_at TEXT);
 CREATE TABLE tasks(task_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES runs(run_id),semantic_key TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('component_semantic_analysis','exploitability_validation','poc_generation')),subject_id TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('queued','running','completed','exhausted','cancelled')),attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0),input_json TEXT NOT NULL,result_json TEXT,error TEXT,retry_after TEXT,claimed_at TEXT,lease_expires_at TEXT,worker_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(run_id,semantic_key));
 CREATE TABLE analysis_units(component_id TEXT PRIMARY KEY,entry_id TEXT NOT NULL,input_json TEXT NOT NULL);
@@ -106,7 +106,7 @@ export class AuditStore {
   open(): Database.Database {
     const db = new Database(this.paths.db); db.pragma("foreign_keys = ON"); db.pragma("journal_mode = WAL"); db.pragma("busy_timeout = 30000");
     const version = (db.prepare("SELECT version FROM schema_meta").get() as { version: number } | undefined)?.version;
-    if (version !== 4) { db.close(); throw new AuditInvariantError("UNSUPPORTED_SCHEMA_VERSION", { version }); }
+    if (version !== 5) { db.close(); throw new AuditInvariantError("UNSUPPORTED_SCHEMA_VERSION", { version }); }
     return db;
   }
 
@@ -127,7 +127,7 @@ export class AuditStore {
     try {
       db.exec(schema);
       const stamp = now();
-      db.prepare("INSERT INTO schema_meta VALUES (?,?,?)").run(4, "audit-contract-v1", stamp);
+      db.prepare("INSERT INTO schema_meta VALUES (?,?,?)").run(5, "audit-contract-v2", stamp);
       const normalizedScope = { ...runScope, mode };
       db.prepare("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)").run(runId, resolve(target), "created", null, `project-model-v${model.schema_version}`, canonicalJson(normalizedScope), 0, stamp, stamp, null);
       const units = new Map<string, Record<string, unknown>[]>();
@@ -135,19 +135,12 @@ export class AuditStore {
         const componentId = String(entry.component_id ?? entry.candidate_id);
         const entries = units.get(componentId) ?? []; entries.push(entry); units.set(componentId, entries);
       }
-      const selectedEntryTypes = new Set(capabilityRows.filter((item) => runScope.capabilities?.includes(item.capability_id)).flatMap((item) => item.entry_types ?? []));
-      const candidateEntryTypes: Record<string, readonly string[]> = {
-        exported_component: ["exported_ability", "want"], deeplink: ["deeplink"], implicit_want: ["want"],
-        extension_uri: ["provider"], ipc_service_candidate: ["ipc_transaction"],
-        project_scope: ["project"],
-      };
       const affectedEntries = new Set((incrementalPlan?.impactPlan.affected_entries as string[] | undefined) ?? []);
       const reusableEntries = new Set((incrementalPlan?.impactPlan.reusable_entries as string[] | undefined) ?? []);
       const selected = [...units].filter(([componentId, entries]) => {
         if (mode === "incremental") return affectedEntries.has(`component:${componentId}`) || !reusableEntries.has(`component:${componentId}`);
         if (runScope.components?.length) return entries[0]?.type !== "project_scope" && (runScope.components.includes(String(entries[0]?.component_id)) || runScope.components.includes(String(entries[0]?.component_name)));
-        if (runScope.mode !== "capability") return true;
-        return entries.some((entry) => (candidateEntryTypes[String(entry.type)] ?? []).some((type) => selectedEntryTypes.has(type)));
+        return true;
       }).filter(([, entries]) => {
         const projectUnit = entries.some((entry) => entry.type === "project_scope");
         return capabilityRows.some((item) => runScope.capabilities?.includes(item.capability_id) && (item.analysis_scope === "project") === projectUnit);
@@ -305,8 +298,11 @@ export class AuditStore {
     const scope = (input.audit_scope as Record<string, unknown> | undefined) ?? {};
     const capabilities = Array.isArray(scope.capabilities) ? scope.capabilities.map(String) : [];
     const componentIds = new Set((db.prepare("SELECT component_id FROM analysis_units").all() as { component_id: string }[]).map((row) => row.component_id));
+    const externalCandidateIds = new Set(rows(input.entry_candidates)
+      .filter((row) => !["component_scope", "project_scope"].includes(String(row.type)) && typeof row.candidate_id === "string")
+      .map((row) => String(row.candidate_id)));
     const capabilityDomains = new Map(Object.entries((input.capability_domains as Record<string, string> | undefined) ?? {}));
-    validateSemanticSubmission(candidate, { taskId: String(task.task_id), entryId: String(task.subject_id), capabilities, enabledCapabilities: new Set(capabilities), componentIds, capabilityDomains });
+    validateSemanticSubmission(candidate, { taskId: String(task.task_id), entryId: String(task.subject_id), capabilities, enabledCapabilities: new Set(capabilities), componentIds, externalCandidateIds, capabilityDomains });
     const semanticId = stableId("SEM", this.runIdFrom(db), task.task_id, attempt);
     db.prepare("INSERT INTO semantic_analyses VALUES (?,?,?,?,?,?,?)").run(semanticId, task.task_id, task.subject_id, attempt, candidate.summary, canonicalJson(candidate.coverage), now());
     const collector: EvidenceCollector = new Map();
@@ -319,7 +315,7 @@ export class AuditStore {
     incomingPaths.flatMap((path) => normalizedGroups.flatMap((group) => {
       const cross = buildCrossComponentGroup(path, group); return cross ? [this.insertCrossGroup(db, semanticId, String(group.group_id), path, cross)] : [];
     }));
-    this.propagateCalls(db, task, input, calls, incomingPaths);
+    this.propagateCalls(db, task, input, candidate.coverage as Record<string, unknown>, calls, incomingPaths);
   }
 
   private normalizeSemantic(candidate: Record<string, unknown>, task: Record<string, unknown>): Record<string, unknown> {
@@ -353,23 +349,20 @@ export class AuditStore {
     return (db.prepare("SELECT payload_json FROM component_paths WHERE target_entry_id=? ORDER BY fingerprint").all(entryId) as { payload_json: string }[]).map((row) => JSON.parse(row.payload_json) as ComponentPath);
   }
 
-  private propagateCalls(db: Database.Database, task: Record<string, unknown>, input: Record<string, unknown>, calls: Record<string, unknown>[], incoming: ComponentPath[]): void {
+  private propagateCalls(db: Database.Database, task: Record<string, unknown>, input: Record<string, unknown>, coverage: Record<string, unknown>, calls: Record<string, unknown>[], incoming: ComponentPath[]): void {
     const source = db.prepare("SELECT component_id,payload_json FROM entries WHERE entry_id=?").get(task.subject_id) as { component_id: string; payload_json: string };
-    const rootEligible = (JSON.parse(source.payload_json) as Record<string, unknown>).root_eligible === true;
+    const rootEligible = (JSON.parse(source.payload_json) as Record<string, unknown>).root_eligible === true
+      && coverage.external_entry_status === "confirmed"
+      && Array.isArray(coverage.confirmed_external_candidate_ids)
+      && coverage.confirmed_external_candidate_ids.length > 0;
     for (const call of calls) {
       const targetComponentId = String(call.target_component_id);
       const unit = db.prepare("SELECT entry_id,input_json FROM analysis_units WHERE component_id=?").get(targetComponentId) as { entry_id: string; input_json: string };
       const args = { sourceEntryId: String(task.subject_id), sourceComponentId: source.component_id, sourceTaskId: String(task.task_id), targetEntryId: unit.entry_id, targetComponentId, call };
-      const paths = incoming.length ? incoming.map((path) => extendPath(path, args)) : rootEligible ? [seedPath(args)] : [];
+      const paths = (incoming.length ? incoming.map((path) => extendPath(path, args)) : rootEligible ? [seedPath(args)] : [])
+        .filter(isPathControllable);
       if (paths.length) for (const path of paths) this.persistAndDispatchPath(db, path, unit, input.target_repo);
-      else this.dispatchSemanticTarget(db, targetComponentId, unit);
     }
-  }
-
-  private dispatchSemanticTarget(db: Database.Database, targetComponentId: string, unit: { entry_id: string; input_json: string }): void {
-    const key = `semantic:${targetComponentId}`;
-    const existing = db.prepare("SELECT task_id FROM tasks WHERE run_id=? AND semantic_key=?").get(this.runIdFrom(db), key) as { task_id: string } | undefined;
-    if (!existing) db.prepare("INSERT INTO tasks(task_id,run_id,semantic_key,kind,subject_id,status,attempts,input_json,created_at,updated_at) VALUES (?,?,?,?,?,'queued',0,?,?,?)").run(stableId("TASK", this.runIdFrom(db), key), this.runIdFrom(db), key, "component_semantic_analysis", unit.entry_id, unit.input_json, now(), now());
   }
 
   private persistAndDispatchPath(db: Database.Database, path: ComponentPath, unit: { entry_id: string; input_json: string }, targetRepo: unknown): void {
@@ -386,10 +379,30 @@ export class AuditStore {
   }
 
   private correlateCompletedTarget(db: Database.Database, path: ComponentPath, targetRepo: unknown): void {
+    // Replay both local sinks and outgoing calls so correlation is independent of worker completion order.
     const semantic = db.prepare("SELECT semantic_analysis_id,task_id FROM semantic_analyses WHERE entry_id=? ORDER BY created_at DESC LIMIT 1").get(path.target_entry_id) as { semantic_analysis_id: string; task_id: string } | undefined;
     if (!semantic) return;
     const locals = db.prepare("SELECT g.group_id,g.payload_json FROM operation_groups g LEFT JOIN cross_component_groups c ON c.group_id=g.group_id WHERE g.semantic_analysis_id=? AND c.group_id IS NULL ORDER BY g.group_id").all(semantic.semantic_analysis_id) as { group_id: string; payload_json: string }[];
     locals.flatMap((row) => { const cross = buildCrossComponentGroup(path, JSON.parse(row.payload_json)); return cross ? [this.insertCrossGroup(db, semantic.semantic_analysis_id, row.group_id, path, cross)] : []; });
+    if (path.cycle) return;
+    const source = db.prepare("SELECT component_id FROM entries WHERE entry_id=?").get(path.target_entry_id) as { component_id: string } | undefined;
+    if (!source) return;
+    const calls = db.prepare("SELECT payload_json FROM component_calls WHERE semantic_analysis_id=? ORDER BY call_key").all(semantic.semantic_analysis_id) as { payload_json: string }[];
+    for (const row of calls) {
+      const call = JSON.parse(row.payload_json) as Record<string, unknown>;
+      const targetComponentId = String(call.target_component_id);
+      const unit = db.prepare("SELECT entry_id,input_json FROM analysis_units WHERE component_id=?").get(targetComponentId) as { entry_id: string; input_json: string } | undefined;
+      if (!unit) continue;
+      const continued = extendPath(path, {
+        sourceEntryId: path.target_entry_id,
+        sourceComponentId: source.component_id,
+        sourceTaskId: semantic.task_id,
+        targetEntryId: unit.entry_id,
+        targetComponentId,
+        call,
+      });
+      if (isPathControllable(continued)) this.persistAndDispatchPath(db, continued, unit, targetRepo);
+    }
   }
 
   private insertCrossGroup(db: Database.Database, semanticId: string, localGroupId: string, path: ComponentPath, group: Record<string, unknown>): Record<string, unknown> {
@@ -440,7 +453,12 @@ export class AuditStore {
       if (coverage.entry_status !== "confirmed") continue;
       if (!row.path_id) {
         const entry = db.prepare("SELECT payload_json FROM entries WHERE entry_id=?").get(row.entry_id) as { payload_json: string };
-        if ((JSON.parse(entry.payload_json) as Record<string, unknown>).root_eligible !== true) continue;
+        const entryPayload = JSON.parse(entry.payload_json) as Record<string, unknown>;
+        const projectScope = rows(entryPayload.project_candidates).some((candidate) => candidate.type === "project_scope");
+        if (!projectScope && (coverage.external_entry_status !== "confirmed"
+          || !Array.isArray(coverage.confirmed_external_candidate_ids)
+          || coverage.confirmed_external_candidate_ids.length === 0)) continue;
+        if (entryPayload.root_eligible !== true) continue;
       }
       const group = JSON.parse(row.payload_json) as Record<string, unknown>;
       const producerTaskIds = new Set<string>([row.task_id]);
@@ -548,7 +566,11 @@ export class AuditStore {
     const id = stableId("CALL", semanticId, call.call_key);
     db.prepare("INSERT INTO component_calls VALUES (?,?,?,?,?)").run(id, semanticId, call.call_key, call.target_component_id, canonicalJson(call));
     rows(call.parameter_mappings).forEach((mapping, index) => db.prepare("INSERT INTO call_parameters VALUES (?,?,?,?,?,?)").run(id, index, mapping.source_property, mapping.target_property, mapping.control_state, mapping.transform));
-    this.addRefs(db, "component_call", id, [...refs(call), ...refs((call.principal_transition as Record<string, unknown> | undefined) ?? {}), ...rows(call.security_checks).flatMap(refs)], evidence);
+    this.addRefs(db, "component_call", id, [
+      ...refs(call), ...refs((call.invocation_control as Record<string, unknown> | undefined) ?? {}),
+      ...refs((call.principal_transition as Record<string, unknown> | undefined) ?? {}),
+      ...rows(call.security_checks).flatMap(refs),
+    ], evidence);
     rows(call.security_checks).forEach((check, index) => this.insertSecurityCheck(db, { callId: id }, check, index, evidence));
   }
 

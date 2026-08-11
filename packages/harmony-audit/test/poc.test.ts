@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
 import { validatePocSubmission } from "../src/validation/submission-validator.js";
-import { admissibleRefs, effectChain, evidenceRow, sixDimensions, support } from "./p0-fixtures.js";
+import { admissibleRefs, effectChain, evidenceRow, invocationControl, semanticCoverage, sixDimensions, support } from "./p0-fixtures.js";
 
 async function fixture(abilities = `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }] } }`, components: string[] = ["A"]): Promise<{ root: string; store: AuditStore }> {
   const root = await mkdtemp(join(tmpdir(), "harmony-poc-"));
@@ -19,7 +19,7 @@ const semanticEvidence = () => [evidenceRow("entry reaches query")];
 
 const semantic = (task: Record<string, any>) => ({
   task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked",
-  coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onNewWant"], operation_sites_checked: ["A.ets:12"], unresolved_targets: [] }, component_calls: [],
+  coverage: { ...semanticCoverage(task), entry_symbols_checked: ["A.onNewWant"], operation_sites_checked: ["A.ets:12"] }, component_calls: [],
   operation_groups: [{
     group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "query injection",
     operation: { body: "query", location: "A.ets:12", evidence: semanticEvidence() }, controlled_properties: ["want.query"],
@@ -225,7 +225,7 @@ describe("poc generation phase", () => {
     const bTask = String(firstTask!.input.entry.component_name) === "B" ? firstTask! : secondTask!;
     const aResult = {
       ...semantic(aTask as Record<string, any>), operation_groups: [],
-      component_calls: [{ call_key: "a-to-b", target_component_id: bComponentId, target_symbol: "B.onCreate", transport: "startAbility", call_location: "A.ets:10", condition: "always", parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }], principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence: [] }, security_checks: [], evidence: [] }],
+      component_calls: [{ call_key: "a-to-b", target_component_id: bComponentId, target_symbol: "B.onCreate", transport: "startAbility", call_location: "A.ets:10", condition: "always", invocation_control: invocationControl(), parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }], principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence: [] }, security_checks: [], evidence: [] }],
     };
     expect(store.reconcile(aTask.task_id, aTask.attempt, aResult)).toMatchObject({ accepted: true });
     const bSemantic = semantic(bTask as Record<string, any>);

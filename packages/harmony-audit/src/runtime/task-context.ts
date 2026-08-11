@@ -32,7 +32,7 @@ export function semanticTaskInput(raw: Row, capabilities: readonly Capability[])
   const selected = new Set(strings(scope.capabilities));
   const profiles = capabilities
     .filter((item) => selected.has(item.capability_id))
-    .map((item) => ({ capability_id: item.capability_id, title: item.title ?? "", domain: item.domain ?? "", analysis_scope: item.analysis_scope ?? "component", guidance: item.guidance ?? [] }));
+    .map((item) => ({ capability_id: item.capability_id, title: item.title ?? "", domain: item.domain ?? "", entry_types: item.entry_types ?? [], analysis_scope: item.analysis_scope ?? "component", guidance: item.guidance ?? [] }));
   const candidates = rows(raw.entry_candidates);
   const first = (raw.entry as Row | undefined) ?? candidates[0] ?? {};
   const facets = candidates.map(facet);
@@ -50,8 +50,14 @@ export function semanticTaskInput(raw: Row, capabilities: readonly Capability[])
   const analysisContract: Row = {
     task_unit: "one deterministic component analysis unit",
     phases: ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_calls", "merge_equivalent_operations", "record_gaps"],
-    group_by: ["operation_location", "controlled_properties"],
+    group_by: ["capability", "operation_location", "controlled_properties", "security_semantics"],
     stop_at: "component_call",
+    component_call_control: {
+      invocation_control: "whether the current component input controls reaching the component call",
+      parameter_mappings: "data mappings only; may be empty",
+    },
+    capability_entry_types: "priority hints for investigation, never component exclusion rules",
+    minimum_evidence_chain: "omit only irrelevant nodes; retain every branch, transform and security check that can change later validation",
     forbidden_outputs: ["classification", "exploitability", "severity", "cwe", "poc"],
     evidence_model: {
       facts: "only directly observed source facts",
@@ -87,7 +93,7 @@ export function validationTaskInput(db: Database.Database, raw: Row, entryId: st
     for (const check of rows(group.security_checks)) if (typeof check.location === "string") locations.add(check.location);
     for (const branch of rows(group.branches)) for (const location of strings(branch.locations)) locations.add(location);
   }
-  const selectedCoverage = Object.fromEntries(["entry_status", "entry_notes", "unresolved_targets"]
+  const selectedCoverage = Object.fromEntries(["entry_status", "external_entry_status", "confirmed_external_candidate_ids", "entry_notes", "unresolved_targets"]
     .filter((key) => coverage[key] !== undefined).map((key) => [key, coverage[key]]));
   const targetRepo = String(((raw.verification_scope as Row | undefined) ?? {}).target_repo ?? "");
   return {
@@ -98,6 +104,9 @@ export function validationTaskInput(db: Database.Database, raw: Row, entryId: st
       hypothesis_only_evidence_cannot_support_validation: true,
       new_source_evidence_is_inline_and_runtime_numbered: true,
       dimensions_require_status_reason_evidence_level_and_support: true,
+      attacker_controlled_accepts: ["security_critical_parameter", "operation_invocation"],
+      source_read_scope: "all implementations needed to prove or disprove this operation group, including callers, callees, inheritance, dependencies and component-chain endpoints",
+      forbidden_scope_expansion: ["discover_independent_operation", "create_operation_group", "construct_new_path", "rewrite_semantic_facts"],
       confirmed_effect_chain: ["controlled_value_use", "security_behavior_change", "protected_operation", "concrete_impact"],
       confirmed_effect_chain_requires_fresh_validation_evidence: true,
       poc_produced_by_later_phase: true,

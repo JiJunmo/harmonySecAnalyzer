@@ -7,10 +7,11 @@ import { HarmonyAuditGraphPlugin } from "../src/graph.js";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
 import type { HarmonyPoolBackend } from "../src/pool-backend.js";
+import { semanticCoverage } from "./p0-fixtures.js";
 
 const emptySemantic = (instance: SubAgentInstance) => {
   const input = instance.handle.input as Record<string, unknown>;
-  return { task_id: instance.taskId, entry_id: (input.entry as Record<string, unknown>).candidate_id, summary: "checked", coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onCreate"], operation_sites_checked: [], unresolved_targets: [] }, operation_groups: [], component_calls: [] };
+  return { task_id: instance.taskId, entry_id: (input.entry as Record<string, unknown>).candidate_id, summary: "checked", coverage: semanticCoverage({ input }), operation_groups: [], component_calls: [] };
 };
 
 describe("Harmony LangGraph plugin", () => {

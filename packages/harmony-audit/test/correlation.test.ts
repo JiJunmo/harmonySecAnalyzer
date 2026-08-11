@@ -3,19 +3,19 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildCrossComponentGroup, extendPath, seedPath } from "../src/correlation/engine.js";
+import { buildCrossComponentGroup, extendPath, isPathControllable, seedPath } from "../src/correlation/engine.js";
 import { profileProject, type ProjectModel } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
+import { invocationControl, semanticCoverage } from "./p0-fixtures.js";
 
-const coverage = { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["onCreate"], operation_sites_checked: [], unresolved_targets: [] };
 const principal = (caller: string, observed: string, binding: "preserved" | "replaced_by_caller" = "preserved") => ({ caller_principal: caller, callee_observed_principal: observed, origin_binding: binding, authority_used: binding === "preserved" ? "origin" : "source_component", evidence: [] });
 const mapping = (source: string, target: string, state: "preserved" | "constrained" | "constant" | "unknown" = "preserved") => ({ source_property: source, target_property: target, control_state: state, transform: state === "constrained" ? "allowlist" : "none" });
 const call = (key: string, target: string, sourceProperty: string, targetProperty: string, binding: "preserved" | "replaced_by_caller" = "preserved") => ({
   call_key: key, target_component_id: target, target_symbol: "Target.onCreate", transport: "startAbility", call_location: `${key}.ets:10`, condition: "always",
-  parameter_mappings: [mapping(sourceProperty, targetProperty)], principal_transition: principal("external", binding === "preserved" ? "external" : "source-component", binding), security_checks: [], evidence: [],
+  invocation_control: invocationControl(), parameter_mappings: [mapping(sourceProperty, targetProperty)], principal_transition: principal("external", binding === "preserved" ? "external" : "source-component", binding), security_checks: [], evidence: [],
 });
 const semantic = (task: Record<string, any>, calls: Record<string, unknown>[] = [], groups: Record<string, unknown>[] = []) => ({
-  task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage, operation_groups: groups, component_calls: calls,
+  task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: semanticCoverage(task), operation_groups: groups, component_calls: calls,
 });
 const group = (key: string, property: string) => ({
   group_key: key, category: "injection", capability_id: "CAP-INJ-001", title: "query", operation: { body: "query", location: "Sink.ets:20", evidence: [] },
@@ -49,6 +49,25 @@ describe("deterministic cross-component correlation", () => {
     expect(buildCrossComponentGroup(cycle, group("sink", "x"))).toBeUndefined();
   });
 
+  it("connects a caller-controlled invocation without inventing parameter flow", () => {
+    const triggerOnly = { ...call("ab", "CMP-B", "unused", "unused"), parameter_mappings: [] };
+    const path = seedPath({ sourceEntryId: "PE-A", sourceComponentId: "CMP-A", sourceTaskId: "TASK-A", targetEntryId: "PE-B", targetComponentId: "CMP-B", call: triggerOnly });
+    expect(isPathControllable(path)).toBe(true);
+    expect(buildCrossComponentGroup(path, { ...group("reset", "unused"), controlled_properties: [] }))
+      .toMatchObject({ control_mode: "invocation", controlled_properties: ["$invocation"] });
+  });
+
+  it("does not propagate independent invocation or constant parameters", () => {
+    const blocked = {
+      ...call("ab", "CMP-B", "x", "y"),
+      invocation_control: invocationControl("independent"),
+      parameter_mappings: [mapping("x", "y", "constant")],
+    };
+    const path = seedPath({ sourceEntryId: "PE-A", sourceComponentId: "CMP-A", sourceTaskId: "TASK-A", targetEntryId: "PE-B", targetComponentId: "CMP-B", call: blocked });
+    expect(isPathControllable(path)).toBe(false);
+    expect(buildCrossComponentGroup(path, { ...group("reset", "unused"), controlled_properties: [] })).toBeUndefined();
+  });
+
   it("persists multi-hop paths and materializes cross-component groups", async () => {
     const { model, store } = await project(["A", "B", "C"]); const b = component(model, "B"); const c = component(model, "C");
     const [aTask] = (await store.claim(1)).tasks;
@@ -60,6 +79,27 @@ describe("deterministic cross-component correlation", () => {
     expect(paths).toHaveLength(2); expect(paths[1].component_ids).toHaveLength(3);
     expect(paths[1].parameter_chains[0]).toMatchObject({ origin_property: "want.input", current_property: "query" });
     expect((db.prepare("SELECT COUNT(*) n FROM cross_component_groups").get() as { n: number }).n).toBe(1);
+    expect(db.pragma("foreign_key_check") as unknown[]).toHaveLength(0); db.close();
+  });
+
+  it("completes a multi-hop path when downstream components finish first", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harmony-correlation-reverse-")); await mkdir(join(root, "entry/src/main"), { recursive: true });
+    await writeFile(join(root, "entry/src/main/module.json5"), `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }, { name: 'B', exported: true }, { name: 'C', exported: true }] } }`);
+    const model = await profileProject(root); const a = component(model, "A"); const b = component(model, "B"); const c = component(model, "C");
+    const store = await AuditStore.create(root, model, { mode: "capability", capabilities: ["CAP-INJ-001"] });
+    const tasks = (await store.claim(5)).tasks;
+    const byName = new Map(tasks.map((task) => [String(task.input.entry.component_name), task]));
+    const aTask = byName.get("A")!; const bTask = byName.get("B")!; const cTask = byName.get("C")!;
+
+    expect(store.reconcile(bTask.task_id, bTask.attempt, semantic(bTask as Record<string, any>, [call("bc", c, "want.forwarded", "query")]))).toMatchObject({ accepted: true });
+    expect(store.reconcile(cTask.task_id, cTask.attempt, semantic(cTask as Record<string, any>, [], [group("c-query", "query")]))).toMatchObject({ accepted: true });
+    expect(store.reconcile(aTask.task_id, aTask.attempt, semantic(aTask as Record<string, any>, [call("ab", b, "want.input", "want.forwarded")]))).toMatchObject({ accepted: true });
+
+    const db = new Database(store.paths.db);
+    const paths = (db.prepare("SELECT payload_json FROM component_paths").all() as { payload_json: string }[]).map((row) => JSON.parse(row.payload_json));
+    expect(paths).toEqual(expect.arrayContaining([expect.objectContaining({ component_ids: [a, b, c] })]));
+    const groups = (db.prepare("SELECT g.payload_json FROM cross_component_groups c JOIN operation_groups g ON g.group_id=c.group_id").all() as { payload_json: string }[]).map((row) => JSON.parse(row.payload_json));
+    expect(groups).toEqual(expect.arrayContaining([expect.objectContaining({ path_context: expect.objectContaining({ component_ids: [a, b, c] }) })]));
     expect(db.pragma("foreign_key_check") as unknown[]).toHaveLength(0); db.close();
   });
 

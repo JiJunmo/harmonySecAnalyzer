@@ -12,7 +12,7 @@
 | Semantic/Validation/PoC Schema | 已对齐 | 三份 Agent submission Schema 与 v3.1 文件内容一致（内联证据模型）。 |
 | 证据契约 | 已对齐 | 三阶段统一为内联证据：模型不创建证据 ID、不输出顶层 `evidence` 目录；运行时按内容哈希编号去重并落 `evidence_refs` 连接表；验证阶段 `semantic_refs` 只能引用本组 `evidence_scope.admissible`，hypothesis-only 证据不可支撑结论；PoC `evidence_refs` 只能引用继承证据，每个 `symbol_ref` 必须携带内联证据。作用域 ID 使用 local id（v3.2 有意分叉，全局 id 仍由 local→global 映射，行为等价）。错误码统一为大写枚举。 |
 | Project Profiler 主模型 | 已对齐并扩展 | JSON5、构建模块、组件、入口和依赖语义保持一致；v3.2 增加生成元数据和权限投影。 |
-| 初始范围 | 已对齐并扩展 | Component 过滤优先；Capability 模式按 `entry_types` 选择初始根；隐私、网络、密码和原生依赖进入唯一项目级分析单元，避免逐组件重复全仓扫描。 |
+| 初始范围 | 已对齐并扩展 | Component 过滤优先；Capability 模式按 `analysis_scope` 分流，组件能力分析全部 Manifest 组件，项目能力进入唯一项目级分析单元。`entry_types` 只作为 Agent 的常见入口优先提示，不排除组件。 |
 | 组件任务单位 | 已对齐 | 同一组件的 Manifest 候选归为一个语义任务；下游组件按已证明调用扩展。 |
 | Agent 任务文档 | 已对齐 | 注入 entry facets/project candidates、`capability_id/title/domain`、analysis contract、组件目录、upstream context 和 previous error。 |
 | Runtime Normalization | 已对齐 | 修正 entry、能力 domain、受控属性、等价 Group/Call、参数映射和空白验证字段；Operation Fact 携带组证据，edges 由运行时在落库物化时从有序 facts 确定性重建。 |

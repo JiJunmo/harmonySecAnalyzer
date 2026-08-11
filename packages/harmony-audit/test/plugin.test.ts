@@ -20,6 +20,19 @@ async function projectFixture(): Promise<string> {
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
 describe("HarmonyAuditPlugin adapter", () => {
+  it("defines component scope by manifest identity rather than source ownership", async () => {
+    const skill = await readFile(new URL("../resources/skills/harmony-component-analysis/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toContain("不按源码目录、构建模块、依赖包、类名或类继承关系划分");
+    expect(skill).toContain("import、依赖包调用、继承、组合对象、普通函数调用和 `super` 调用都不是组件跳转");
+    expect(skill).toContain("不得把缺少源码解释为没有行为");
+    expect(skill).toContain("`external_entry_status`");
+    expect(skill).toContain("`invocation_control`");
+    expect(skill).toContain("笛卡尔组合");
+    expect(skill).toContain("入口类型，不是组件排除条件");
+    const validator = await readFile(new URL("../resources/skills/harmony-exploitability-validation/SKILL.md", import.meta.url), "utf8");
+    expect(validator).toContain("不得把该限制解释为禁止读取当前组定性所需的链路源码");
+  });
+
   it("reports Atlas, Pi model and bundled Skill readiness before a run", async () => {
     const root = await projectFixture();
     const agentDir = join(root, "pi-agent");

@@ -26,7 +26,8 @@ export function collectCoverageGaps(db: Database.Database): CoverageGap[] {
   for (const task of db.prepare("SELECT task_id,kind,subject_id,attempts,error FROM tasks WHERE status='exhausted' AND kind NOT IN ('exploitability_validation','poc_generation') ORDER BY task_id").all() as Row[]) gaps.push({ kind: "exhausted_task", subject_id: String(task.task_id), details: task });
   for (const row of db.prepare("SELECT s.entry_id,s.coverage_json FROM semantic_analyses s ORDER BY s.entry_id").all() as { entry_id: string; coverage_json: string }[]) {
     const coverage = object(parse(row.coverage_json)); const unresolved = Array.isArray(coverage.unresolved_targets) ? coverage.unresolved_targets : [];
-    if (coverage.entry_status === "uncertain") gaps.push({ kind: "uncertain_entry", subject_id: row.entry_id, details: coverage.entry_notes ?? [] });
+    if (coverage.entry_status === "uncertain") gaps.push({ kind: "uncertain_component_input", subject_id: row.entry_id, details: coverage.entry_notes ?? [] });
+    if (coverage.external_entry_status === "uncertain") gaps.push({ kind: "uncertain_external_entry", subject_id: row.entry_id, details: coverage.entry_notes ?? [] });
     if (unresolved.length) gaps.push({ kind: "unresolved_targets", subject_id: row.entry_id, details: unresolved });
   }
   const requiredGroups = new Map<string, Row>();
@@ -49,6 +50,7 @@ const classificationRank = ["confirmed_vulnerability", "residual_risk", "insuffi
 function componentStatus(entryId: string, coverage: Row, groups: Row[]): string {
   const classifications = new Set(groups.filter((group) => group.entry_id === entryId).map((group) => String(group.classification ?? "verification_incomplete")));
   for (const value of classificationRank) if (classifications.has(value)) return value;
+  if (coverage.external_entry_status === "excluded") return "external_entry_excluded";
   if (classifications.has("verification_incomplete")) return "verification_incomplete";
   if (coverage.entry_status === "excluded") return "entry_excluded";
   if (coverage.entry_status === "uncertain") return "entry_uncertain";
@@ -73,8 +75,15 @@ export function buildReportModel(db: Database.Database, status: "complete" | "co
       local_group_id: row.local_group_id ?? null, payload: parse(row.payload_json),
     }));
   const validations: Row[] = (db.prepare("SELECT validation_id,task_id,group_id,classification,capability_id,payload_json FROM validation_results ORDER BY validation_id").all() as Row[]).map((row) => { const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson) }; });
+  const requiredGroupIds = new Set((db.prepare("SELECT input_json FROM tasks WHERE kind='exploitability_validation' AND NOT (status='cancelled' AND error='superseded_by_group_validation_tasks')").all() as { input_json: string }[])
+    .flatMap((task) => operationGroups(task.input_json)).map((group) => String(group.group_id)));
   const validationByGroup = new Map(validations.map((validation) => [String(validation.group_id), validation]));
-  for (const group of groups) { const validation = validationByGroup.get(String(group.group_id)); group.classification = validation?.classification ?? "verification_incomplete"; group.validation = validation ?? null; }
+  for (const group of groups) {
+    const validation = validationByGroup.get(String(group.group_id));
+    group.classification = validation?.classification
+      ?? (requiredGroupIds.has(String(group.group_id)) ? "verification_incomplete" : "not_externally_reachable");
+    group.validation = validation ?? null;
+  }
   const findings: Row[] = (db.prepare("SELECT finding_id,root_cause_key,title,classification,severity,cwe,impact,payload_json FROM findings ORDER BY finding_id").all() as Row[]).map((row) => {
     const { payload_json: payloadJson, ...rest } = row; return { ...rest, payload: parse(payloadJson),
       causes: (db.prepare("SELECT validation_id FROM finding_causes WHERE finding_id=? ORDER BY validation_id").all(row.finding_id) as { validation_id: string }[]).map((cause) => cause.validation_id) };
@@ -108,7 +117,8 @@ export function buildReportModel(db: Database.Database, status: "complete" | "co
     const coverage = object(entry.coverage); const relatedGroups = groups.filter((group) => group.entry_id === entry.entry_id);
     const notes: string[] = [];
     if (!entry.semantic_analysis_id) notes.push("组件语义分析未完成，当前结论不能视为安全证明。");
-    if (coverage.entry_status === "uncertain") notes.push("真实入口状态仍不确定，需要人工核对触发方式与回调实现。");
+    if (coverage.entry_status === "uncertain") notes.push("组件输入状态仍不确定，需要人工核对触发方式与回调实现。");
+    if (coverage.external_entry_status === "uncertain") notes.push("外部入口状态仍不确定，本次不会把该组件作为攻击路径起点。");
     if (Array.isArray(coverage.unresolved_targets) && coverage.unresolved_targets.length) notes.push("存在未解析调用目标，可能影响跨组件覆盖完整性。");
     if (entry.semantic_analysis_id && !relatedGroups.length) notes.push("已检查范围内未识别到安全相关操作，建议结合组件业务功能复核。");
     const payload = object(entry.entry);

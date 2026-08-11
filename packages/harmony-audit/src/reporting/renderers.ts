@@ -12,12 +12,15 @@ const labels: Record<string, string> = {
   complete: "已完成", complete_with_gaps: "完成（存在覆盖缺口）", failed: "失败", cancelled: "已取消", running: "运行中",
   confirmed_vulnerability: "已确认漏洞", residual_risk: "残余风险", insufficient_evidence: "证据不足",
   protected_exposure: "已有有效防护", no_exploitable_path: "未形成可利用路径", benign_business_flow: "正常业务行为", verification_incomplete: "验证未完成",
-  no_security_relevant_operation: "未发现安全相关操作", entry_excluded: "入口已排除", entry_uncertain: "入口状态不确定",
+  not_externally_reachable: "未形成外部攻击路径",
+  no_security_relevant_operation: "未发现安全相关操作", entry_excluded: "组件输入已排除", entry_uncertain: "组件输入状态不确定",
+  external_entry_excluded: "未确认外部入口",
   confirmed: "已确认", excluded: "已排除", uncertain: "不确定", cross_component: "跨组件", local: "组件内",
   critical: "严重", high: "高危", medium: "中危", low: "低危", info: "提示",
   filesystem: "文件系统", injection: "注入", web: "Web 安全", icc: "组件通信", provider: "数据提供", ipc_rpc: "IPC/RPC",
   archive: "压缩包", privacy: "隐私", network: "网络", crypto: "密码学", distributed: "分布式", native_dependency: "Native 与依赖",
-  exhausted_task: "任务达到最大重试次数", uncertain_entry: "入口状态不确定", unresolved_targets: "存在未解析调用目标",
+  exhausted_task: "任务达到最大重试次数", uncertain_component_input: "组件输入状态不确定",
+  uncertain_external_entry: "外部入口状态不确定", unresolved_targets: "存在未解析调用目标",
   unvalidated_operation_group: "安全相关操作未完成六维验证",
   absent: "未发现有效防护", bypassable: "防护可绕过", effective: "防护有效", unknown: "无法确认",
   direct: "直接证据", derived: "基于源码推导", hypothesis: "待验证假设",
@@ -172,7 +175,7 @@ export function renderMarkdown(report: Row): string {
       "#### 六维有效性验证", "",
       "| 维度 | 结果 | 依据 |", "|---|---|---|",
       `| 外部可达 | ${yesNo(exploitability.externally_reachable)} | ${inlineMd(dimensionBasis(exploitability.externally_reachable))} |`,
-      `| 关键参数可控 | ${yesNo(exploitability.attacker_controlled)} | ${inlineMd(dimensionBasis(exploitability.attacker_controlled))} |`,
+      `| 操作触发或关键参数受控 | ${yesNo(exploitability.attacker_controlled)} | ${inlineMd(dimensionBasis(exploitability.attacker_controlled))} |`,
       `| 可达敏感操作 | ${yesNo(exploitability.sink_reached)} | ${inlineMd(dimensionBasis(exploitability.sink_reached))} |`,
       `| 防护缺失或可绕过 | ${yesNo(exploitability.security_check_bypassed_or_absent)} | ${inlineMd(dimensionBasis(exploitability.security_check_bypassed_or_absent))} |`,
       `| 安全边界被突破 | ${yesNo(exploitability.boundary_violated)} | ${inlineMd(dimensionBasis(exploitability.boundary_violated))} |`,
@@ -201,7 +204,8 @@ export function renderMarkdown(report: Row): string {
       `### 3.${index + 1} ${inlineMd(component.component_name || component.entry_id)}`, "",
       `- 审计结论：**${label(component.status)}**`, `- 所属模块：\`${codeMd(component.module_name || component.module_id || "-")}\``,
       `- 源码入口：\`${codeMd(component.source || "-")}\``, `- 是否导出：${component.exported === true ? "是" : component.exported === false ? "否" : "未知"}`,
-      `- 组件功能：${inlineMd(component.function_summary)}`, `- 入口状态：${label(componentCoverage.entry_status)}`,
+      `- 组件功能：${inlineMd(component.function_summary)}`, `- 组件输入状态：${label(componentCoverage.entry_status)}`,
+      `- 外部入口状态：${label(componentCoverage.external_entry_status)}`,
       `- 已检查入口：${mdList(componentCoverage.entry_symbols_checked)}`, `- 已检查操作位置：${mdList(componentCoverage.operation_sites_checked)}`, "",
       "#### 安全相关操作与验证", "",
     );
@@ -244,7 +248,7 @@ export function renderMarkdown(report: Row): string {
 
 const badge = (value: unknown) => `<span class="badge ${escapeHtml(value)}">${escapeHtml(label(value))}</span>`;
 const codeList = (value: unknown) => strings(value).length ? strings(value).map((item) => `<code>${escapeHtml(item)}</code>`).join(" ") : '<span class="muted">无</span>';
-const dimensionNames: Record<string, string> = { externally_reachable: "外部可达", attacker_controlled: "关键参数可控", sink_reached: "到达敏感操作", security_check_bypassed_or_absent: "防护缺失或可绕过", boundary_violated: "突破安全边界", concrete_impact: "存在具体影响" };
+const dimensionNames: Record<string, string> = { externally_reachable: "外部可达", attacker_controlled: "操作触发或关键参数受控", sink_reached: "到达敏感操作", security_check_bypassed_or_absent: "防护缺失或可绕过", boundary_violated: "突破安全边界", concrete_impact: "存在具体影响" };
 
 export function renderHtml(report: Row): string {
   const data = reportData(report); const { run, summary, project, coverage, findings, validations, groups, components, paths, matrix, evidence, taskCounts } = data;
@@ -280,7 +284,7 @@ export function renderHtml(report: Row): string {
   const componentHtml = components.map((component) => { const c = obj(component.coverage); const operationGroups = rows(component.operation_groups);
     const operations = operationGroups.map((group) => { const payload = obj(group.payload); const operation = obj(payload.operation); const validation = obj(group.validation); const assessment = obj(validation.payload); return `<div class="operation"><div><strong>${escapeHtml(group.title)}</strong>${badge(group.classification)}</div><dl class="kv"><dt>敏感操作</dt><dd><code>${escapeHtml(operation.body || "-")}</code></dd><dt>源码位置</dt><dd><code>${escapeHtml(operation.location || "-")}</code></dd><dt>受控属性</dt><dd>${codeList(payload.controlled_properties)}</dd><dt>验证结论</dt><dd>${escapeHtml(assessment.impact || assessment.demotion_reason || assessment.evidence_gap || "尚未完成六维验证")}</dd></dl></div>`; }).join("") || '<p class="muted">未识别到可达的安全相关操作。</p>';
     const notes = strings(component.review_notes).map((note) => `<li>${escapeHtml(note)}</li>`).join("");
-    return `<details class="component" data-search="${escapeHtml([component.component_name, component.module_name, component.function_summary, component.status].join(" ").toLowerCase())}"><summary><div>${badge(component.status)}<strong>${escapeHtml(component.component_name || component.entry_id)}</strong><span>${escapeHtml(component.module_name || component.module_id || "-")}</span></div><p>${escapeHtml(component.function_summary)}</p><b>${operationGroups.length} 项安全相关操作</b></summary><div class="component-body"><div class="grid-2"><dl class="kv"><dt>源码入口</dt><dd><code>${escapeHtml(component.source || "-")}</code></dd><dt>是否导出</dt><dd>${component.exported === true ? "是" : component.exported === false ? "否" : "未知"}</dd><dt>入口状态</dt><dd>${escapeHtml(label(c.entry_status))}</dd><dt>初始审计范围</dt><dd>${component.initial_scope ? "是" : "由路径扩展发现"}</dd></dl><dl class="kv"><dt>已检查入口</dt><dd>${codeList(c.entry_symbols_checked)}</dd><dt>操作位置</dt><dd>${codeList(c.operation_sites_checked)}</dd><dt>未解析目标</dt><dd>${codeList(c.unresolved_targets)}</dd></dl></div><h4>安全相关操作与验证</h4>${operations}${notes ? `<h4>人工复核提示</h4><ul class="notes">${notes}</ul>` : ""}</div></details>`;
+    return `<details class="component" data-search="${escapeHtml([component.component_name, component.module_name, component.function_summary, component.status].join(" ").toLowerCase())}"><summary><div>${badge(component.status)}<strong>${escapeHtml(component.component_name || component.entry_id)}</strong><span>${escapeHtml(component.module_name || component.module_id || "-")}</span></div><p>${escapeHtml(component.function_summary)}</p><b>${operationGroups.length} 项安全相关操作</b></summary><div class="component-body"><div class="grid-2"><dl class="kv"><dt>源码入口</dt><dd><code>${escapeHtml(component.source || "-")}</code></dd><dt>是否导出</dt><dd>${component.exported === true ? "是" : component.exported === false ? "否" : "未知"}</dd><dt>组件输入状态</dt><dd>${escapeHtml(label(c.entry_status))}</dd><dt>外部入口状态</dt><dd>${escapeHtml(label(c.external_entry_status))}</dd><dt>初始审计范围</dt><dd>${component.initial_scope ? "是" : "由路径扩展发现"}</dd></dl><dl class="kv"><dt>已检查入口</dt><dd>${codeList(c.entry_symbols_checked)}</dd><dt>操作位置</dt><dd>${codeList(c.operation_sites_checked)}</dd><dt>未解析目标</dt><dd>${codeList(c.unresolved_targets)}</dd></dl></div><h4>安全相关操作与验证</h4>${operations}${notes ? `<h4>人工复核提示</h4><ul class="notes">${notes}</ul>` : ""}</div></details>`;
   }).join("");
 
   const pathHtml = paths.map((path) => { const payload = obj(path.payload); const related = groups.filter((group) => group.path_id === path.path_id); return `<details class="path"><summary><span>${badge(related[0]?.classification || "verification_incomplete")}<strong>${escapeHtml(path.root_entry_id)} → ${escapeHtml(path.target_entry_id)}</strong></span><code>${escapeHtml(path.path_id)}</code></summary><div class="path-body"><dl class="kv"><dt>组件链</dt><dd>${codeList(payload.component_ids)}</dd><dt>入口链</dt><dd>${codeList(payload.entry_ids)}</dd><dt>调用链</dt><dd>${codeList(payload.call_keys)}</dd><dt>来源主体</dt><dd>${escapeHtml(obj(payload.principal_state).origin_principal || "-")}</dd><dt>目标观察主体</dt><dd>${escapeHtml(obj(payload.principal_state).target_observed_principal || "-")}</dd><dt>权限使用</dt><dd>${escapeHtml(obj(payload.principal_state).authority_used || "-")}</dd></dl>${rows(payload.parameter_chains).length ? `<h4>参数传递链</h4>${rows(payload.parameter_chains).map((chain) => `<div class="fact"><strong>${escapeHtml(chain.origin_property)} → ${escapeHtml(chain.current_property)}</strong><p>${escapeHtml(strings(chain.transforms).join(" → "))}</p><small>控制状态：${escapeHtml(chain.control_state)}</small></div>`).join("")}` : ""}</div></details>`; }).join("") || '<div class="empty">未形成跨组件路径</div>';

@@ -1,6 +1,28 @@
 export type Row = Record<string, unknown>;
 export type DimensionStatus = true | false | "unknown";
 
+export function semanticCoverage(task: Record<string, any>, entryStatus = "confirmed", externalStatus?: string) {
+  const entry = (task.input?.entry ?? {}) as Record<string, any>;
+  const candidates = (entry.project_candidates ?? task.input?.entry_candidates ?? []) as Record<string, any>[];
+  const externalIds = candidates
+    .filter((candidate) => !["component_scope", "project_scope"].includes(String(candidate.type)) && typeof candidate.candidate_id === "string")
+    .map((candidate) => String(candidate.candidate_id)).sort();
+  const resolvedExternal = externalStatus ?? (entryStatus === "excluded" || !externalIds.length ? "excluded" : entryStatus);
+  return {
+    entry_status: entryStatus,
+    external_entry_status: resolvedExternal,
+    confirmed_external_candidate_ids: resolvedExternal === "confirmed" ? externalIds : [],
+    entry_notes: [],
+    entry_symbols_checked: entryStatus === "confirmed" ? [String(entry.component_name ?? "A") + ".onCreate"] : [],
+    operation_sites_checked: [],
+    unresolved_targets: [],
+  };
+}
+
+export function invocationControl(state: "preserved" | "constrained" | "independent" | "unknown" = "preserved") {
+  return { control_state: state, condition: state === "constrained" ? "guarded branch" : "caller selects call", evidence: [] };
+}
+
 export function evidenceRow(summary = "六维阶段重新读取并核验完整效果链", location = "A.ets:12") {
   return { kind: "atlas_source", source: "atlas", summary, location };
 }

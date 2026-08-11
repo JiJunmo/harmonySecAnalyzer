@@ -11,7 +11,8 @@ function refs(value: Row): string[] { return strings(value.evidence_refs); }
 
 export interface SemanticValidationContext {
   taskId: string; entryId: string; capabilities: readonly string[]; enabledCapabilities: ReadonlySet<string>;
-  componentIds: ReadonlySet<string>; capabilityDomains?: ReadonlyMap<string, string>;
+  componentIds: ReadonlySet<string>; externalCandidateIds: ReadonlySet<string>;
+  capabilityDomains?: ReadonlyMap<string, string>;
 }
 
 export function validateSemanticSubmission(candidate: Row, context: SemanticValidationContext): void {
@@ -20,6 +21,16 @@ export function validateSemanticSubmission(candidate: Row, context: SemanticVali
   const coverage = (candidate.coverage as Row | undefined) ?? {};
   if (coverage.entry_status === "confirmed") invariant(strings(coverage.entry_symbols_checked).length > 0, "CONFIRMED_ENTRY_SYMBOL_MISSING");
   if (coverage.entry_status === "excluded") invariant(rows(candidate.operation_groups).length === 0 && rows(candidate.component_calls).length === 0, "EXCLUDED_ENTRY_HAS_OUTPUTS");
+  if (coverage.entry_status === "excluded") invariant(coverage.external_entry_status === "excluded", "EXCLUDED_ENTRY_HAS_EXTERNAL_ENTRY");
+  const confirmedExternal = strings(coverage.confirmed_external_candidate_ids);
+  if (coverage.external_entry_status === "confirmed") {
+    invariant(coverage.entry_status === "confirmed", "CONFIRMED_EXTERNAL_ENTRY_REQUIRES_COMPONENT_INPUT");
+    invariant(confirmedExternal.length > 0, "CONFIRMED_EXTERNAL_ENTRY_CANDIDATE_MISSING");
+  } else {
+    invariant(confirmedExternal.length === 0, "UNCONFIRMED_EXTERNAL_ENTRY_HAS_CANDIDATES");
+  }
+  if (!context.externalCandidateIds.size) invariant(coverage.external_entry_status === "excluded", "NO_EXTERNAL_CANDIDATE_REQUIRES_EXCLUDED_STATUS");
+  invariant(confirmedExternal.every((id) => context.externalCandidateIds.has(id)), "UNKNOWN_CONFIRMED_EXTERNAL_CANDIDATE", { confirmedExternal });
 
   const groupKeys = rows(candidate.operation_groups).map((group) => String(group.group_key ?? ""));
   invariant(groupKeys.every(Boolean) && unique(groupKeys), "DUPLICATE_LOCAL_ID", { entity: "operation_group" });
@@ -48,6 +59,8 @@ export function validateSemanticSubmission(candidate: Row, context: SemanticVali
     for (const mapping of rows(call.parameter_mappings)) {
       invariant(["preserved", "constrained", "constant", "unknown"].includes(String(mapping.control_state)), "INVALID_PARAMETER_MAPPING", mapping);
     }
+    const invocation = (call.invocation_control as Row | undefined) ?? {};
+    invariant(["preserved", "constrained", "independent", "unknown"].includes(String(invocation.control_state)), "INVALID_INVOCATION_CONTROL", invocation);
   }
 }
 

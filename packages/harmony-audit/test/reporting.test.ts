@@ -5,12 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
-import { admissibleRefs, effectChain, sixDimensions, support } from "./p0-fixtures.js";
+import { admissibleRefs, effectChain, invocationControl, semanticCoverage, sixDimensions, support } from "./p0-fixtures.js";
 
-const coverage = { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["onCreate"], operation_sites_checked: ["B.ets:20"], unresolved_targets: [] };
 const call = (target: string) => ({
   call_key: "a-to-b", target_component_id: target, target_symbol: "B.onCreate", transport: "startAbility", call_location: "A.ets:10", condition: "always",
-  parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }],
+  invocation_control: invocationControl(), parameter_mappings: [{ source_property: "want.input", target_property: "want.forwarded", control_state: "preserved", transform: "none" }],
   principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence: [] }, security_checks: [], evidence: [],
 });
 const group = {
@@ -18,7 +17,7 @@ const group = {
   context: { external_actor: "third-party app", intended_behavior: "query public records", protected_assets: ["private records"], direct_observed_effect: null, effect_hypotheses: [], evidence: [] },
   branches: [{ condition: "always", locations: ["B.ets:20"], evidence: [] }], facts: [{ fact_key: "sink", type: "operation", body: "query", evidence: [] }], security_checks: [],
 };
-const semantic = (task: Record<string, any>, calls: Record<string, unknown>[], groups: Record<string, unknown>[], customCoverage = coverage) => ({ task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: customCoverage, operation_groups: groups, component_calls: calls });
+const semantic = (task: Record<string, any>, calls: Record<string, unknown>[], groups: Record<string, unknown>[], customCoverage = semanticCoverage(task)) => ({ task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: customCoverage, operation_groups: groups, component_calls: calls });
 
 function confirmed(groupInput: Record<string, any>): Record<string, unknown> {
   const cross = groupInput.scope === "cross_component"; const principal = groupInput.principal_state as Record<string, unknown> | undefined;
@@ -101,11 +100,11 @@ describe("deterministic reporting", () => {
 
   it("marks uncertain and unresolved coverage complete_with_gaps", async () => {
     const { store } = await twoComponentStore(); const [task] = (await store.claim(1)).tasks;
-    const uncertain = { entry_status: "uncertain", entry_notes: ["callback unresolved"], entry_symbols_checked: [], operation_sites_checked: [], unresolved_targets: ["DynamicTarget"] };
+    const uncertain = { entry_status: "uncertain", external_entry_status: "uncertain", confirmed_external_candidate_ids: [], entry_notes: ["callback unresolved"], entry_symbols_checked: [], operation_sites_checked: [], unresolved_targets: ["DynamicTarget"] };
     store.reconcile(task!.task_id, task!.attempt, semantic(task as Record<string, any>, [], [], uncertain));
     const report = await store.finalize(); const gaps = (report.coverage as Record<string, unknown>).gaps as Record<string, unknown>[];
     expect((report.run as Record<string, unknown>).status).toBe("complete_with_gaps");
-    expect(gaps.map((gap) => gap.kind)).toEqual(["uncertain_entry", "unresolved_targets"]);
+    expect(gaps.map((gap) => gap.kind)).toEqual(["uncertain_component_input", "uncertain_external_entry", "unresolved_targets"]);
   });
 
   it("isolates validation failures per operation group and keeps active groups out of coverage gaps", async () => {

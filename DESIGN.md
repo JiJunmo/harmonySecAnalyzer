@@ -111,7 +111,9 @@ profile project + prepare Atlas index
 
 LangGraph 主图保存控制游标，`run.db` 保存任务、证据、Operation Group、Fact Edge、验证、Finding、PoC Artifact 和覆盖缺口。语义 Agent、验证 Agent 与 PoC Agent 使用独立任务上下文和 Atlas 工具集合；模型提交必须先通过 JSON Schema，再通过领域不变量，最后才能事务入库。三个阶段职责严格分离：路径发现只产事实，六维验证只做判断，PoC 生成只产出可复现触发套件（禁止重新判定），`findings` 表不含验证阶段以外的字段，PoC 工件独立存放于 `poc_artifacts`。
 
-组件语义阶段的 `entry_status` 判断候选是否形成真实组件输入，不替代外部可达性：任一候选成立为 `confirmed`，全部排除为 `excluded`，无法确认或排除为 `uncertain`。六维中的 `true` 必须有成立证据，`false` 必须有反向证据，缺少关键证明只能使用 `unknown`。基础路径被明确反证时使用 `no_exploitable_path`，与正常业务和证据不足分开。Agent Skill 说明判定标准，JSON Schema 限定输出形态，领域不变量校验状态、证据、防护结论和最终分类的一致性。
+组件语义分析的边界由 Manifest 中的 Ability/ExtensionAbility 身份决定，不由源码目录、构建模块、依赖包或类继承关系决定。继承方法、覆写与 `super` 调用、helper、异步回调以及 Atlas 索引中可读取的依赖实现都属于当前组件调用链；只有通过组件通信机制进入另一个 Manifest 组件时才生成组件调用记录并停止深入。依赖实现不在索引中时记录具体覆盖缺口，不得视为没有行为。
+
+组件语义阶段分别记录组件输入与外部入口：`entry_status` 判断组件是否存在真实可执行输入，内部上游调用成立也可确认；`external_entry_status` 只判断非 `component_scope` 候选是否形成真实外部入口，并由 `confirmed_external_candidate_ids` 绑定已确认候选。只有真实外部入口才能成为本地或跨组件攻击路径起点。跨组件连接同时传播“调用是否受外部输入控制”和真实参数映射，无参数但调用受控的敏感操作不会被漏掉，常量或未知控制不会继续扩展。六维中的 `true` 必须有成立证据，`false` 必须有反向证据，缺少关键证明只能使用 `unknown`。基础路径被明确反证时使用 `no_exploitable_path`，与正常业务和证据不足分开。
 
 PoC Agent 不输出可信状态。运行时接受产物后标记为 `generated_unverified`，表示仅通过结构、证据引用和静态触发检查，尚未编译或执行；生成失败显示为 `generation_failed`，但不构成审计覆盖缺口。后续编译或设备验证能力才可推进为 `build_verified` 或 `device_verified`。
 

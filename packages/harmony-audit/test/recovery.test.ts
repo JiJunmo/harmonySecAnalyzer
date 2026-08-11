@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
+import { semanticCoverage } from "./p0-fixtures.js";
 
 async function fixture(): Promise<AuditStore> {
   const root = await mkdtemp(join(tmpdir(), "harmony-recovery-")); await mkdir(join(root, "entry/src/main"), { recursive: true });
@@ -12,7 +13,7 @@ async function fixture(): Promise<AuditStore> {
   return AuditStore.create(root, await profileProject(root), { components: ["A"] });
 }
 
-const semantic = (task: Record<string, any>) => ({ task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onCreate"], operation_sites_checked: [], unresolved_targets: [] }, operation_groups: [], component_calls: [] });
+const semantic = (task: Record<string, any>) => ({ task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked", coverage: semanticCoverage(task), operation_groups: [], component_calls: [] });
 
 describe("run recovery lifecycle", () => {
   it("recovers an expired lease and rejects the stale execution", async () => {

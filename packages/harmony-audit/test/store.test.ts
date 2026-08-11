@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AuditStore } from "../src/runtime/store.js";
 import { profileProject } from "../src/project/profiler.js";
+import { invocationControl, semanticCoverage } from "./p0-fixtures.js";
 
 const emptySemantic = (task: Record<string, any>, overrides: Record<string, unknown> = {}) => ({
   task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked",
-  coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onCreate"], operation_sites_checked: [], unresolved_targets: [] },
+  coverage: semanticCoverage(task),
   operation_groups: [], component_calls: [], ...overrides,
 });
 
@@ -47,7 +48,7 @@ describe("audit store", () => {
     expect(claim.tasks.every((task) => ((task.input as Record<string, unknown>).entry as Record<string, unknown>).component_name === "B")).toBe(true);
   });
 
-  it("uses capability entry types to select only v3.1-compatible initial roots", async () => {
+  it("treats capability entry types as priorities instead of component filters", async () => {
     const root = await mkdtemp(join(tmpdir(), "harmony-capability-roots-"));
     await mkdir(join(root, "entry/src/main"), { recursive: true });
     await writeFile(join(root, "entry/src/main/module.json5"), `{ module: { name: 'entry', abilities: [
@@ -56,7 +57,12 @@ describe("audit store", () => {
     ] } }`);
     const store = await AuditStore.create(root, await profileProject(root), { mode: "capability", capabilities: ["CAP-FS-001"] });
     const claim = await store.claim(5);
-    expect(claim.tasks.map((task) => ((task.input as Record<string, any>).entry as Record<string, unknown>).component_name)).toEqual(["Home"]);
+    expect(claim.tasks.map((task) => ((task.input as Record<string, any>).entry as Record<string, unknown>).component_name).sort()).toEqual(["DeepLink", "Home"]);
+    for (const task of claim.tasks) {
+      const input = (await store.taskDocument(task)).input as Record<string, any>;
+      expect(input.audit_scope[0]).toMatchObject({ capability_id: "CAP-FS-001", analysis_scope: "component", entry_types: ["exported_ability", "provider", "want"] });
+      expect(input.analysis_contract.capability_entry_types).toContain("never component exclusion");
+    }
   });
 
   it("routes project capabilities to one project-scoped analysis unit", async () => {
@@ -85,7 +91,7 @@ describe("audit store", () => {
       input: {
         audit_scope: [{ capability_id: "CAP-FS-001", domain: "filesystem" }],
         entry: { component: "A", project_candidates: expect.any(Array), facets: expect.any(Array) },
-        analysis_contract: { stop_at: "component_call" },
+        analysis_contract: { stop_at: "component_call", minimum_evidence_chain: expect.stringContaining("retain every branch") },
       },
     });
     store.reconcile(first!.task_id, first!.attempt, undefined, "SCHEMA_INVALID:category");
@@ -182,7 +188,7 @@ describe("audit store", () => {
       summary: "calls B",
       component_calls: [{
         call_key: "call-b", target_component_id: target.component_id, target_symbol: "B.onCreate", transport: "startAbility",
-        call_location: "A.ets:10", condition: "always", parameter_mappings: [{ source_property: "want.x", target_property: "want.x", control_state: "preserved", transform: "none" }],
+        call_location: "A.ets:10", condition: "always", invocation_control: invocationControl(), parameter_mappings: [{ source_property: "want.x", target_property: "want.x", control_state: "preserved", transform: "none" }],
         principal_transition: { caller_principal: "external", callee_observed_principal: "A", origin_binding: "replaced_by_caller", authority_used: "source_component", evidence: [] },
         security_checks: [], evidence: [],
       }],
@@ -192,5 +198,29 @@ describe("audit store", () => {
     expect(expanded.tasks).toHaveLength(1);
     expect(expanded.tasks[0]!.input.entry.component_name).toBe("B");
     expect(expanded.tasks[0]!.input.upstream_calls).toHaveLength(1);
+  });
+
+  it("validates project-scope operations without treating them as component external entries", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harmony-project-scope-"));
+    await mkdir(join(root, "entry/src/main"), { recursive: true });
+    await writeFile(join(root, "entry/src/main/module.json5"), `{ module: { name: 'entry', abilities: [{ name: 'A', exported: true }] } }`);
+    const store = await AuditStore.create(root, await profileProject(root), { capabilities: ["CAP-NET-001"] });
+    const [task] = (await store.claim(1)).tasks;
+    expect(task!.input.entry.project_candidates).toEqual([expect.objectContaining({ type: "project_scope" })]);
+    const result = emptySemantic(task as Record<string, any>, {
+      operation_groups: [{
+        group_key: "cleartext-network", category: "network", capability_id: "CAP-NET-001", title: "生产网络配置",
+        operation: { body: "send request", location: "NetworkConfig.ets:10", evidence: [] }, controlled_properties: [],
+        context: { external_actor: "network peer", intended_behavior: "send request", protected_assets: ["transport data"], direct_observed_effect: null, effect_hypotheses: [], evidence: [] },
+        branches: [{ condition: "production build", locations: ["NetworkConfig.ets:10"], evidence: [] }],
+        facts: [{ fact_key: "network", type: "operation", body: "send request", location: "NetworkConfig.ets:10", evidence: [] }], security_checks: [],
+      }],
+    });
+    expect(result.coverage).toMatchObject({ external_entry_status: "excluded", confirmed_external_candidate_ids: [] });
+    expect(store.reconcile(task!.task_id, task!.attempt, result)).toMatchObject({ accepted: true });
+    const [validation] = (await store.claim(5)).tasks;
+    expect(validation).toMatchObject({ kind: "exploitability_validation" });
+    const validationInput = (await store.taskDocument(validation!)).input as Record<string, any>;
+    expect(validationInput.validation_contract.source_read_scope).toContain("all implementations needed");
   });
 });

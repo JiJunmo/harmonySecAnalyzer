@@ -72,8 +72,9 @@ export function semanticHypothesisRefs(group: Row): Set<string> {
 
 export function componentCallRefs(call: Row): Set<string> {
   const refs = [...strings(call.evidence_refs)];
+  const invocation = isRow(call.invocation_control) ? call.invocation_control : {};
   const transition = isRow(call.principal_transition) ? call.principal_transition : {};
-  refs.push(...strings(transition.evidence_refs));
+  refs.push(...strings(invocation.evidence_refs), ...strings(transition.evidence_refs));
   for (const check of rows(call.security_checks)) refs.push(...strings(check.evidence_refs));
   return new Set(refs);
 }

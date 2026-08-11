@@ -8,9 +8,11 @@
     "summary": {"type": "string", "minLength": 1},
     "coverage": {
       "type": "object",
-      "required": ["entry_status", "entry_notes", "entry_symbols_checked", "operation_sites_checked", "unresolved_targets"],
+      "required": ["entry_status", "external_entry_status", "confirmed_external_candidate_ids", "entry_notes", "entry_symbols_checked", "operation_sites_checked", "unresolved_targets"],
       "properties": {
         "entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
+        "external_entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
+        "confirmed_external_candidate_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "entry_notes": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "entry_symbols_checked": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "operation_sites_checked": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
@@ -98,11 +100,21 @@
       },
       "additionalProperties": false
     },
+    "invocationControl": {
+      "type": "object",
+      "required": ["control_state", "condition", "evidence"],
+      "properties": {
+        "control_state": {"enum": ["preserved", "constrained", "independent", "unknown"]},
+        "condition": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidenceList"}
+      },
+      "additionalProperties": false
+    },
     "component_call": {
       "type": "object",
       "required": [
         "call_key", "target_component_id", "target_symbol", "transport",
-        "call_location", "condition", "parameter_mappings", "principal_transition", "security_checks", "evidence"
+        "call_location", "condition", "invocation_control", "parameter_mappings", "principal_transition", "security_checks", "evidence"
       ],
       "properties": {
         "call_key": {"type": "string", "minLength": 1},
@@ -111,7 +123,8 @@
         "transport": {"type": "string", "minLength": 1},
         "call_location": {"type": "string", "minLength": 1},
         "condition": {"type": "string", "minLength": 1},
-        "parameter_mappings": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/parameterMapping"}},
+        "invocation_control": {"$ref": "#/$defs/invocationControl"},
+        "parameter_mappings": {"type": "array", "items": {"$ref": "#/$defs/parameterMapping"}},
         "principal_transition": {"$ref": "#/$defs/principalTransition"},
         "security_checks": {"type": "array", "items": {"$ref": "#/$defs/security_check"}},
         "evidence": {"$ref": "#/$defs/evidenceList"}

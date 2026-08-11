@@ -8,8 +8,9 @@ import { AuditStore } from "../src/runtime/store.js";
 import { evidenceLocalId } from "../src/runtime/evidence.js";
 import { AuditInvariantError } from "../src/validation/invariant-errors.js";
 import { validateExploitabilitySubmission, validateSemanticSubmission } from "../src/validation/submission-validator.js";
+import { normalizeSemanticSubmission } from "../src/validation/submission-normalizer.js";
 import { canonicalJson, stableId } from "../src/runtime/identity.js";
-import { admissibleRefs, effectChain, evidenceRow, sixDimensions, support } from "./p0-fixtures.js";
+import { admissibleRefs, effectChain, evidenceRow, semanticCoverage, sixDimensions, support } from "./p0-fixtures.js";
 
 async function fixture(): Promise<{ root: string; store: AuditStore }> {
   const root = await mkdtemp(join(tmpdir(), "harmony-invariants-"));
@@ -23,7 +24,7 @@ const semanticEvidence = () => [evidenceRow("entry reaches query")];
 function semantic(task: Record<string, any>): Record<string, unknown> {
   return {
     task_id: task.task_id, entry_id: task.input.entry.candidate_id, summary: "checked",
-    coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: ["A.onNewWant"], operation_sites_checked: ["A.ets:12"], unresolved_targets: [] }, component_calls: [],
+    coverage: { ...semanticCoverage(task), entry_symbols_checked: ["A.onNewWant"], operation_sites_checked: ["A.ets:12"] }, component_calls: [],
     operation_groups: [{
       group_key: "query", category: "injection", capability_id: "CAP-INJ-001", title: "query injection",
       operation: { body: "query", location: "A.ets:12", evidence: semanticEvidence() }, controlled_properties: ["want.query"],
@@ -106,6 +107,29 @@ describe("audit domain invariants", () => {
     db.close();
   });
 
+  it("does not use a confirmed component input as an unconfirmed external attack root", async () => {
+    const { store } = await fixture(); const [task] = (await store.claim(1)).tasks;
+    const candidate = semantic(task as Record<string, any>);
+    candidate.coverage = {
+      ...(candidate.coverage as Record<string, unknown>),
+      external_entry_status: "excluded", confirmed_external_candidate_ids: [],
+    };
+    expect(store.reconcile(task!.task_id, task!.attempt, candidate)).toMatchObject({ accepted: true });
+    expect((await store.claim(5)).tasks).toHaveLength(0);
+    const db = new Database(store.paths.db);
+    expect((db.prepare("SELECT COUNT(*) n FROM tasks WHERE kind='exploitability_validation'").get() as { n: number }).n).toBe(0);
+    db.close();
+  });
+
+  it("keeps operation groups with different security semantics separate", () => {
+    const first = (semantic({ task_id: "TASK-1", input: { entry: { candidate_id: "PE-1" } } } as Record<string, any>).operation_groups as Record<string, any>[])[0]!;
+    const guarded = structuredClone(first); guarded.group_key = "query-guarded";
+    guarded.security_checks = [{ type: "owner", location: "A.ets:11", protects: "records", subject_kind: "origin_principal", validated_property: "owner", behavior: "reject", evidence: [] }];
+    const anotherCapability = structuredClone(first); anotherCapability.group_key = "query-web"; anotherCapability.capability_id = "CAP-WEB-001";
+    const normalized = normalizeSemanticSubmission({ coverage: {}, operation_groups: [first, guarded, anotherCapability], component_calls: [] }, "PE-1", new Map());
+    expect(normalized.operation_groups).toHaveLength(3);
+  });
+
   it("INV-TX-001 persists normalized semantics validation and finding", async () => {
     const { store } = await fixture(); const [semanticTask] = (await store.claim(1)).tasks;
     expect(store.reconcile(semanticTask!.task_id, semanticTask!.attempt, semantic(semanticTask as Record<string, any>))).toMatchObject({ accepted: true });
@@ -128,7 +152,7 @@ describe("audit domain invariants", () => {
 
   it("rejects hypotheses without basis evidence and direct effects without context evidence", async () => {
     const { store } = await fixture(); const [task] = (await store.claim(1)).tasks;
-    const context = { taskId: task!.task_id, entryId: String(task!.input.entry.candidate_id), capabilities: ["CAP-INJ-001"], enabledCapabilities: new Set(["CAP-INJ-001"]), componentIds: new Set([String(task!.input.entry.component_id)]) };
+    const context = { taskId: task!.task_id, entryId: String(task!.input.entry.candidate_id), capabilities: ["CAP-INJ-001"], enabledCapabilities: new Set(["CAP-INJ-001"]), componentIds: new Set([String(task!.input.entry.component_id)]), externalCandidateIds: new Set<string>((semanticCoverage(task as Record<string, any>).confirmed_external_candidate_ids as string[])) };
     const noBasis = semantic(task as Record<string, any>);
     const group = (noBasis.operation_groups as Record<string, any>[])[0]!;
     group.context.effect_hypotheses = [{ claim: "参数可能跳过安全检查", basis_evidence: [], missing_proofs: ["字段读取位置", "安全行为变化", "具体影响"] }];
@@ -155,7 +179,7 @@ describe("audit domain invariants", () => {
 
   it("rejects capability scope, category and unknown component violations", async () => {
     const { store } = await fixture(); const [task] = (await store.claim(1)).tasks;
-    const context = { taskId: task!.task_id, entryId: String(task!.input.entry.candidate_id), capabilities: [] as string[], enabledCapabilities: new Set(["CAP-INJ-001"]), componentIds: new Set([String(task!.input.entry.component_id)]) };
+    const context = { taskId: task!.task_id, entryId: String(task!.input.entry.candidate_id), capabilities: [] as string[], enabledCapabilities: new Set(["CAP-INJ-001"]), componentIds: new Set([String(task!.input.entry.component_id)]), externalCandidateIds: new Set<string>((semanticCoverage(task as Record<string, any>).confirmed_external_candidate_ids as string[])) };
     expect(() => validateSemanticSubmission(semantic(task as Record<string, any>), context)).toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "CAPABILITY_OUT_OF_SCOPE" }));
     const wrongCategory = semantic(task as Record<string, any>); (wrongCategory.operation_groups as Record<string, any>[])[0]!.category = "web";
     expect(() => validateSemanticSubmission(wrongCategory, { ...context, capabilities: ["CAP-INJ-001"], capabilityDomains: new Map([["CAP-INJ-001", "injection"]]) })).toThrowError(expect.objectContaining<Partial<AuditInvariantError>>({ code: "CAPABILITY_CATEGORY_MISMATCH" }));

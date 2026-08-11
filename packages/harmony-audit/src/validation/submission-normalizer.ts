@@ -1,7 +1,32 @@
+import { canonicalJson } from "../runtime/identity.js";
+
 type Row = Record<string, unknown>;
 const rows = (value: unknown): Row[] => Array.isArray(value) ? value.filter((item): item is Row => !!item && typeof item === "object" && !Array.isArray(item)) : [];
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 const unique = (values: readonly string[]) => [...new Set(values)].sort();
+const normalizedText = (value: unknown): string => String(value ?? "").trim().replaceAll("\\", "/").toLowerCase().replace(/\s+/g, " ");
+const normalizedLocation = (value: unknown): string => normalizedText(value).replace(/:0+(\d+)$/, ":$1");
+
+function operationGroupIdentity(entryId: string, group: Row): string {
+  const operation = (group.operation as Row | undefined) ?? {};
+  const context = (group.context as Row | undefined) ?? {};
+  const checks = rows(group.security_checks).map((check) => canonicalJson([
+    normalizedText(check.type), normalizedLocation(check.location), normalizedText(check.subject_kind),
+    normalizedText(check.validated_property), normalizedText(check.behavior),
+  ])).sort();
+  const availability = (group.availability as Row | undefined) ?? {};
+  const availabilitySemantics = Object.fromEntries(Object.entries(availability)
+    .filter(([key]) => !["evidence", "evidence_refs"].includes(key))
+    .map(([key, value]) => [key, normalizedText(value)]));
+  return canonicalJson([
+    entryId, normalizedText(group.capability_id),
+    normalizedLocation(operation.location) || normalizedText(operation.body),
+    strings(group.controlled_properties).map(normalizedText).sort(),
+    normalizedText(context.external_actor), normalizedText(context.intended_behavior),
+    strings(context.protected_assets).map(normalizedText).sort(),
+    normalizedText(context.direct_observed_effect), checks, availabilitySemantics,
+  ]);
+}
 
 /** Normalize deterministic fields before schema/domain validation, as the v3.1 runtime did. */
 export function normalizeSemanticSubmission(candidate: Row, entryId: string, capabilityDomains: ReadonlyMap<string, string>): Row {
@@ -40,7 +65,7 @@ export function normalizeSemanticSubmission(candidate: Row, entryId: string, cap
   const merged = new Map<string, Row>();
   for (const group of rows(normalized.operation_groups)) {
     const operation = (group.operation as Row | undefined) ?? {};
-    const identity = canonicalJson([entryId, operation.location, strings(group.controlled_properties).sort()]);
+    const identity = operationGroupIdentity(entryId, group);
     const existing = merged.get(identity);
     if (!existing) { merged.set(identity, group); continue; }
     const richer = rows(group.facts).length > rows(existing.facts).length ? group : existing;
@@ -63,7 +88,10 @@ export function normalizeSemanticSubmission(candidate: Row, entryId: string, cap
   for (const call of rows(normalized.component_calls)) {
     const mappings = new Map(rows(call.parameter_mappings).map((item) => [canonicalJson(item), item]));
     call.parameter_mappings = [...mappings.values()].sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
-    const identity = canonicalJson([call.target_component_id, call.call_location, call.parameter_mappings, call.principal_transition ?? {}]);
+    const identity = canonicalJson([
+      call.target_component_id, normalizedLocation(call.call_location), call.invocation_control ?? {},
+      call.parameter_mappings, call.principal_transition ?? {},
+    ]);
     if (!calls.has(identity)) calls.set(identity, call);
   }
   normalized.component_calls = [...calls.values()];
@@ -89,5 +117,3 @@ export function normalizePocSubmission(candidate: Row): Row {
   if (Array.isArray(normalized.evidence_refs)) normalized.evidence_refs = unique(strings(normalized.evidence_refs));
   return normalized;
 }
-
-import { canonicalJson } from "../runtime/identity.js";

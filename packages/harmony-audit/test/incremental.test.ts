@@ -7,13 +7,13 @@ import { resolveCapabilities } from "../src/capabilities.js";
 import { incrementalBaselineFiles, planIncremental } from "../src/incremental.js";
 import { profileProject } from "../src/project/profiler.js";
 import { AuditStore } from "../src/runtime/store.js";
-import { effectChain, sixDimensions, support } from "./p0-fixtures.js";
+import { effectChain, semanticCoverage, sixDimensions, support } from "./p0-fixtures.js";
 
 const semantic = (task: Record<string, any>) => ({
   task_id: task.task_id,
   entry_id: task.input.entry.candidate_id,
   summary: `checked ${task.input.entry.component_name}`,
-  coverage: { entry_status: "confirmed", entry_notes: [], entry_symbols_checked: [`${task.input.entry.component_name}.onCreate`], operation_sites_checked: [], unresolved_targets: [] },
+  coverage: semanticCoverage(task),
   operation_groups: [], component_calls: [],
 });
 
