@@ -1,5 +1,7 @@
 import json
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +57,7 @@ class DeployRenderTest(unittest.TestCase):
             self.assertEqual(mcp["mcpServers"]["atlas"]["args"], ["mcp"])
             settings = json.loads((base / ".claude" / "settings.json").read_text(encoding="utf-8"))
             self.assertIn("mcp__atlas__*", settings["permissions"]["allow"])
+            self.assertIn("Bash(python3 *audit_orchestrator.py*:*)", settings["permissions"]["allow"])
             auditor = (base / ".claude" / "agents" / "harmony-auditor.md").read_text(encoding="utf-8")
             self.assertIn("mcp__atlas__project", auditor)
             self.assertIn("subagent_type", auditor)
@@ -64,6 +67,35 @@ class DeployRenderTest(unittest.TestCase):
             for name in deploy.OWNED_SKILLS:
                 skill = (base / ".claude" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
                 self.assertNotIn("slash: false", skill, name)
+
+    def test_local_render_is_self_contained_and_cwd_independent(self):
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as cwd:
+            base = Path(td) / "vibe config with spaces"
+            deploy.render_tree(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), base=base)
+            tree = base / ".opencode"
+            orchestrator = tree / "skills/audit-orchestration/scripts/audit_orchestrator.py"
+            self.assertTrue(orchestrator.is_file())
+            self.assertTrue((tree / "skills/audit-orchestration/config/schemas/component-semantic-result.schema.json").is_file())
+            self.assertTrue((tree / "skills/project-modeling/scripts/project_profiler.py").is_file())
+
+            skill = (tree / "skills/audit-orchestration/SKILL.md").read_text(encoding="utf-8")
+            self.assertIn(f'python3 "{orchestrator.resolve()}" prepare', skill)
+            self.assertNotIn("{{audit_orchestrator_path}}", skill)
+            self.assertNotIn("python3 resources/", skill)
+
+            result = subprocess.run(
+                [sys.executable, str(orchestrator), "--help"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+            for markdown in tree.rglob("*.md"):
+                content = markdown.read_text(encoding="utf-8")
+                self.assertNotIn("python3 resources/", content, markdown)
+                self.assertNotRegex(content, r"\{\{[a-z_]+\}\}", markdown)
 
     def test_render_preserves_user_local_settings(self):
         with tempfile.TemporaryDirectory() as td:
@@ -94,13 +126,12 @@ class DeployRenderTest(unittest.TestCase):
     def test_render_is_idempotent_per_tool(self):
         with tempfile.TemporaryDirectory() as td:
             for tool in ("opencode", "claude"):
-                a = Path(td) / tool / "a"
-                b = Path(td) / tool / "b"
-                deploy.render_tree(ROOT, deploy.PROFILES[tool], Path("/bin/echo"), base=a)
-                deploy.render_tree(ROOT, deploy.PROFILES[tool], Path("/bin/echo"), base=b)
-                files_a = {p.relative_to(a).as_posix(): p.read_bytes() for p in a.rglob("*") if p.is_file()}
-                files_b = {p.relative_to(b).as_posix(): p.read_bytes() for p in b.rglob("*") if p.is_file()}
-                self.assertEqual(files_a, files_b, tool)
+                dest = Path(td) / tool
+                deploy.render_tree(ROOT, deploy.PROFILES[tool], Path("/bin/echo"), base=dest)
+                before = {p.relative_to(dest).as_posix(): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+                deploy.render_tree(ROOT, deploy.PROFILES[tool], Path("/bin/echo"), base=dest)
+                after = {p.relative_to(dest).as_posix(): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+                self.assertEqual(before, after, tool)
 
 
 class DeploySourceTest(unittest.TestCase):
@@ -146,7 +177,7 @@ class DeploySourceTest(unittest.TestCase):
             self.assertEqual(command[command.index("--atlas") + 1], str(atlas))
             self.assertNotEqual(Path(command[command.index("--atlas") + 1]).parent, Path(tempfile.gettempdir()))
 
-    def test_global_install_rewrites_runtime_paths(self):
+    def test_global_install_is_self_contained(self):
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "opencode"
             legacy = target / "agents/entry-planner.md"
@@ -158,32 +189,14 @@ class DeploySourceTest(unittest.TestCase):
             legacy_entry_resolver.write_text("legacy", encoding="utf-8")
             legacy_component_analyzer.write_text("legacy", encoding="utf-8")
             legacy_pattern.write_text("legacy", encoding="utf-8")
-            # 渲染前快照真实 atlas 路径(测试用 /bin/echo 模拟,避免误写进配置)
-            prev_atlas = None
-            ojson = ROOT / "opencode.json"
-            if ojson.exists():
-                try:
-                    cmd = json.loads(ojson.read_text(encoding="utf-8")).get("mcp", {}).get("atlas", {}).get("command", [])
-                    if cmd and Path(cmd[0]).is_file():
-                        prev_atlas = Path(cmd[0]).resolve()
-                except Exception:
-                    pass
-            deploy.render_tree(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"))
-            try:
-                deploy.install_global(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), target)
-            finally:
-                if prev_atlas and deploy.verify_atlas(prev_atlas):
-                    deploy.render_tree(ROOT, deploy.PROFILES["opencode"], prev_atlas)
-                else:
-                    for p in (ROOT / ".opencode", ROOT / "AGENTS.md", ROOT / "opencode.json"):
-                        if p.is_dir():
-                            shutil.rmtree(p)
-                        elif p.exists():
-                            p.unlink()
+            deploy.install_global(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), target)
             skill = (target / "skills/audit-orchestration/SKILL.md").read_text(encoding="utf-8")
             expected = target.resolve() / "skills/audit-orchestration/scripts/audit_orchestrator.py"
-            self.assertIn(f"python3 {expected}", skill)
+            self.assertIn(f'python3 "{expected}"', skill)
             self.assertNotIn("python3 resources/skills/audit-orchestration", skill)
+            self.assertTrue(expected.is_file())
+            self.assertTrue((target / "skills/audit-orchestration/config/schemas/exploitability-validation-result.schema.json").is_file())
+            self.assertTrue((target / "AGENTS.md").is_file())
 
             agent = (target / "agents/harmony-auditor.md").read_text(encoding="utf-8")
             self.assertIn('"*": deny', agent)

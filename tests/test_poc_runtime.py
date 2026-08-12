@@ -211,7 +211,14 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
 
         semantic_handle = claim_batch(full, 5)["tasks"][0]
         semantic_task = json.loads(Path(semantic_handle["task_file"]).read_text(encoding="utf-8"))
-        semantic = self.semantic_result(semantic_task["subject_id"], semantic_task["task_id"], "EntryAbility.onCreate")
+        external_candidate_id = next(
+            row["candidate_id"] for row in semantic_task["input"]["entry"]["project_candidates"]
+            if row.get("type") != "component_scope"
+        )
+        semantic = self.semantic_result(
+            semantic_task["subject_id"], semantic_task["task_id"],
+            "EntryAbility.onCreate", external_candidate_id,
+        )
         source_evidence = [self.source_evidence()]
         group = {
             "group_key": "query", "category": "data_access",

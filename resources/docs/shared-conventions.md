@@ -1,4 +1,3 @@
-- 设计事实基线：`DESIGN.md`。
 - `run.db` 是可变状态唯一事实源；Agent 不直接修改中央状态或报告。
 - 源码事实查询使用 Atlas MCP；项目配置由 `project_profiler.py` 确定性解析。
 - 能力注册表只定义审计范围；安全判定统一由六维验证契约完成。
@@ -6,4 +5,4 @@
 - 审计目标源码只读；运行时只允许生成 `.atlas/` 和 `reports/`。
 - 增量基线位于 `reports/incremental-baseline/`；Git 与非 Git 项目统一使用内容哈希判定变化，只在无缺口的成功运行后推进。
 - ArkTS 使用 Atlas `search/symbol/explore/calls/path/trace/impact/file_dependencies`；Native/NAPI 当前不接入。
-- 运行时脚本唯一事实源位于 `resources/skills/` 下；各工具的资源目录（`.opencode/`、`.claude/`）由 `deploy.py --tool` 生成，不入库。
+- 仓库中的规范源位于 `resources/skills/`；部署后只执行当前 Vibe Coding 工具配置目录中随 Skill 一起安装的脚本与配置，不依赖源码仓库或启动目录。

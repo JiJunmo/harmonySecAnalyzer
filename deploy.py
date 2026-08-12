@@ -71,14 +71,6 @@ OWNED_COMMANDS = ["audit.md"]
 OWNED_SKILLS = SKILLS
 LEGACY_SKILLS = ["attack-patterns"]
 
-# 全局安装时的路径重写: resources 相对路径 → 全局绝对路径
-def path_rewrites(g):
-    return [
-        (ORCH_REL, (g / "skills" / "audit-orchestration" / "scripts" / "audit_orchestrator.py").as_posix()),
-        (PROFILER_REL, (g / "skills" / "project-modeling" / "scripts" / "project_profiler.py").as_posix()),
-        (ATLAS_INDEXER_REL, (g / "skills" / "project-modeling" / "scripts" / "atlas_indexer.py").as_posix()),
-    ]
-
 # ---------------- 描述与工具集合(两工具共享的语义数据) ----------------
 
 AGENT_DESCRIPTIONS = {
@@ -118,7 +110,7 @@ def _opencode_permission(agent, tools):
             "task": {"*": "deny", "component-semantic-analyzer": "allow", "exploitability-validator": "allow", "poc-generator": "allow"},
             "skill": "allow",
             **atlas,
-            "bash": {"*": "deny", "python3 *audit_orchestrator.py *": "allow"},
+            "bash": {"*": "deny", "python3 *audit_orchestrator.py*": "allow"},
             "edit": "deny",
         }
     return {"external_directory": "allow", "read": "allow", "edit": "allow", **atlas}
@@ -151,7 +143,7 @@ OPENCODE_PROFILE = {
     "command_dispatch": "",
     "doc": {
         "intro": "本项目同时适配 OpenCode 与 Claude Code 的 HarmonyOS ArkTS 白盒安全审计多智能体系统。本文件面向 OpenCode，由 `python3 deploy.py --tool opencode` 生成；Claude Code 侧见 `CLAUDE.md`（由 `--tool claude` 生成）。",
-        "entry": "- 命令：`/audit [--incremental] [--capability CAP-ID] [--component Component] <repo-path>`\n- 编排者：`.opencode/agents/harmony-auditor.md`（由部署脚本生成）\n- 设计事实基线：`DESIGN.md`",
+        "entry": "- 命令：`/audit [--incremental] [--capability CAP-ID] [--component Component] <repo-path>`\n- 编排者：工具配置目录中的 `agents/harmony-auditor.md`",
         "extra": "## 资源与部署\n\n- `.opencode/` 是 OpenCode 资源目录（agents/commands/skills），由 `python3 deploy.py --tool opencode` 生成，不入库。\n- Atlas MCP 配置在 `opencode.json`，部署时写入本机 atlas 路径。\n- 全局安装后任意目录启动 opencode 即可用 `/audit`：`python3 deploy.py --tool opencode --global`；卸载：`python3 deploy.py --tool opencode --uninstall`。",
     },
 }
@@ -174,8 +166,8 @@ CLAUDE_PROFILE = {
     "command_dispatch": "执行方式：使用 Agent 工具派发编排者，`subagent_type: harmony-auditor`，`description: \"运行 /audit 审计编排\"`，`prompt` 原样传入完整参数 `$ARGUMENTS`（例如 `<repo-path>` 或 `--incremental <repo-path>`，保留所有标志与位置参数），等待其完成并向用户汇报结果。",
     "doc": {
         "intro": "本项目同时适配 Claude Code 与 OpenCode 的 HarmonyOS ArkTS 白盒安全审计多智能体系统。本文件面向 Claude Code，由 `python3 deploy.py --tool claude` 生成；OpenCode 侧见 `AGENTS.md`（由 `--tool opencode` 生成）。",
-        "entry": "- 命令：`/audit [--incremental] [--capability CAP-ID] [--component Component] <repo-path>`（命令正文用 Agent 工具派发，`subagent_type: harmony-auditor`）\n- 编排者：`.claude/agents/harmony-auditor.md`（由部署脚本生成）\n- 设计事实基线：`DESIGN.md`",
-        "extra": "## 权限说明\n\n- `.claude/settings.json` 只放行编排脚本命令（`Bash(python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py:*)`）与全部 Atlas MCP 工具；其他 Bash 命令默认询问。\n- 审计的目标仓库在工作目录之外时，需要把目标仓绝对路径加入 `.claude/settings.json` 的 `additionalDirectories`，或在首次访问时批准。\n- 任务文件（`**/reports/**/tasks/**`）与 `run.db` 由编排者指令约束为不可读取；编排者只通过 `claim-batch`/`reconcile-batch` 推进任务状态。\n- Atlas MCP 由项目级 `.mcp.json` 提供（stdio 启动 `atlas mcp`）；Claude Code 中工具名为 `mcp__atlas__*`。\n- 全局安装后任意目录启动 Claude Code 即可用 `/audit`：`python3 deploy.py --tool claude --global`；卸载：`python3 deploy.py --tool claude --uninstall`。",
+        "entry": "- 命令：`/audit [--incremental] [--capability CAP-ID] [--component Component] <repo-path>`（命令正文用 Agent 工具派发，`subagent_type: harmony-auditor`）\n- 编排者：工具配置目录中的 `agents/harmony-auditor.md`",
+        "extra": "## 权限说明\n\n- `.claude/settings.json` 放行当前部署包中的编排脚本命令与全部 Atlas MCP 工具；其他 Bash 命令沿用用户配置。\n- 审计的目标仓库在工作目录之外时，需要把目标仓绝对路径加入 `.claude/settings.json` 的 `additionalDirectories`，或在首次访问时批准。\n- 任务文件（`**/reports/**/tasks/**`）与 `run.db` 由编排者指令约束为不可读取；编排者只通过 `claim-batch`/`reconcile-batch` 推进任务状态。\n- Atlas MCP 由项目级 `.mcp.json` 提供（stdio 启动 `atlas mcp`）；Claude Code 中工具名为 `mcp__atlas__*`。\n- 全局安装后任意目录启动 Claude Code 即可用 `/audit`：`python3 deploy.py --tool claude --global`；卸载：`python3 deploy.py --tool claude --uninstall`。",
     },
 }
 
@@ -234,10 +226,29 @@ def yaml_dump(obj, indent=0):
     raise TypeError(f"yaml_dump 不支持: {type(obj)}")
 
 
-def substitute(text, profile):
+def deployment_paths(tree):
+    """Return paths inside the installed Vibe Coding resource directory."""
+    skills = Path(tree).resolve() / "skills"
+    return {
+        "audit_orchestrator_path": (
+            skills / "audit-orchestration" / "scripts" / "audit_orchestrator.py"
+        ).as_posix(),
+        "project_profiler_path": (
+            skills / "project-modeling" / "scripts" / "project_profiler.py"
+        ).as_posix(),
+        "atlas_indexer_path": (
+            skills / "project-modeling" / "scripts" / "atlas_indexer.py"
+        ).as_posix(),
+    }
+
+
+def substitute(text, profile, paths=None):
     for key, val in profile["snippets"].items():
         text = text.replace("{{" + key + "}}", val)
-    return text.replace("{{atlas_prefix}}", profile["atlas_prefix"])
+    text = text.replace("{{atlas_prefix}}", profile["atlas_prefix"])
+    for key, val in (paths or {}).items():
+        text = text.replace("{{" + key + "}}", val)
+    return text
 
 
 def render_doc(root, profile):
@@ -268,19 +279,68 @@ def claude_mcp_config(atlas):
 
 def claude_settings_config():
     return {"permissions": {"allow": [
-        "Bash(python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py:*)",
+        "Bash(python3 *audit_orchestrator.py*:*)",
         "mcp__atlas__*",
     ]}}
 
 
-def render_tree(root, profile, atlas, base=None):
-    """按 profile 渲染:目标资源目录 + 根级配置 + 工具文档。base 供测试重定向。
+def render_resources(root, profile, tree, runtime_tree=None):
+    """Install a self-contained Agent/Command/Skill bundle into a tool config tree."""
+    paths = deployment_paths(runtime_tree or tree)
+    for agent in AGENTS:
+        fm = frontmatter_for(profile, "agents", agent)
+        body = substitute(
+            (root / "resources" / "agents" / agent).read_text(encoding="utf-8"),
+            profile,
+            paths,
+        ).rstrip() + "\n"
+        out = tree / "agents" / agent
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("---\n" + yaml_dump(fm) + "\n---\n" + body, encoding="utf-8")
 
-    只重写已知生成子路径(agents/commands/skills/settings.json),
-    保留目录内用户个人文件(如 .claude/settings.local.json)。
+    fm = frontmatter_for(profile, "commands", "audit.md")
+    body = substitute(
+        (root / "resources" / "commands" / "audit.md").read_text(encoding="utf-8"),
+        profile,
+        paths,
+    )
+    body = body.replace("{{command_dispatch}}", profile["command_dispatch"]).rstrip() + "\n"
+    out = tree / "commands" / "audit.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("---\n" + yaml_dump(fm) + "\n---\n" + body, encoding="utf-8")
+
+    for skill in SKILLS:
+        source = root / "resources" / "skills" / skill
+        dst = tree / "skills" / skill
+        if dst.exists():
+            shutil.rmtree(dst)
+        dst.mkdir(parents=True)
+        for sub in ("scripts", "config"):
+            if (source / sub).exists():
+                shutil.copytree(
+                    source / sub,
+                    dst / sub,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                )
+        fm = frontmatter_for(profile, "skills", skill)
+        body = substitute(
+            (source / "SKILL.md").read_text(encoding="utf-8"), profile, paths,
+        ).rstrip() + "\n"
+        (dst / "SKILL.md").write_text(
+            "---\n" + yaml_dump(fm) + "\n---\n" + body,
+            encoding="utf-8",
+        )
+
+
+def render_tree(root, profile, atlas, base=None, runtime_base=None):
+    """按 profile 渲染自包含资源目录、根级配置和工具文档。
+
+    base 供测试重定向；runtime_base 指定最终运行位置，以便临时渲染时仍能注入
+    正确路径。仅重建本项目拥有的子目录，保留用户个人文件。
     """
     dest = base or root
     tree = dest / profile["dir"]
+    runtime_tree = (runtime_base or dest) / profile["dir"]
     tree.mkdir(parents=True, exist_ok=True)
     for sub in ("agents", "commands", "skills"):
         p = tree / sub
@@ -291,26 +351,7 @@ def render_tree(root, profile, atlas, base=None):
         if p.exists():
             p.unlink()
 
-    for agent in AGENTS:
-        fm = frontmatter_for(profile, "agents", agent)
-        body = substitute((root / "resources" / "agents" / agent).read_text(encoding="utf-8"), profile).rstrip() + "\n"
-        out = tree / "agents" / agent
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("---\n" + yaml_dump(fm) + "\n---\n" + body, encoding="utf-8")
-
-    fm = frontmatter_for(profile, "commands", "audit.md")
-    body = substitute((root / "resources" / "commands" / "audit.md").read_text(encoding="utf-8"), profile)
-    body = body.replace("{{command_dispatch}}", profile["command_dispatch"]).rstrip() + "\n"
-    out = tree / "commands" / "audit.md"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("---\n" + yaml_dump(fm) + "\n---\n" + body, encoding="utf-8")
-
-    for skill in SKILLS:
-        fm = frontmatter_for(profile, "skills", skill)
-        body = substitute((root / "resources" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8"), profile).rstrip() + "\n"
-        out = tree / "skills" / skill / "SKILL.md"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("---\n" + yaml_dump(fm) + "\n---\n" + body, encoding="utf-8")
+    render_resources(root, profile, tree, runtime_tree=runtime_tree)
 
     if profile["tool"] == "opencode":
         (dest / "opencode.json").write_text(json.dumps(opencode_config(atlas), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -329,7 +370,7 @@ def render_drift(root, profile, atlas, dest=None):
     dest = dest or root
     with tempfile.TemporaryDirectory() as td:
         base = Path(td)
-        render_tree(root, profile, atlas, base=base)
+        render_tree(root, profile, atlas, base=base, runtime_base=dest)
         generated = {p.relative_to(base).as_posix(): p.read_bytes()
                      for p in base.rglob("*") if p.is_file()}
     problems = []
@@ -589,7 +630,6 @@ def claude_mcp_register(atlas):
 
 def install_global(root, profile, atlas, target):
     g = global_dir(target, profile)
-    h = harmony_sec_home(g)
     info(f"全局目录: {g}")
     g.mkdir(parents=True, exist_ok=True)
     for name in LEGACY_AGENTS:
@@ -603,68 +643,23 @@ def install_global(root, profile, atlas, target):
             shutil.rmtree(legacy)
             ok(f"清理旧 skills/{name}")
 
-    rewrites = path_rewrites(g)
-    tree = root / profile["dir"]
-    if not tree.exists():
-        fail(f"缺少生成的资源目录 {tree},请先运行本地部署")
-        return
-
-    # 1. agents(路径改写: resources 相对路径 → 全局绝对,使全局 /audit 不依赖 CWD)
+    # 1-3. 直接在目标配置目录生成自包含资源包，不依赖源码仓的中间生成物。
+    render_resources(root, profile, g, runtime_tree=g)
     for name in OWNED_AGENTS:
-        src = tree / "agents" / name
-        if not src.exists():
-            continue
-        dst = g / "agents" / name
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        content = src.read_text(encoding="utf-8")
-        for rel, abs_path in rewrites:
-            content = content.replace(rel, abs_path)
-        dst.write_text(content, encoding="utf-8")
         ok(f"agents/{name}")
-    # 2. commands
     for name in OWNED_COMMANDS:
-        src = tree / "commands" / name
-        if not src.exists():
-            continue
-        dst = g / "commands" / name
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
         ok(f"commands/{name}")
-    # 3. skills(SKILL.md 路径改写 + 脚本/config 从规范源复制)
     for name in OWNED_SKILLS:
-        ssrc = root / "resources" / "skills" / name
-        dst = g / "skills" / name
-        if dst.exists():
-            shutil.rmtree(dst)
-        dst.mkdir(parents=True)
-        sk = ssrc / "SKILL.md"
-        if sk.exists():
-            content = sk.read_text(encoding="utf-8")
-            for rel, abs_path in rewrites:
-                content = content.replace(rel, abs_path)
-            (dst / "SKILL.md").write_text(content, encoding="utf-8")
-        for sub in ("scripts", "config"):
-            ssub = ssrc / sub
-            if ssub.exists():
-                shutil.copytree(ssub, dst / sub)
         ok(f"skills/{name}")
-    # 4. 运行时资产 → harmony-sec/
-    if (root / "knowledge").exists():
-        kdst = h / "knowledge"
-        if kdst.exists():
-            shutil.rmtree(kdst)
-        shutil.copytree(root / "knowledge", kdst)
-        ok(f"knowledge → {kdst}")
-    # 5. 工具文档(备份已有)
-    doc_src = root / profile["docs_file"]
+    # 4. 工具文档(备份已有)
     doc_dst = g / profile["docs_file"]
-    if doc_src.exists():
-        if doc_dst.exists() and doc_dst.read_text(encoding="utf-8") != doc_src.read_text(encoding="utf-8"):
-            shutil.copy2(doc_dst, g / f"{profile['docs_file']}.bak")
-            warn(f"全局 {profile['docs_file']} 已备份为 .bak")
-        shutil.copy2(doc_src, doc_dst)
-        ok(profile["docs_file"])
-    # 6. MCP/配置
+    doc_content = render_doc(root, profile)
+    if doc_dst.exists() and doc_dst.read_text(encoding="utf-8") != doc_content:
+        shutil.copy2(doc_dst, g / f"{profile['docs_file']}.bak")
+        warn(f"全局 {profile['docs_file']} 已备份为 .bak")
+    doc_dst.write_text(doc_content, encoding="utf-8")
+    ok(profile["docs_file"])
+    # 5. MCP/配置
     if profile["tool"] == "opencode":
         gj = g / "opencode.json"
         gd = {}
@@ -814,10 +809,10 @@ def main():
             for p in problems:
                 fail(f"  {p}")
             fail(f"请重新部署: python deploy.py --tool {profile['tool']}")
+    elif args.global_install:
+        install_global(root, profile, atlas, args.target)
     else:
         render_tree(root, profile, atlas)
-        if args.global_install:
-            install_global(root, profile, atlas, args.target)
     print()
 
     # [5/5] 结构校验 + smoke

@@ -1,18 +1,18 @@
-`resources/skills/audit-orchestration/scripts/audit_orchestrator.py` 是唯一控制面。`run.db` 是可变状态唯一事实源；Agent 结果先通过 Schema 和业务不变量校验，再在一个事务中落库。JSON、Markdown 和 HTML 都是可重建导出。
+`{{audit_orchestrator_path}}` 是当前部署包的唯一控制面。`run.db` 是可变状态唯一事实源；Agent 结果先通过 Schema 和业务不变量校验，再在一个事务中落库。JSON、Markdown 和 HTML 都是可重建导出。
 
 ```bash
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py prepare --target-repo <repo> --mode full
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py prepare --target-repo <repo> --mode incremental
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py prepare --target-repo <repo> --mode capability --capability CAP-XXX
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py prepare --target-repo <repo> --mode full --component <AbilityName>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py prepare --target-repo <repo> --mode capability --capability CAP-XXX --component <module/ExtensionAbilityName>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py claim-batch <run_dir>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py reconcile-batch <run_dir>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py export <run_dir>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py build-report <run_dir>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py finalize <run_dir>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py resume <run_dir>
-python3 resources/skills/audit-orchestration/scripts/audit_orchestrator.py status <run_dir>
+python3 "{{audit_orchestrator_path}}" prepare --target-repo "<repo>" --mode full
+python3 "{{audit_orchestrator_path}}" prepare --target-repo "<repo>" --mode incremental
+python3 "{{audit_orchestrator_path}}" prepare --target-repo "<repo>" --mode capability --capability CAP-XXX
+python3 "{{audit_orchestrator_path}}" prepare --target-repo "<repo>" --mode full --component <AbilityName>
+python3 "{{audit_orchestrator_path}}" prepare --target-repo "<repo>" --mode capability --capability CAP-XXX --component <module/ExtensionAbilityName>
+python3 "{{audit_orchestrator_path}}" claim-batch "<run_dir>"
+python3 "{{audit_orchestrator_path}}" reconcile-batch "<run_dir>"
+python3 "{{audit_orchestrator_path}}" export "<run_dir>"
+python3 "{{audit_orchestrator_path}}" build-report "<run_dir>"
+python3 "{{audit_orchestrator_path}}" finalize "<run_dir>"
+python3 "{{audit_orchestrator_path}}" resume "<run_dir>"
+python3 "{{audit_orchestrator_path}}" status "<run_dir>"
 ```
 
 `prepare` 依次完成 JSON5 配置解析、Atlas 全量索引、隔离 run 创建、完整组件目录归组和起始组件任务初始化。Manifest 候选按 `component_id` 归组；项目建模不创建宽泛的 module 级 CommonEvent 候选或独立子任务。上述工作全部由脚本完成，不调用 AI。

@@ -2,7 +2,7 @@
 
 面向 HarmonyOS ArkTS 项目的多智能体白盒安全审计系统，同时支持 OpenCode 与 Claude Code。脚本完成项目建模、Atlas 索引和组件任务生成；组件语义 Agent 负责源码事实，独立验证 Agent 只根据落盘语义结果完成六维漏洞有效性判断。
 
-OpenCode 使用 `.opencode/` 资源目录；Claude Code 使用 `.claude/` 资源目录（含 `.mcp.json` 的 Atlas MCP 与 `/audit` 命令）。两个工具共用 `.opencode/skills/` 下的同一套运行时脚本。
+OpenCode 使用 `.opencode/` 资源目录；Claude Code 使用 `.claude/` 资源目录（含 `.mcp.json` 的 Atlas MCP 与 `/audit` 命令）。部署时会把 Agent、Skill、脚本、Schema 和配置复制到对应工具的配置目录；运行时不依赖本源码仓库的相对路径。
 
 ## 使用
 
