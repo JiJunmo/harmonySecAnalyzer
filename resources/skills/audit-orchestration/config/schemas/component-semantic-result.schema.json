@@ -16,7 +16,21 @@
         "entry_notes": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "entry_symbols_checked": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "operation_sites_checked": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-        "unresolved_targets": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+        "unresolved_targets": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "exploration_summary": {
+          "type": "object",
+          "required": ["status", "rounds", "total_nodes", "completed_nodes", "stopped_nodes", "gap_nodes", "max_depth"],
+          "properties": {
+            "status": {"enum": ["complete", "partial"]},
+            "rounds": {"type": "integer", "minimum": 0},
+            "total_nodes": {"type": "integer", "minimum": 1},
+            "completed_nodes": {"type": "integer", "minimum": 0},
+            "stopped_nodes": {"type": "integer", "minimum": 0},
+            "gap_nodes": {"type": "integer", "minimum": 0},
+            "max_depth": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

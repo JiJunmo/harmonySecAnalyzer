@@ -19,6 +19,116 @@ SCHEMA_BY_TASK = {
 }
 
 
+def normalize_semantic_result(result, entry_id):
+    """Canonicalize the one semantic document consumed by all downstream stages."""
+    if not isinstance(result, dict):
+        return result
+    result["entry_id"] = entry_id
+    coverage = result.get("coverage", {})
+    if not isinstance(coverage, dict) or not isinstance(result.get("operation_groups", []), list):
+        return result
+    checked = coverage.get("operation_sites_checked", [])
+    checked_sites = set(checked) if isinstance(checked, list) and all(isinstance(v, str) for v in checked) else set()
+    for group in result.get("operation_groups", []):
+        if not isinstance(group, dict):
+            continue
+        controlled = group.get("controlled_properties", [])
+        if isinstance(controlled, list) and all(isinstance(v, str) for v in controlled):
+            group["controlled_properties"] = sorted(set(controlled))
+        branches = group.get("branches", [])
+        if isinstance(branches, list) and all(isinstance(row, dict) for row in branches):
+            group["branches"] = sorted(branches, key=lambda row: canonical_json([
+                normalize_text(row.get("condition")),
+                sorted(row.get("locations", [])) if isinstance(row.get("locations", []), list) else [],
+            ]))
+        facts = group.get("facts", [])
+        if not isinstance(facts, list) or not all(isinstance(fact, dict) for fact in facts):
+            continue
+        used_keys = set()
+        for index, fact in enumerate(facts, 1):
+            base = str(fact.get("fact_key") or f"fact-{index}")
+            key = base
+            suffix = 2
+            while key in used_keys:
+                key = f"{base}-{suffix}"
+                suffix += 1
+            fact["fact_key"] = key
+            used_keys.add(key)
+
+        operation = group.get("operation", {})
+        if not isinstance(operation, dict):
+            continue
+        operation_facts = [fact for fact in facts if fact.get("type") == "operation"]
+        if operation_facts:
+            canonical_operation = operation_facts[0]
+            canonical_operation["body"] = operation.get("body", canonical_operation.get("body"))
+            canonical_operation["location"] = operation.get("location")
+            for extra in operation_facts[1:]:
+                extra["type"] = "reachability"
+        elif operation.get("body") and operation.get("location"):
+            key = "operation"
+            suffix = 2
+            while key in used_keys:
+                key = f"operation-{suffix}"
+                suffix += 1
+            facts.append({
+                "fact_key": key,
+                "type": "operation",
+                "body": operation["body"],
+                "location": operation["location"],
+                "evidence": list(operation.get("evidence", [])),
+            })
+        if operation.get("location"):
+            checked_sites.add(operation["location"])
+    merged_groups = {}
+    unmergeable_groups = []
+    for group in result.get("operation_groups", []):
+        if not isinstance(group, dict):
+            unmergeable_groups.append(group)
+            continue
+        operation = group.get("operation")
+        controlled = group.get("controlled_properties")
+        if (not isinstance(operation, dict) or not operation.get("location")
+                or not isinstance(controlled, list)):
+            unmergeable_groups.append(group)
+            continue
+        identity = operation_group_identity(entry_id, group)
+        existing = merged_groups.get(identity)
+        if existing is None:
+            merged_groups[identity] = group
+            continue
+        if len(group.get("facts", [])) > len(existing.get("facts", [])):
+            group, existing = existing, group
+            merged_groups[identity] = existing
+        for key in ("branches", "security_checks"):
+            rows = existing.get(key, []) + group.get(key, [])
+            existing[key] = list({canonical_json(row): row for row in rows}.values())
+        existing_context = existing.get("context", {})
+        duplicate_context = group.get("context", {})
+        context_evidence = existing_context.get("evidence", []) + duplicate_context.get("evidence", [])
+        existing_context["evidence"] = list({canonical_json(row): row for row in context_evidence}.values())
+    result["operation_groups"] = list(merged_groups.values()) + unmergeable_groups
+    normalized_calls = {}
+    for component_call in result.get("component_calls", []):
+        if not isinstance(component_call, dict):
+            continue
+        mappings = component_call.get("parameter_mappings", [])
+        if isinstance(mappings, list) and all(isinstance(row, dict) for row in mappings):
+            component_call["parameter_mappings"] = sorted(
+                {canonical_json(row): row for row in mappings}.values(),
+                key=canonical_json,
+            )
+        identity = canonical_json([
+            component_call.get("target_component_id"), normalize_location(component_call.get("call_location")),
+            component_call.get("invocation_control", {}), component_call.get("parameter_mappings", []),
+            component_call.get("principal_transition", {}),
+        ])
+        normalized_calls.setdefault(identity, component_call)
+    result["component_calls"] = list(normalized_calls.values())
+    coverage["operation_sites_checked"] = sorted(checked_sites)
+    return result
+
+
 def normalize_submission(result, task, conn=None):
     if not isinstance(result, dict):
         return result
@@ -26,109 +136,8 @@ def normalize_submission(result, task, conn=None):
     if task["kind"] != "poc_generation":
         result["entry_id"] = task["subject_id"]
     if task["kind"] == "component_semantic_analysis":
-        coverage = result.get("coverage", {})
-        if not isinstance(coverage, dict) or not isinstance(result.get("operation_groups", []), list):
-            return result
-        checked = coverage.get("operation_sites_checked", [])
-        checked_sites = set(checked) if isinstance(checked, list) and all(isinstance(v, str) for v in checked) else set()
-        for group in result.get("operation_groups", []):
-            if not isinstance(group, dict):
-                continue
-            controlled = group.get("controlled_properties", [])
-            if isinstance(controlled, list) and all(isinstance(v, str) for v in controlled):
-                group["controlled_properties"] = sorted(set(controlled))
-            branches = group.get("branches", [])
-            if isinstance(branches, list) and all(isinstance(row, dict) for row in branches):
-                group["branches"] = sorted(branches, key=lambda row: canonical_json([
-                    normalize_text(row.get("condition")),
-                    sorted(row.get("locations", [])) if isinstance(row.get("locations", []), list) else [],
-                ]))
-            facts = group.get("facts", [])
-            if not isinstance(facts, list) or not all(isinstance(fact, dict) for fact in facts):
-                continue
-            used_keys = set()
-            for index, fact in enumerate(facts, 1):
-                base = str(fact.get("fact_key") or f"fact-{index}")
-                key = base
-                suffix = 2
-                while key in used_keys:
-                    key = f"{base}-{suffix}"
-                    suffix += 1
-                fact["fact_key"] = key
-                used_keys.add(key)
-
-            operation = group.get("operation", {})
-            if not isinstance(operation, dict):
-                continue
-            operation_facts = [fact for fact in facts if fact.get("type") == "operation"]
-            if operation_facts:
-                canonical_operation = operation_facts[0]
-                canonical_operation["body"] = operation.get("body", canonical_operation.get("body"))
-                canonical_operation["location"] = operation.get("location")
-                for extra in operation_facts[1:]:
-                    extra["type"] = "reachability"
-            elif operation.get("body") and operation.get("location"):
-                key = "operation"
-                suffix = 2
-                while key in used_keys:
-                    key = f"operation-{suffix}"
-                    suffix += 1
-                facts.append({
-                    "fact_key": key,
-                    "type": "operation",
-                    "body": operation["body"],
-                    "location": operation["location"],
-                    "evidence": list(operation.get("evidence", [])),
-                })
-            if operation.get("location"):
-                checked_sites.add(operation["location"])
-        merged_groups = {}
-        unmergeable_groups = []
-        for group in result.get("operation_groups", []):
-            if not isinstance(group, dict):
-                unmergeable_groups.append(group)
-                continue
-            operation = group.get("operation")
-            controlled = group.get("controlled_properties")
-            if (not isinstance(operation, dict) or not operation.get("location")
-                    or not isinstance(controlled, list)):
-                unmergeable_groups.append(group)
-                continue
-            identity = operation_group_identity(task["subject_id"], group)
-            existing = merged_groups.get(identity)
-            if existing is None:
-                merged_groups[identity] = group
-                continue
-            if len(group.get("facts", [])) > len(existing.get("facts", [])):
-                group, existing = existing, group
-                merged_groups[identity] = existing
-            for key in ("branches", "security_checks"):
-                rows = existing.get(key, []) + group.get(key, [])
-                existing[key] = list({canonical_json(row): row for row in rows}.values())
-            existing_context = existing.get("context", {})
-            duplicate_context = group.get("context", {})
-            context_evidence = existing_context.get("evidence", []) + duplicate_context.get("evidence", [])
-            existing_context["evidence"] = list({canonical_json(row): row for row in context_evidence}.values())
-        result["operation_groups"] = list(merged_groups.values()) + unmergeable_groups
-        normalized_calls = {}
-        for component_call in result.get("component_calls", []):
-            if not isinstance(component_call, dict):
-                continue
-            mappings = component_call.get("parameter_mappings", [])
-            if isinstance(mappings, list) and all(isinstance(row, dict) for row in mappings):
-                component_call["parameter_mappings"] = sorted(
-                    {canonical_json(row): row for row in mappings}.values(),
-                    key=canonical_json,
-                )
-            identity = canonical_json([
-                component_call.get("target_component_id"), normalize_location(component_call.get("call_location")),
-                component_call.get("invocation_control", {}), component_call.get("parameter_mappings", []),
-                component_call.get("principal_transition", {}),
-            ])
-            normalized_calls.setdefault(identity, component_call)
-        result["component_calls"] = list(normalized_calls.values())
-        coverage["operation_sites_checked"] = sorted(checked_sites)
-    elif task["kind"] == "exploitability_validation":
+        return normalize_semantic_result(result, task["subject_id"])
+    if task["kind"] == "exploitability_validation":
         for validation in result.get("validations", []):
             if not isinstance(validation, dict):
                 continue

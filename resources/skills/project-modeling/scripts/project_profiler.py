@@ -152,6 +152,15 @@ def module_output_kind(module_type):
     }.get(str(module_type or "").lower(), "unknown")
 
 
+def supports_direct_exported_entry(component):
+    """Whether exported means an ordinary application can invoke the component directly."""
+    extension_type = str(component.get("extension_type") or "").lower()
+    return not (
+        component.get("kind") == "extension_ability"
+        and extension_type == "form"
+    )
+
+
 def make_entry_candidates(components):
     candidates = []
 
@@ -177,11 +186,15 @@ def make_entry_candidates(components):
         if not is_production_source_scope(component.get("source_scope")):
             continue
         base = f"{component['module_file']}#{component['kind']}:{component.get('name') or component['component_id']}"
+        direct_exported_entry = (
+            component.get("exported") is True
+            and supports_direct_exported_entry(component)
+        )
         add("component_scope", component, base, {
             "component_scope": True,
-            "requires_upstream_reachability_evidence": component.get("exported") is not True,
+            "requires_upstream_reachability_evidence": not direct_exported_entry,
         })
-        if component.get("exported") is True:
+        if direct_exported_entry:
             add("exported_component", component, base, {"exported": True})
         for skill in component.get("skills", []):
             location = f"{base}.skills[{skill['skill_index']}]"

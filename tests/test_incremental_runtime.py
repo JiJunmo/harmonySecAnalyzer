@@ -11,7 +11,7 @@ SCRIPTS = ROOT / "resources/skills/audit-orchestration/scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from audit_runtime.common import SIX_EXPLOITABILITY_CHECKS, canonical_json, run_paths, write_json
-from audit_runtime.commands import finalize_run, submit_result
+from audit_runtime.commands import finalize_run
 from audit_runtime.incremental import (
     BASELINE_SCHEMA_VERSION, _entry_groups, audit_contract_hash, baseline_paths, file_manifest, git_state,
     plan_incremental,
@@ -20,6 +20,7 @@ from audit_runtime.lifecycle import initialize_run, new_run
 from audit_runtime.reporting import build_report
 from audit_runtime.scheduler import claim_batch
 from audit_runtime.store import database
+from tests.runtime_support import submit_task_fixture as submit_result
 
 
 class IncrementalRuntimeTest(unittest.TestCase):
@@ -268,7 +269,7 @@ class IncrementalRuntimeTest(unittest.TestCase):
                 task["subject_id"], task["task_id"], task["input"]["entry"]["symbol"],
                 external_candidate_id,
             )
-            submission = Path(handle["submission_file"])
+            submission = Path(handle["task_file"]).with_suffix(".test-result.json")
             submission.write_text(json.dumps(result), encoding="utf-8")
             accepted = submit_result(run, task["task_id"], submission, task["attempt"])
             self.assertTrue(accepted["accepted"], accepted)
@@ -325,7 +326,7 @@ class IncrementalRuntimeTest(unittest.TestCase):
         )
         semantic["operation_groups"] = [group]
         semantic["coverage"]["operation_sites_checked"] = ["EntryAbility.ets:42"]
-        semantic_submission = Path(semantic_handle["submission_file"])
+        semantic_submission = Path(semantic_handle["task_file"]).with_suffix(".test-result.json")
         semantic_submission.write_text(json.dumps(semantic), encoding="utf-8")
         semantic_accepted = submit_result(
             full, semantic_task["task_id"], semantic_submission, semantic_task["attempt"]
@@ -366,7 +367,7 @@ class IncrementalRuntimeTest(unittest.TestCase):
             "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
             "summary": "六维验证完成", "validations": [validation],
         }
-        validation_submission = Path(validation_handle["submission_file"])
+        validation_submission = Path(validation_handle["task_file"]).with_suffix(".test-result.json")
         validation_submission.write_text(json.dumps(validation_result), encoding="utf-8")
         accepted = submit_result(
             full, validation_task["task_id"], validation_submission, validation_task["attempt"]

@@ -1,6 +1,6 @@
 # harmonySecAnalyzer-v3.1
 
-面向 HarmonyOS ArkTS 项目的多智能体白盒安全审计系统，同时支持 OpenCode 与 Claude Code。脚本完成项目建模、Atlas 索引和组件任务生成；组件语义 Agent 负责源码事实，独立验证 Agent 只根据落盘语义结果完成六维漏洞有效性判断。
+面向 HarmonyOS ArkTS 项目的多智能体白盒安全审计系统，同时支持 OpenCode 与 Claude Code。脚本完成项目建模、Atlas 索引、组件探索状态和任务生成；组件语义 Agent 使用 Atlas 分轮探索源码事实，运行时从闭合节点生成最终语义结果，独立验证 Agent 再完成六维漏洞有效性判断。
 
 OpenCode 使用 `.opencode/` 资源目录；Claude Code 使用 `.claude/` 资源目录（含 `.mcp.json` 的 Atlas MCP 与 `/audit` 命令）。部署时会把 Agent、Skill、脚本、Schema 和配置复制到对应工具的配置目录；运行时不依赖本源码仓库的相对路径。
 
@@ -39,13 +39,13 @@ python3 deploy.py --tool claude --uninstall
 | 阶段 | 组件 | 产出 |
 |---|---|---|
 | 审计准备与任务生成 | `project-modeling` Skill、Atlas Indexer、Python Runtime | 项目事实、完整索引、组件分析单元与任务 |
-| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP | 真实入口、数据传播、实际操作组、组件间身份权限变化和防护事实；效果推断与源码事实分层 |
-| 组件关联与六维验证 | Python Correlator、`exploitability-validator` Agent | 跨组件参数与身份链、统一决策契约、带证据的三态六维结论、独立效果链核验、反证和漏洞分类 |
-| PoC 生成 | `poc-generator` Agent | 已确认漏洞的可复现触发套件（shell/ArkTS 形态决策、Atlas 符号核验、运行时标记“已生成但未编译验证”、`poc_artifacts` 落库） |
+| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP、Semantic Exploration Runtime | 以有限节点为一轮渐进探索，断点、调用边和安全状态写入 `run.db`；闭合后由脚本生成真实入口、数据传播、实际操作组、组件间身份权限变化和防护事实 |
+| 组件关联与六维验证 | Python Correlator、`exploitability-validator` Agent、Result Writer | 跨组件参数与身份链、带证据的三态六维结论；Agent 写草稿，`audit_orchestrator.py task-submit` 统一规范化、校验并即时落库 |
+| PoC 生成 | `poc-generator` Agent、Result Writer | 已确认漏洞的可复现触发套件；脚本补齐固定字段、规范证据引用并标记“已生成但未编译验证” |
 | 状态与报告 | `audit-orchestration` Skill | SQLite 状态、根因聚合、漏洞证据路径、JSON/Markdown/HTML |
 
 CAP-DOS-001 用于 ArkTS 可用性安全审计，覆盖外部可触发的崩溃、无界或可放大的 CPU/内存/线程/队列/存储消耗，以及可重复的 IPC 和 CommonEvent 资源耗尽。Native/NAPI 层 DoS 不在当前范围内。
 
-`run.db` 是运行状态唯一事实源。`exports/attack_matrix.json` 是入口、实际操作组和 Finding 的确定性覆盖视图。
+`run.db` 是运行状态唯一事实源。`exports/exploration_graph.json` 展示组件探索过程，`exports/attack_matrix.json` 是入口、实际操作组和 Finding 的确定性覆盖视图。
 
 完整设计见 [DESIGN.md](DESIGN.md)。

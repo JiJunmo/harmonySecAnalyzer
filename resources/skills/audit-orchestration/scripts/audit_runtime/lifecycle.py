@@ -174,8 +174,8 @@ def new_run(reports_root, target_repo, mode="full", capabilities=None, component
 
 def _reuse_semantic_result(conn, paths, task, entry_id, snapshot):
     """Import one schema-valid semantic result through the normal persistence contract."""
-    from .commands import _merge_semantic_analysis
     from .contracts import normalize_submission, validate_submission
+    from .semantic_results import materialize_semantic_result
 
     result = json.loads(json.dumps(snapshot.get("result", {})))
     result["task_id"] = task["task_id"]
@@ -184,7 +184,7 @@ def _reuse_semantic_result(conn, paths, task, entry_id, snapshot):
     errors = validate_submission(result, task, conn)
     if errors:
         return False, errors
-    _merge_semantic_analysis(conn, task, result)
+    materialize_semantic_result(conn, task, result)
     result_ref = paths["tasks"] / f"{task['task_id']}.result.json"
     write_json(result_ref, result)
     conn.execute(
@@ -196,6 +196,8 @@ def _reuse_semantic_result(conn, paths, task, entry_id, snapshot):
 
 
 def initialize_run(run_dir, project_model):
+    from .semantic_exploration import ensure_component_exploration
+
     paths = ensure_run_dirs(run_dir)
     source = Path(project_model).expanduser().resolve()
     model = read_json(source)
@@ -270,6 +272,7 @@ def initialize_run(run_dir, project_model):
                     {"project_model": str(paths["project_model"])},
                 )
                 if initial_task:
+                    ensure_component_exploration(conn, entry_id)
                     task_ids.append(task_id)
                 else:
                     task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
@@ -279,6 +282,7 @@ def initialize_run(run_dir, project_model):
                     if reused:
                         reused_entry_ids.append(entry_id)
                     else:
+                        ensure_component_exploration(conn, entry_id)
                         task_ids.append(task_id)
                         append_event(conn, "semantic_reuse_rejected", entry_id, {"errors": errors})
         conn.execute("UPDATE runs SET status='running',updated_at=? WHERE run_id=?", (now(), run["run_id"]))

@@ -37,6 +37,46 @@ class ProjectProfilerTest(unittest.TestCase):
             self.assertIn("deeplink", types)
             self.assertNotIn("common_event_candidate", types)
 
+    def test_form_extension_is_analyzed_without_direct_exported_entry(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            main = root / "entry/src/main"
+            main.mkdir(parents=True)
+            (main / "module.json5").write_text("""{
+              module: { name: 'entry', type: 'entry',
+                abilities: [{name: 'EntryAbility', exported: true}],
+                extensionAbilities: [{
+                  name: 'EntryFormAbility', type: 'form', exported: true,
+                  srcEntry: './ets/entryformability/EntryFormAbility.ets',
+                  permissions: ['com.example.permission.USE_FORM']
+                }]
+              }
+            }""", encoding="utf-8")
+
+            model = MODULE.profile_project(root)
+            self.assertValidModel(model)
+            components = {row["name"]: row for row in model["components"]}
+            candidates = {}
+            for row in model["entry_candidates"]:
+                candidates.setdefault(row["component_name"], []).append(row)
+
+            form = components["EntryFormAbility"]
+            self.assertEqual(form["lifecycle_candidates"], ["onAddForm", "onUpdateForm", "onFormEvent"])
+            self.assertEqual(form["permissions"], ["com.example.permission.USE_FORM"])
+            self.assertEqual(
+                {row["type"] for row in candidates["EntryFormAbility"]},
+                {"component_scope"},
+            )
+            self.assertTrue(
+                candidates["EntryFormAbility"][0]["trigger_facts"][
+                    "requires_upstream_reachability_evidence"
+                ]
+            )
+            self.assertIn(
+                "exported_component",
+                {row["type"] for row in candidates["EntryAbility"]},
+            )
+
     def test_models_declared_hap_hsp_and_local_dependency(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

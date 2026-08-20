@@ -36,7 +36,8 @@ ORCHESTRATION_RUNTIME_FILES = [
     f"resources/skills/audit-orchestration/scripts/audit_runtime/{name}"
     for name in (
         "__init__.py", "common.py", "store.py", "contracts.py", "evidence.py", "reporting.py",
-        "commands.py", "initialization.py", "lifecycle.py", "correlation.py", "scheduler.py", "task_context.py", "cli.py",
+        "commands.py", "initialization.py", "lifecycle.py", "correlation.py", "scheduler.py", "task_context.py",
+        "semantic_exploration.py", "semantic_results.py", "result_writer.py", "cli.py",
     )
 ]
 
@@ -57,6 +58,7 @@ REQUIRED = [
     "resources/skills/audit-orchestration/config/schemas/audit-capabilities.schema.json",
     "resources/skills/audit-orchestration/config/schemas/project-model.schema.json",
     "resources/skills/audit-orchestration/config/schemas/component-semantic-result.schema.json",
+    "resources/skills/audit-orchestration/config/schemas/component-exploration-step.schema.json",
     "resources/skills/audit-orchestration/config/schemas/exploitability-validation-result.schema.json",
     "resources/skills/audit-orchestration/config/schemas/poc-result.schema.json",
     "resources/skills/project-modeling/SKILL.md",
@@ -75,7 +77,7 @@ LEGACY_SKILLS = ["attack-patterns"]
 
 AGENT_DESCRIPTIONS = {
     "harmony-auditor.md": "鸿蒙 ArkTS 白盒安全审计编排者。负责确定性初始化、任务调度和报告准入，不直接分析源码。",
-    "component-semantic-analyzer.md": "以单个组件为单位提取输入、安全相关操作和跨组件调用控制事实。只处理 component_semantic_analysis 任务。",
+    "component-semantic-analyzer.md": "按受控节点渐进探索单个组件的输入、安全相关操作和跨组件调用控制事实。只处理 component_semantic_analysis 任务。",
     "exploitability-validator.md": "根据已落盘语义事实执行有界的六维漏洞有效性验证。只处理 exploitability_validation 任务。",
     "poc-generator.md": "为已确认漏洞生成结构化、可人工复现的 PoC 触发套件，产出 ArkTS/Shell 等可执行片段。只处理 poc_generation 任务。",
 }
@@ -92,9 +94,9 @@ COMMAND_DESCRIPTION = "对 HarmonyOS ArkTS 项目执行组件驱动的白盒安�
 ARGUMENT_HINT = "<repo-path> [--incremental] [--resume <run-dir>] [--capability <CAP-ID>] [--component <Name>]"
 
 SKILL_DESCRIPTIONS = {
-    "audit-orchestration": "基于 SQLite 的组件级安全分析运行时调用协议。当需要执行审计运行时的 prepare/claim-batch/reconcile-batch/finalize/resume/status 命令，或确认 run 状态机、准入条件、增量/能力/组件模式行为与 run 目录结构时使用。",
-    "audit-workflow": "以组件为任务单位、以实际敏感操作组为判断单位的审计语义。当需要确认组件语义分析、跨组件连接、六维验证、根因归并与 Atlas 有界追踪的执行边界时使用。",
-    "project-modeling": "确定性解析 HarmonyOS JSON5 工程配置，为组件任务生成提供项目事实与入口候选。当需要了解项目模型生成过程、Profiler 输出边界或 Atlas 索引准入条件时使用。",
+    "audit-orchestration": "基于 SQLite 的组件级安全分析运行时调用协议。当需要执行 prepare/claim-batch/explore-next/explore-record/explore-finish/task-submit/reconcile-batch/finalize/resume/status，或确认 run 状态机、结果规范化、准入条件、审计模式行为与目录结构时使用。",
+    "audit-workflow": "以组件渐进探索为语义单位、以实际敏感操作组为判断单位的审计流程。当需要确认节点探索、停止条件、跨组件连接、六维验证、根因归并与 Atlas 使用边界时使用。",
+    "project-modeling": "确定性解析 HarmonyOS JSON5 工程配置，为组件探索生成项目事实与入口候选。当需要了解项目模型生成过程、Profiler 输出边界或 Atlas 索引准入条件时使用。",
 }
 
 # ---------------- 每工具 profile ----------------
@@ -113,7 +115,10 @@ def _opencode_permission(agent, tools):
             "bash": {"*": "deny", "python3 *audit_orchestrator.py*": "allow"},
             "edit": "deny",
         }
-    return {"external_directory": "allow", "read": "allow", "edit": "allow", **atlas}
+    permissions = {"external_directory": "allow", "read": "allow", "edit": "allow", **atlas}
+    if agent in {"component-semantic-analyzer.md", "exploitability-validator.md", "poc-generator.md"}:
+        permissions["bash"] = {"python3 *audit_orchestrator.py*": "allow"}
+    return permissions
 
 
 def _claude_tools(agent):
@@ -122,7 +127,8 @@ def _claude_tools(agent):
     mcp = ", ".join(f"mcp__atlas__{t}" for t in tools)
     if agent == "harmony-auditor.md":
         return f"{base}, Skill, Agent, Bash, {mcp}"
-    return f"{base}, Edit, Write, {mcp}"
+    extra = "Edit, Write, Bash"
+    return f"{base}, {extra}, {mcp}"
 
 
 OPENCODE_PROFILE = {
@@ -167,7 +173,7 @@ CLAUDE_PROFILE = {
     "doc": {
         "intro": "本项目同时适配 Claude Code 与 OpenCode 的 HarmonyOS ArkTS 白盒安全审计多智能体系统。本文件面向 Claude Code，由 `python3 deploy.py --tool claude` 生成；OpenCode 侧见 `AGENTS.md`（由 `--tool opencode` 生成）。",
         "entry": "- 命令：`/audit [--incremental] [--capability CAP-ID] [--component Component] <repo-path>`（命令正文用 Agent 工具派发，`subagent_type: harmony-auditor`）\n- 编排者：工具配置目录中的 `agents/harmony-auditor.md`",
-        "extra": "## 权限说明\n\n- `.claude/settings.json` 放行当前部署包中的编排脚本命令与全部 Atlas MCP 工具；其他 Bash 命令沿用用户配置。\n- 审计的目标仓库在工作目录之外时，需要把目标仓绝对路径加入 `.claude/settings.json` 的 `additionalDirectories`，或在首次访问时批准。\n- 任务文件（`**/reports/**/tasks/**`）与 `run.db` 由编排者指令约束为不可读取；编排者只通过 `claim-batch`/`reconcile-batch` 推进任务状态。\n- Atlas MCP 由项目级 `.mcp.json` 提供（stdio 启动 `atlas mcp`）；Claude Code 中工具名为 `mcp__atlas__*`。\n- 全局安装后任意目录启动 Claude Code 即可用 `/audit`：`python3 deploy.py --tool claude --global`；卸载：`python3 deploy.py --tool claude --uninstall`。",
+        "extra": "## 权限说明\n\n- `.claude/settings.json` 放行当前部署包中的编排脚本命令与全部 Atlas MCP 工具；其他 Bash 命令沿用用户配置。\n- 审计的目标仓库在工作目录之外时，需要把目标仓绝对路径加入 `.claude/settings.json` 的 `additionalDirectories`，或在首次访问时批准。\n- 任务文件（`**/reports/**/tasks/**`）与 `run.db` 由编排者指令约束为不可直接读取或修改；任务状态只通过任务协议中的受控命令以及 `claim-batch`/`reconcile-batch` 推进。\n- Atlas MCP 由项目级 `.mcp.json` 提供（stdio 启动 `atlas mcp`）；Claude Code 中工具名为 `mcp__atlas__*`。\n- 全局安装后任意目录启动 Claude Code 即可用 `/audit`：`python3 deploy.py --tool claude --global`；卸载：`python3 deploy.py --tool claude --uninstall`。",
     },
 }
 

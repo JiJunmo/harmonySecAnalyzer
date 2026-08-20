@@ -9,15 +9,17 @@ SCRIPTS = ROOT / "resources/skills/audit-orchestration/scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from audit_runtime.commands import _ensure_poc_task, finalize_run, submit_result
+from audit_runtime.commands import _ensure_poc_task, finalize_run
 from audit_runtime.common import SIX_EXPLOITABILITY_CHECKS, run_paths, write_json
 from audit_runtime.incremental import plan_incremental
 from audit_runtime.lifecycle import initialize_run, new_run
+from audit_runtime.result_writer import submit_task_result
 from audit_runtime.scheduler import claim_batch, readiness, reconcile_batch
 from audit_runtime.store import database, transaction
 
-from test_flow_runtime import SplitPipelineRuntimeTest
-from test_incremental_runtime import IncrementalRuntimeTest
+from tests.test_flow_runtime import SplitPipelineRuntimeTest
+from tests.test_incremental_runtime import IncrementalRuntimeTest
+from tests.runtime_support import submit_task_fixture as submit_result
 
 
 SCHEMA_ENTRY_TYPES = {"deeplink", "want", "exported_ability", "provider", "common_event", "ipc_transaction", "project"}
@@ -44,7 +46,7 @@ def poc_result_for(task, **overrides):
 
 class PocGenerationTest(SplitPipelineRuntimeTest):
     def submit_poc_result(self, task, result):
-        return submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        return submit_result(self.run, task["task_id"], self.write_result(task, result), task["attempt"])
 
     def test_schedules_poc_task_after_confirmed_validation_and_persists_artifact(self):
         self.submit_semantics([self.semantic_group()])
@@ -80,7 +82,34 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
         html = (self.run / "report.html").read_text(encoding="utf-8")
         self.assertIn("验证方式 / PoC", html)
 
-    def test_rejects_placeholder_and_forbidden_output(self):
+    def test_result_writer_normalizes_poc_draft(self):
+        self.submit_semantics([self.semantic_group()])
+        _, validation = self.submit_validation()
+        self.assertTrue(validation["accepted"], validation)
+        task = self.claim("poc_generation")
+        draft_value = poc_result_for(task)
+        for key in ("task_id", "finding_id", "limitations", "prerequisites"):
+            draft_value.pop(key)
+        draft_value["classification"] = "confirmed_vulnerability"
+        draft_value["evidence_refs"] = ["EVID-NOT-IN-FINDING"]
+        draft_value["execution_hint"].pop("network_required")
+        draft = Path(task["input"]["result_protocol"]["draft_file"])
+        draft.write_text(json.dumps(draft_value), encoding="utf-8")
+
+        prepared = submit_task_result(
+            self.run, task["task_id"], task["attempt"], draft,
+        )
+        self.assertTrue(prepared["accepted"], prepared)
+        canonical = json.loads(Path(prepared["result_ref"]).read_text(encoding="utf-8"))
+        self.assertEqual(canonical["task_id"], task["task_id"])
+        self.assertEqual(canonical["finding_id"], task["subject_id"])
+        self.assertEqual(canonical["prerequisites"], [])
+        self.assertFalse(canonical["execution_hint"]["network_required"])
+        self.assertIn("尚未经过编译", canonical["limitations"])
+        self.assertNotIn("classification", canonical)
+        self.assertEqual(canonical["evidence_refs"], [])
+
+    def test_rejects_placeholder_and_drops_forbidden_output(self):
         self.submit_semantics([self.semantic_group()])
         _, submitted = self.submit_validation()
         self.assertTrue(submitted["accepted"], submitted)
@@ -91,12 +120,11 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
         rejected = self.submit_poc_result(task, {**base, "code": "startAbility({ uri: '略' })"})
         self.assertFalse(rejected["accepted"])
         self.assertIn("poc_placeholder_found", rejected["error"])
-        task = self.claim("poc_generation")
 
-        rejected = self.submit_poc_result(task, {**base, "severity": "critical"})
-        self.assertFalse(rejected["accepted"])
-        # schema additionalProperties fires before the domain guard on the runtime path
-        self.assertIn("Additional properties", rejected["error"])
+        accepted = self.submit_poc_result(task, {**base, "severity": "critical"})
+        self.assertTrue(accepted["accepted"], accepted)
+        canonical = json.loads(Path(accepted["result_ref"]).read_text(encoding="utf-8"))
+        self.assertNotIn("severity", canonical)
 
     def test_enforces_trigger_form_consistency(self):
         self.submit_semantics([self.semantic_group()])
@@ -109,26 +137,40 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
         rejected = self.submit_poc_result(task, {**base, "trigger": {"kind": "adb_shell", "payload": {"cmd": "ls"}}})
         self.assertFalse(rejected["accepted"])
         self.assertIn("poc_arkts_trigger_mismatch", rejected["error"])
-        task = self.claim("poc_generation")
 
         rejected = self.submit_poc_result(task, {**base, "language": "shell", "code": "startAbility()"})
         self.assertFalse(rejected["accepted"])
         self.assertIn("poc_shell_command_required", rejected["error"])
-        task = self.claim("poc_generation")
 
         accepted = self.submit_poc_result(task, {**base, "language": "shell",
                                                  "code": "hdc shell aa start -a ohos.intent.action.VIEW -d 'demo://query?q=1'"})
         self.assertTrue(accepted["accepted"], accepted)
 
-    def test_rejects_unknown_evidence_refs_and_unbound_symbol_refs(self):
+    def test_normalizes_unknown_evidence_refs(self):
         self.submit_semantics([self.semantic_group()])
         _, submitted = self.submit_validation()
         self.assertTrue(submitted["accepted"], submitted)
         task = self.claim("poc_generation")
 
         rejected = self.submit_poc_result(task, poc_result_for(task, evidence_refs=["EV-MISSING"]))
-        self.assertFalse(rejected["accepted"])
-        self.assertIn("unknown_evidence", rejected["error"])
+        self.assertTrue(rejected["accepted"], rejected)
+        self.assertTrue(any(
+            "removed_out_of_scope_evidence" in warning
+            for warning in rejected["warnings"]
+        ))
+
+        finding_id = task["input"]["finding"]["finding_id"]
+        with database(self.run / "run.db") as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM poc_artifacts WHERE finding_id=?", (finding_id,)
+            ).fetchone()
+            payload = json.loads(row["payload_json"])
+            self.assertEqual(payload["evidence_refs"], [])
+
+    def test_rejects_unbound_symbol_refs_and_persists_valid_refs(self):
+        self.submit_semantics([self.semantic_group()])
+        _, submitted = self.submit_validation()
+        self.assertTrue(submitted["accepted"], submitted)
         task = self.claim("poc_generation")
 
         rejected = self.submit_poc_result(task, poc_result_for(
@@ -136,7 +178,6 @@ class PocGenerationTest(SplitPipelineRuntimeTest):
                                 "verified_by": "atlas_symbol"}]))
         self.assertFalse(rejected["accepted"])
         self.assertIn("symbol_ref_evidence_missing", rejected["error"])
-        task = self.claim("poc_generation")
 
         accepted = self.submit_poc_result(task, poc_result_for(
             task, symbol_refs=[{"symbol": "EntryAbility.onNewWant",
@@ -243,8 +284,9 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
         }
         semantic["operation_groups"] = [group]
         semantic["coverage"]["operation_sites_checked"] = ["EntryAbility.ets:42"]
-        Path(semantic_handle["submission_file"]).write_text(json.dumps(semantic), encoding="utf-8")
-        accepted = submit_result(full, semantic_task["task_id"], Path(semantic_handle["submission_file"]),
+        semantic_result = Path(semantic_handle["task_file"]).with_suffix(".test-result.json")
+        semantic_result.write_text(json.dumps(semantic), encoding="utf-8")
+        accepted = submit_result(full, semantic_task["task_id"], semantic_result,
                                  semantic_task["attempt"])
         self.assertTrue(accepted["accepted"], accepted)
 
@@ -288,8 +330,9 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
             "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
             "summary": "六维验证完成", "validations": [validation],
         }
-        Path(validation_handle["submission_file"]).write_text(json.dumps(validation_result), encoding="utf-8")
-        accepted = submit_result(full, validation_task["task_id"], Path(validation_handle["submission_file"]),
+        validation_result_path = Path(validation_handle["task_file"]).with_suffix(".test-result.json")
+        validation_result_path.write_text(json.dumps(validation_result), encoding="utf-8")
+        accepted = submit_result(full, validation_task["task_id"], validation_result_path,
                                  validation_task["attempt"])
         self.assertTrue(accepted["accepted"], accepted)
 
@@ -301,8 +344,9 @@ class PocIncrementalReuseTest(IncrementalRuntimeTest):
             "evidence": [self.source_evidence("核验 PoC 使用的应用入口符号", "EntryAbility.ets:10")],
             "verified_by": "atlas_symbol",
         }]
-        Path(poc_handle["submission_file"]).write_text(json.dumps(poc), encoding="utf-8")
-        accepted = submit_result(full, poc_task["task_id"], Path(poc_handle["submission_file"]),
+        poc_result_path = Path(poc_handle["task_file"]).with_suffix(".test-result.json")
+        poc_result_path.write_text(json.dumps(poc), encoding="utf-8")
+        accepted = submit_result(full, poc_task["task_id"], poc_result_path,
                                  poc_task["attempt"])
         self.assertTrue(accepted["accepted"], accepted)
         self.assertTrue(finalize_run(full)["baseline"]["updated"])

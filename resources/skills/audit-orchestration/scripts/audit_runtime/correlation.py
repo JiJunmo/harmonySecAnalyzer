@@ -110,6 +110,8 @@ def _external_roots(conn, entries):
 
 def enqueue_component_call_targets(conn, project_model):
     """Expand components reached by data control or caller-controlled invocation."""
+    from .semantic_exploration import ensure_component_exploration
+
     component_entries = {}
     for row in conn.execute("SELECT entry_id,payload_json FROM entries ORDER BY entry_id"):
         component_id = row_json(row, "payload_json", {}).get("component_id")
@@ -137,6 +139,7 @@ def enqueue_component_call_targets(conn, project_model):
             conn, f"component-semantics:{entry_id}", "component_semantic_analysis", entry_id,
             {"project_model": str(project_model), "discovered_from_component_calls": sorted(call_ids)},
         ))
+        ensure_component_exploration(conn, entry_id)
     if task_ids:
         append_event(conn, "component_scope_expanded", None, {
             "semantic_tasks_created": len(task_ids), "task_ids": task_ids,

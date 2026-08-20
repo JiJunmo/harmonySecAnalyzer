@@ -2,65 +2,32 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from .common import *
 from .contracts import normalize_submission, validate_submission
-from .evidence import (materialize_component_call, materialize_poc, materialize_semantic_group,
-                       materialize_validation)
+from .evidence import materialize_poc, materialize_validation
 from .lifecycle import run_row, update_session
 from .scheduler import readiness, reject_attempt
 from .store import *
 from .task_context import group_context
 
 
-def submit_result(run_dir, task_id, input_path, attempt=None):
-    paths = run_paths(run_dir)
-    result = read_json(input_path)
-    rejected = None
-    result_ref = None
-    with database(paths["db"]) as conn, transaction(conn):
-        task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        if task is None:
-            raise ValueError("task_not_found")
-        if task["status"] != "running":
-            return {"ok": True, "accepted": False, "task_id": task_id, "status": task["status"],
-                    "error": f"task_not_running:{task['status']}", "ignored": True}
-        if attempt is not None and int(attempt) != task["attempts"]:
-            return {"ok": True, "accepted": False, "task_id": task_id, "status": task["status"],
-                    "error": f"stale_attempt:expected={task['attempts']}:actual={attempt}", "ignored": True}
-        expected = paths["tasks"] / f"{task_id}.attempt-{task['attempts']}.submission.json"
-        if attempt is not None and Path(input_path).expanduser().resolve() != expected.resolve():
-            return {"ok": True, "accepted": False, "task_id": task_id, "status": task["status"],
-                    "error": "unexpected_submission_path", "ignored": True}
-        if not isinstance(result, dict):
-            errors = ["invalid_result_json"]
-        else:
-            result = normalize_submission(result, task, conn)
-            errors = validate_submission(result, task, conn)
-        if errors:
-            error = "invalid_submission:" + "|".join(errors)
-            rejected = {"error": error, "status": reject_attempt(conn, task, error)}
-        else:
-            if task["kind"] == "component_semantic_analysis":
-                summary = _merge_semantic_analysis(conn, task, result)
-            elif task["kind"] == "exploitability_validation":
-                summary = _merge_exploitability_validation(conn, task, result, paths)
-            elif task["kind"] == "poc_generation":
-                summary = _merge_poc_artifact(conn, task, result)
-            else:
-                raise ValueError(f"unsupported_task_kind:{task['kind']}")
-            result_ref = paths["tasks"] / f"{task_id}.result.json"
-            write_json(result_ref, result)
-            conn.execute("UPDATE tasks SET status='completed',result_ref=?,error=NULL,updated_at=? WHERE task_id=?",
-                         (str(result_ref), now(), task_id))
-            append_event(conn, "task_completed", task_id, summary)
-    if rejected:
-        return {"ok": True, "accepted": False, "task_id": task_id, **rejected}
-    submitted = Path(input_path).expanduser().resolve()
-    if result_ref and submitted != result_ref.resolve():
-        submitted.unlink(missing_ok=True)
-    return {"ok": True, "accepted": True, "task_id": task_id, "status": "completed", **summary}
+def complete_task_result(conn, paths, task, result):
+    """Persist one already validated validation or PoC result in the caller's transaction."""
+    if task["kind"] == "exploitability_validation":
+        summary = _merge_exploitability_validation(conn, task, result, paths)
+    elif task["kind"] == "poc_generation":
+        summary = _merge_poc_artifact(conn, task, result)
+    else:
+        raise ValueError(f"unsupported_task_kind:{task['kind']}")
+    result_ref = paths["tasks"] / f"{task['task_id']}.result.json"
+    write_json(result_ref, result)
+    conn.execute(
+        "UPDATE tasks SET status='completed',result_ref=?,error=NULL,updated_at=? WHERE task_id=?",
+        (str(result_ref), now(), task["task_id"]),
+    )
+    append_event(conn, "task_completed", task["task_id"], summary)
+    return summary, result_ref
 
 
 def _merge_finding(conn, group_id, group, validation):
@@ -120,72 +87,6 @@ def _merge_finding(conn, group_id, group, validation):
          canonical_json(evidence_refs), canonical_json(payload), now()),
     )
     return finding_id
-
-
-def _merge_semantic_analysis(conn, task, result):
-    conn.execute("INSERT INTO semantic_analyses VALUES (?,?,?,?,?)",
-                 (task["subject_id"], task["task_id"], result["summary"], canonical_json(result["coverage"]), now()))
-    entry = conn.execute("SELECT payload_json FROM entries WHERE entry_id=?", (task["subject_id"],)).fetchone()
-    entry_payload = row_json(entry, "payload_json", {})
-    call_ids = []
-    for source in result["component_calls"]:
-        component_call = materialize_component_call(conn, task["task_id"], source)
-        identity = canonical_json([
-            task["subject_id"], component_call["target_component_id"],
-            normalize_location(component_call["call_location"]), component_call["invocation_control"],
-            component_call["parameter_mappings"],
-            component_call["principal_transition"],
-        ])
-        call_id = stable_id("CALL", identity)
-        conn.execute(
-            """INSERT INTO component_calls
-               (call_id,identity_key,source_entry_id,source_component_id,target_component_id,
-                task_id,transport,call_location,condition,parameter_mappings_json,security_checks_json,
-                evidence_json,payload_json,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (call_id, identity, task["subject_id"],
-             entry_payload.get("component_id") or f"entry:{task['subject_id']}",
-             component_call["target_component_id"], task["task_id"], component_call["transport"],
-             component_call["call_location"], component_call["condition"],
-             canonical_json(component_call["parameter_mappings"]), canonical_json(component_call["security_checks"]),
-             canonical_json(component_call["evidence_refs"]), canonical_json(component_call), now()),
-        )
-        call_ids.append(call_id)
-    group_ids = []
-    for source in result["operation_groups"]:
-        group = materialize_semantic_group(conn, task["task_id"], source)
-        identity = operation_group_identity(task["subject_id"], group)
-        group_id = stable_id("GROUP", identity)
-        conn.execute(
-            """INSERT INTO operation_groups
-               (group_id,identity_key,entry_id,task_id,scope,validation_required,source_group_id,
-                capability_id,category,title,operation_body,operation_location,
-                controlled_properties_json,context_json,security_checks_json,branches_json,evidence_json,
-                payload_json,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (group_id, identity, task["subject_id"], task["task_id"], "local", 0, None,
-             group.get("capability_id"),
-             group["category"], group["title"], group["operation"]["body"], group["operation"]["location"],
-             canonical_json(group["controlled_properties"]), canonical_json(group["context"]),
-             canonical_json(group["security_checks"]), canonical_json(group["branches"]),
-             canonical_json(group["evidence_refs"]), canonical_json(group), now()),
-        )
-        fact_ids = {}
-        for fact in group["facts"]:
-            fact_id = stable_id("FACT", [group_id, fact["fact_key"]])
-            fact_ids[fact["fact_key"]] = fact_id
-            conn.execute("INSERT INTO group_facts VALUES (?,?,?,?,?,?,?,?,?)", (
-                fact_id, fact["fact_key"], group_id, fact["type"], fact["body"], fact.get("location"),
-                canonical_json(fact["evidence_refs"]), canonical_json(fact), now()))
-        for edge in group["edges"]:
-            edge_id = stable_id("EDGE", [group_id, edge["from"], edge["to"], edge["kind"]])
-            conn.execute("INSERT INTO group_edges VALUES (?,?,?,?,?,?,?)", (
-                edge_id, group_id, fact_ids[edge["from"]], fact_ids[edge["to"]], edge["kind"],
-                canonical_json(edge["evidence_refs"]), now()))
-        group_ids.append(group_id)
-    return {"entry_id": task["subject_id"], "operation_groups_created": len(group_ids),
-            "group_ids": group_ids, "component_calls_created": len(call_ids),
-            "call_ids": call_ids}
 
 
 def _merge_exploitability_validation(conn, task, result, paths=None):
@@ -340,6 +241,12 @@ def resume_run(run_dir):
         )]
         if not exhausted:
             raise ValueError("run_has_no_exhausted_tasks")
+        from .semantic_exploration import release_exploration_leases
+        for task in conn.execute(
+            """SELECT task_id,attempts FROM tasks
+               WHERE status='exhausted' AND kind='component_semantic_analysis'"""
+        ):
+            release_exploration_leases(conn, task["task_id"], task["attempts"])
         stamp = now()
         conn.execute(
             "UPDATE tasks SET status='queued',attempts=0,error=NULL,result_ref=NULL,updated_at=? "
@@ -371,7 +278,9 @@ def status(run_dir):
         run["correlation"] = json.loads(run.pop("correlation_json"))
         task_counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
         counts = {table: conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"]
-                  for table in ("entries", "semantic_analyses", "component_calls", "operation_groups", "validation_results", "group_facts", "findings")}
+                  for table in ("entries", "component_explorations", "exploration_nodes",
+                                "semantic_analyses", "component_calls", "operation_groups",
+                                "validation_results", "group_facts", "findings")}
         retry_categories = {}
         for row in conn.execute("SELECT payload_json FROM events WHERE event_type='task_retry'"):
             payload = json.loads(row["payload_json"])

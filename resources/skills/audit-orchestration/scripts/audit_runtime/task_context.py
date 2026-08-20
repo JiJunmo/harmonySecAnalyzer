@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 
-from .common import canonical_json, load_capabilities
+from .common import SCHEMAS_DIR, SCRIPTS_DIR, canonical_json, load_capabilities
 from .evidence import semantic_admissible_refs, semantic_hypothesis_refs
 from .store import row_json
 
@@ -125,7 +125,34 @@ def group_context(conn, group_id):
     return semantic
 
 
-def task_context(conn, task):
+def _result_protocol(paths, task):
+    runtime = str((SCRIPTS_DIR / "audit_orchestrator.py").resolve())
+    run_dir = str(paths["root"])
+    draft_file = str(
+        paths["tasks"] / f"{task['task_id']}.attempt-{task['attempts']}.draft.json"
+    )
+    return {
+        "writer": "audit_orchestrator.py task-submit",
+        "draft_file": draft_file,
+        "runtime_commits_result": True,
+        "instructions": [
+            "只把当前任务的结论草稿写入 draft_file",
+            "必须调用 commands.submit 由 Python 规范化、校验并正式落库",
+            "accepted=false 时按 errors 修正 draft_file 后再次调用",
+            "只有 accepted=true 且 status=completed 才允许结束子任务",
+        ],
+        "commands": {
+            "submit": [
+                "python3", runtime, "task-submit", run_dir,
+                "--task-id", task["task_id"],
+                "--attempt", str(task["attempts"]),
+                "--input", draft_file,
+            ],
+        },
+    }
+
+
+def task_context(conn, task, paths=None):
     payload = row_json(task, "input_json", {})
     entry = entry_context(conn, task["subject_id"])
     if task["kind"] == "component_semantic_analysis":
@@ -135,10 +162,12 @@ def task_context(conn, task):
             "analysis_scope": row.get("analysis_scope", "component"),
         } for row in load_capabilities() if row["capability_id"] in profile_ids]
         analysis_contract = {
-            "task_unit": "one deterministic component analysis unit",
-            "phases": ["confirm_component_inputs", "trace_within_component", "collect_operations", "record_component_calls", "merge_equivalent_operations", "record_gaps"],
+            "task_unit": "one bounded round of a persistent component exploration",
+            "phases": ["claim_node", "query_atlas", "record_step", "repeat_until_round_complete", "finish_round"],
             "group_by": ["capability", "operation_location", "controlled_properties", "security_semantics"],
-            "stop_at": "component_call",
+            "component_completion": "all discovered nodes are completed, stopped with a reason, or recorded as coverage gaps",
+            "sensitive_operation_is_not_a_stop_condition": True,
+            "stop_at": ["component_boundary", "platform_boundary", "ordinary_third_party_boundary", "security_influence_ended", "return_or_throw"],
             "component_call_control": {
                 "invocation_control": "whether the current component input controls reaching the component call",
                 "parameter_mappings": "data mappings only; may be empty",
@@ -160,12 +189,50 @@ def task_context(conn, task):
                 "exception_handling_or_isolation",
                 "affected_scope_and_recovery",
             ]
-        return {
+        context = {
             **payload,
             "entry": entry,
             "audit_scope": profiles,
             "analysis_contract": analysis_contract,
         }
+        if paths:
+            exploration = conn.execute(
+                "SELECT * FROM component_explorations WHERE entry_id=?", (task["subject_id"],)
+            ).fetchone()
+            node_counts = {
+                row["status"]: row["n"] for row in conn.execute(
+                    """SELECT n.status,COUNT(*) n FROM exploration_nodes n
+                       JOIN component_explorations x ON x.exploration_id=n.exploration_id
+                       WHERE x.entry_id=? GROUP BY n.status""", (task["subject_id"],)
+                )
+            }
+            runtime = str((SCRIPTS_DIR / "audit_orchestrator.py").resolve())
+            run_dir = str(paths["root"])
+            step_file = str(
+                paths["tasks"] / f"{task['task_id']}.attempt-{task['attempts']}.step.json"
+            )
+            common = [runtime]
+            context["exploration_protocol"] = {
+                "run_dir": run_dir,
+                "task_id": task["task_id"],
+                "attempt": task["attempts"],
+                "round_no": (exploration["round_no"] + 1) if exploration else 1,
+                "current_status": exploration["status"] if exploration else "pending",
+                "node_counts": node_counts,
+                "step_file": step_file,
+                "step_schema_file": str(SCHEMAS_DIR / "component-exploration-step.schema.json"),
+                "semantic_schema_file": str(SCHEMAS_DIR / "component-semantic-result.schema.json"),
+                "commands": {
+                    "next": ["python3", *common, "explore-next", run_dir, "--task-id",
+                             task["task_id"], "--attempt", str(task["attempts"])],
+                    "record": ["python3", *common, "explore-record", run_dir, "--task-id",
+                               task["task_id"], "--attempt", str(task["attempts"]),
+                               "--input", step_file],
+                    "finish": ["python3", *common, "explore-finish", run_dir, "--task-id",
+                               task["task_id"], "--attempt", str(task["attempts"])],
+                },
+            }
+        return context
     if task["kind"] == "exploitability_validation":
         analysis = conn.execute(
             "SELECT * FROM semantic_analyses WHERE entry_id=?", (task["subject_id"],)
@@ -191,7 +258,7 @@ def task_context(conn, task):
             for branch in group.get("branches", []):
                 locations.update(branch.get("locations", []))
         run = conn.execute("SELECT target_repo FROM runs LIMIT 1").fetchone()
-        return {
+        context = {
             "semantic_analysis": {
                 "summary": analysis["summary"],
                 "coverage": coverage,
@@ -217,6 +284,9 @@ def task_context(conn, task):
                 "seed_symbols": full_coverage.get("entry_symbols_checked", []),
             },
         }
+        if paths:
+            context["result_protocol"] = _result_protocol(paths, task)
+        return context
     if task["kind"] == "poc_generation":
         finding = conn.execute("SELECT * FROM findings WHERE finding_id=?", (task["subject_id"],)).fetchone()
         if not finding:
@@ -241,7 +311,7 @@ def task_context(conn, task):
             (group["entry_id"], finding["group_id"]),
         ).fetchall()
         inherited_evidence = [dict(row) for row in evidence_rows]
-        return {
+        context = {
             **payload,
             "finding": {
                 "finding_id": finding["finding_id"], "root_cause_key": finding["root_cause_key"],
@@ -264,4 +334,7 @@ def task_context(conn, task):
                 "self_verification_required": "code/trigger.payload 引用的应用内符号必须逐一用 atlas 核验并写回 symbol_refs 与内联 evidence",
             },
         }
+        if paths:
+            context["result_protocol"] = _result_protocol(paths, task)
+        return context
     return payload

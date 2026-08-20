@@ -23,6 +23,21 @@ def parser():
     cmd.add_argument("run_dir")
     cmd.add_argument("--worker", default="harmony-auditor")
     cmd.add_argument("--limit", type=int, default=5)
+    for name in ("explore-next", "explore-finish"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("run_dir")
+        cmd.add_argument("--task-id", required=True)
+        cmd.add_argument("--attempt", required=True, type=int)
+    cmd = sub.add_parser("explore-record")
+    cmd.add_argument("run_dir")
+    cmd.add_argument("--task-id", required=True)
+    cmd.add_argument("--attempt", required=True, type=int)
+    cmd.add_argument("--input", required=True)
+    cmd = sub.add_parser("task-submit")
+    cmd.add_argument("run_dir")
+    cmd.add_argument("--task-id", required=True)
+    cmd.add_argument("--attempt", required=True, type=int)
+    cmd.add_argument("--input", required=True)
     for name in ("reconcile-batch", "export", "build-report", "finalize", "resume", "status"):
         sub.add_parser(name).add_argument("run_dir")
     return root
@@ -32,6 +47,20 @@ def dispatch(args):
     if args.command == "prepare":
         return prepare_run(args.target_repo, args.mode, args.capability, args.component, args.atlas)
     if args.command == "claim-batch": return claim_batch(args.run_dir, args.limit, args.worker)
+    if args.command == "explore-next":
+        from .semantic_exploration import next_exploration_node
+        return next_exploration_node(args.run_dir, args.task_id, args.attempt)
+    if args.command == "explore-record":
+        from .semantic_exploration import record_exploration_step
+        return record_exploration_step(args.run_dir, args.task_id, args.attempt, args.input)
+    if args.command == "explore-finish":
+        from .semantic_exploration import finish_exploration_round
+        return finish_exploration_round(args.run_dir, args.task_id, args.attempt)
+    if args.command == "task-submit":
+        from .result_writer import submit_task_result
+        return submit_task_result(
+            args.run_dir, args.task_id, args.attempt, args.input,
+        )
     if args.command == "reconcile-batch": return reconcile_batch(args.run_dir)
     if args.command == "export": return export_state(args.run_dir)
     if args.command == "build-report": return build_report_ready(args.run_dir)

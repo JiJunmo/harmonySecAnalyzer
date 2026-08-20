@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DeployRenderTest(unittest.TestCase):
-    def test_opencode_subagents_can_write_dynamic_submission_paths(self):
+    def test_opencode_subagents_can_use_runtime_result_protocol(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             deploy.render_tree(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"), base=base)
@@ -31,11 +31,18 @@ class DeployRenderTest(unittest.TestCase):
             self.assertIn("confirmed > uncertain > excluded", semantic)
             self.assertIn("`external_entry_status`", semantic)
             self.assertIn("`invocation_control`", semantic)
-            self.assertIn("不按源码目录、构建模块、依赖包、类名或类继承关系划分", semantic)
+            self.assertIn("不由目录、模块、包名、类或继承关系决定", semantic)
             self.assertIn("笛卡尔组合", semantic)
-            self.assertIn("入口类型，不是组件排除条件", semantic)
+            self.assertIn("优先调查入口类型，不是组件排除条件", semantic)
+            self.assertIn('    "python3 *audit_orchestrator.py*": allow', semantic)
+            self.assertIn('    "python3 *audit_orchestrator.py*": allow', validator)
+            self.assertIn('    "python3 *audit_orchestrator.py*": allow', poc)
+            self.assertIn("`audit_orchestrator.py task-submit`", validator)
+            self.assertIn("`audit_orchestrator.py task-submit`", poc)
             self.assertIn("不得把该限制解释为禁止读取当前组定性所需的链路源码", validator)
-            self.assertIn("import、依赖包调用、继承、组合对象、普通函数调用和 `super` 调用都不是组件跳转", semantic)
+            self.assertIn("import、依赖调用、继承、组合对象、普通函数和 `super` 都不是组件跳转", semantic)
+            self.assertIn("发现敏感操作不是停止条件", semantic)
+            self.assertIn("不手工拼接完整组件结果", semantic)
             self.assertIn("`false` 表示存在反向证据", validator)
             self.assertIn("不得输出 `assurance_status`", poc)
 
@@ -75,7 +82,11 @@ class DeployRenderTest(unittest.TestCase):
             tree = base / ".opencode"
             orchestrator = tree / "skills/audit-orchestration/scripts/audit_orchestrator.py"
             self.assertTrue(orchestrator.is_file())
+            self.assertTrue((tree / "skills/audit-orchestration/scripts/audit_runtime/semantic_exploration.py").is_file())
+            self.assertTrue((tree / "skills/audit-orchestration/scripts/audit_runtime/semantic_results.py").is_file())
+            self.assertTrue((tree / "skills/audit-orchestration/scripts/audit_runtime/result_writer.py").is_file())
             self.assertTrue((tree / "skills/audit-orchestration/config/schemas/component-semantic-result.schema.json").is_file())
+            self.assertTrue((tree / "skills/audit-orchestration/config/schemas/component-exploration-step.schema.json").is_file())
             self.assertTrue((tree / "skills/project-modeling/scripts/project_profiler.py").is_file())
 
             skill = (tree / "skills/audit-orchestration/SKILL.md").read_text(encoding="utf-8")

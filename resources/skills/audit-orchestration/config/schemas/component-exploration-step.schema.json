@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "node_id",
+    "work_type",
+    "status",
+    "summary",
+    "atlas_queries",
+    "facts",
+    "security_checks",
+    "operation_groups",
+    "component_calls",
+    "successors",
+    "gaps"
+  ],
+  "properties": {
+    "node_id": {"type": "string", "minLength": 1},
+    "work_type": {"enum": ["entry_discovery", "function_analysis"]},
+    "status": {"enum": ["completed", "stopped", "gap"]},
+    "summary": {"type": "string", "minLength": 1},
+    "stop_reason": {
+      "type": ["string", "null"],
+      "enum": [
+        null,
+        "return_or_throw",
+        "component_boundary",
+        "platform_boundary",
+        "third_party_boundary",
+        "security_influence_ended",
+        "unresolved",
+        "resource_limit",
+        "other"
+      ]
+    },
+    "entry_assessment": {"$ref": "#/$defs/entryAssessment"},
+    "atlas_queries": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/atlasQuery"}
+    },
+    "facts": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/fact"}
+    },
+    "security_checks": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "operation_groups": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "component_calls": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "successors": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/successor"}
+    },
+    "gaps": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"work_type": {"const": "entry_discovery"}}},
+      "then": {"required": ["entry_assessment"]}
+    },
+    {
+      "if": {"properties": {"status": {"enum": ["stopped", "gap"]}}},
+      "then": {
+        "required": ["stop_reason"],
+        "properties": {
+          "stop_reason": {"type": "string"},
+          "successors": {"maxItems": 0}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "required": ["kind", "source", "summary"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "content_ref": {"type": ["string", "null"]},
+        "sha256": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "entryAssessment": {
+      "type": "object",
+      "required": [
+        "entry_status",
+        "external_entry_status",
+        "confirmed_external_candidate_ids",
+        "component_summary"
+      ],
+      "properties": {
+        "entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
+        "external_entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
+        "confirmed_external_candidate_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "component_summary": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "atlasQuery": {
+      "type": "object",
+      "required": ["tool", "source_symbol", "target_symbols", "unresolved_targets"],
+      "properties": {
+        "tool": {"enum": ["search", "symbol", "calls", "explore", "path", "trace"]},
+        "source_symbol": {"type": ["string", "null"]},
+        "target_symbols": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "unresolved_targets": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "fact": {
+      "type": "object",
+      "required": ["type", "body", "evidence"],
+      "properties": {
+        "type": {
+          "enum": [
+            "entrypoint",
+            "reachability",
+            "control",
+            "transform",
+            "security_check",
+            "operation",
+            "dead_end",
+            "gap"
+          ]
+        },
+        "body": {"type": "string", "minLength": 1},
+        "location": {"type": ["string", "null"]},
+        "evidence": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "symbol": {
+      "type": "object",
+      "required": ["qualified_name", "file_path", "line", "kind"],
+      "properties": {
+        "qualified_name": {"type": "string", "minLength": 1},
+        "file_path": {"type": ["string", "null"]},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "kind": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "controlledProperty": {
+      "type": "object",
+      "required": ["name", "control_state"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "control_state": {"enum": ["preserved", "constrained", "constant", "unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "principal": {
+      "type": "object",
+      "required": ["origin", "immediate", "origin_binding", "authority"],
+      "properties": {
+        "origin": {"type": "string", "minLength": 1},
+        "immediate": {"type": "string", "minLength": 1},
+        "origin_binding": {"enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"]},
+        "authority": {"enum": ["origin", "source_component", "system", "none", "unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "securityState": {
+      "type": "object",
+      "required": ["controlled_properties", "principal", "security_check_ids"],
+      "properties": {
+        "controlled_properties": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/controlledProperty"}
+        },
+        "principal": {"$ref": "#/$defs/principal"},
+        "security_check_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "successor": {
+      "type": "object",
+      "required": ["symbol", "relation", "condition", "decision", "stop_reason", "state"],
+      "properties": {
+        "symbol": {"$ref": "#/$defs/symbol"},
+        "relation": {
+          "enum": ["call", "callback", "async_continuation", "branch", "data_flow", "component_boundary"]
+        },
+        "condition": {"type": "string", "minLength": 1},
+        "decision": {"enum": ["follow", "stop"]},
+        "stop_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "component_boundary",
+            "platform_boundary",
+            "third_party_boundary",
+            "security_influence_ended",
+            "unresolved",
+            "resource_limit",
+            "other"
+          ]
+        },
+        "state": {"$ref": "#/$defs/securityState"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"decision": {"const": "follow"}}},
+          "then": {"properties": {"stop_reason": {"type": "null"}}},
+          "else": {"properties": {"stop_reason": {"type": "string"}}}
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

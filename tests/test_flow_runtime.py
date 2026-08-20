@@ -13,15 +13,17 @@ SCRIPTS = ROOT / "resources/skills/audit-orchestration/scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from audit_runtime.commands import (_merge_finding, build_report_ready, finalize_run, resume_run,
-                                    status, submit_result)
+                                    status)
 from audit_runtime.cli import dispatch as runtime_dispatch, parser as runtime_parser
 from audit_runtime.common import SIX_EXPLOITABILITY_CHECKS
 from audit_runtime.lifecycle import candidate_rows, initialize_run, new_run
 from audit_runtime.reporting import refresh_live_report
+from audit_runtime.result_writer import submit_task_result
 from audit_runtime.scheduler import claim_batch, readiness, reconcile_batch
 from audit_runtime.store import SCHEMA_VERSION, database
 from audit_runtime.store import transaction
 from audit_runtime.task_context import group_context
+from tests.runtime_support import submit_semantic_fixture, submit_task_fixture as submit_result
 
 
 class SplitPipelineRuntimeTest(unittest.TestCase):
@@ -49,8 +51,10 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.temp.cleanup()
 
     @staticmethod
-    def write_submission(task, value):
-        path = Path(task["submission_file"])
+    def write_result(task, value):
+        path = Path(task["task_file"]).with_name(
+            f"{task['task_id']}.attempt-{task['attempt']}.test-result.json"
+        )
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
@@ -59,7 +63,8 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertEqual(result["count"], 1, result)
         handle = result["tasks"][0]
         self.assertEqual(handle["kind"], kind)
-        return json.loads(Path(handle["task_file"]).read_text(encoding="utf-8"))
+        task = json.loads(Path(handle["task_file"]).read_text(encoding="utf-8"))
+        return task
 
     @staticmethod
     def source_evidence(summary="entry reaches database query", location="Db.ets:42"):
@@ -171,7 +176,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
     def submit_semantics(self, groups, entry_status="confirmed"):
         task = self.claim("component_semantic_analysis")
         result = self.semantic_result(task, groups, entry_status)
-        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        submitted = submit_result(self.run, task["task_id"], self.write_result(task, result), task["attempt"])
         self.assertTrue(submitted["accepted"], submitted)
         return task, submitted
 
@@ -275,7 +280,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         validations = [self.validation_for(group, classification) for group in semantic["operation_groups"]]
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
                   "summary": "六维验证完成", "validations": validations}
-        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        submitted = submit_result(self.run, task["task_id"], self.write_result(task, result), task["attempt"])
         return task, submitted
 
     def submit_poc(self, run=None):
@@ -295,7 +300,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "symbol_refs": [], "evidence_refs": [],
         }
         submitted = submit_result(run or self.run, task["task_id"],
-                                  self.write_submission(task, result), task["attempt"])
+                                  self.write_result(task, result), task["attempt"])
         return task, submitted
 
     def test_semantics_are_persisted_before_small_validation_task(self):
@@ -303,7 +308,15 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertNotIn("decision_contract", semantic_task["input"]["analysis_contract"])
         self.assertNotIn("validation_task_id", submitted)
         validation_task = self.claim("exploitability_validation")
-        self.assertEqual(set(validation_task["input"]), {"semantic_analysis", "verification_scope", "validation_contract"})
+        self.assertEqual(set(validation_task["input"]), {
+            "semantic_analysis", "verification_scope", "validation_contract", "result_protocol",
+        })
+        protocol = validation_task["input"]["result_protocol"]
+        self.assertEqual(protocol["writer"], "audit_orchestrator.py task-submit")
+        self.assertEqual(protocol["commands"]["submit"][2], "task-submit")
+        self.assertTrue(protocol["draft_file"].endswith(".draft.json"))
+        self.assertNotIn("submission_file", validation_task)
+        self.assertNotIn("draft_file", validation_task)
         self.assertNotIn("decision_contract", validation_task["input"]["validation_contract"])
         self.assertNotIn("pattern_cards", validation_task["input"])
         self.assertNotIn("project_model", validation_task["input"])
@@ -328,14 +341,83 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertIn("all implementations needed", validation_task["input"]["validation_contract"]["source_read_scope"])
         self.assertNotIn("result_schema", semantic_task)
         self.assertTrue(semantic_task["result_schema_file"].endswith(
-            "component-semantic-result.schema.json"
+            "component-exploration-step.schema.json"
         ))
+        self.assertIn("exploration_protocol", semantic_task["input"])
         self.assertNotIn("edges", validation_task["input"]["semantic_analysis"]["operation_groups"][0])
         self.assertEqual(
             set(validation_task["input"]["semantic_analysis"]["coverage"]),
             {"entry_status", "external_entry_status", "confirmed_external_candidate_ids",
              "entry_notes", "unresolved_targets"},
         )
+
+    def test_result_writer_normalizes_and_commits_validation_draft(self):
+        self.submit_semantics([self.semantic_group()])
+        task = self.claim("exploitability_validation")
+        group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        validation = self.validation_for(group)
+        validation.pop("group_id")
+        validation.pop("capability_id")
+        validation["unused_agent_field"] = "ignored"
+        validation["evidence"]["semantic_refs"].append("EVID-OUTSIDE-GROUP")
+        validation["business_intent"]["evidence"].pop("verification")
+        draft = Path(task["input"]["result_protocol"]["draft_file"])
+        draft.write_text(json.dumps({"validations": [validation], "extra": True}), encoding="utf-8")
+
+        prepared = submit_task_result(
+            self.run, task["task_id"], task["attempt"], draft,
+        )
+        self.assertTrue(prepared["accepted"], prepared)
+        self.assertTrue(any("removed_out_of_scope_evidence" in row for row in prepared["warnings"]))
+        canonical = json.loads(Path(prepared["result_ref"]).read_text(encoding="utf-8"))
+        self.assertEqual(canonical["task_id"], task["task_id"])
+        self.assertEqual(canonical["entry_id"], task["subject_id"])
+        self.assertEqual(canonical["validations"][0]["group_id"], group["group_id"])
+        self.assertEqual(canonical["validations"][0]["capability_id"], group["capability_id"])
+        self.assertNotIn("unused_agent_field", canonical["validations"][0])
+        self.assertNotIn("EVID-OUTSIDE-GROUP", json.dumps(canonical))
+        self.assertEqual(reconcile_batch(self.run)["count"], 0)
+
+    def test_scheduler_retries_worker_that_bypasses_result_writer(self):
+        self.submit_semantics([self.semantic_group()])
+        task = self.claim("exploitability_validation")
+        group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        direct = {
+            "task_id": task["task_id"], "entry_id": task["subject_id"],
+            "summary": "试图直接提交", "validations": [self.validation_for(group)],
+        }
+        self.write_result(task, direct)
+
+        reconciled = reconcile_batch(self.run)
+        self.assertEqual(reconciled["queued"], 1, reconciled)
+        self.assertEqual(reconciled["tasks"][0]["error"], "worker_finished_without_commit")
+        with database(self.run / "run.db") as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) n FROM validation_results"
+            ).fetchone()["n"], 0)
+
+    def test_result_writer_keeps_semantic_validation_errors_strict(self):
+        self.submit_semantics([self.semantic_group()])
+        task = self.claim("exploitability_validation")
+        group = task["input"]["semantic_analysis"]["operation_groups"][0]
+        validation = self.validation_for(group)
+        validation["exploitability"]["concrete_impact"]["status"] = "false"
+        draft = Path(task["input"]["result_protocol"]["draft_file"])
+        draft.write_text(json.dumps({"validations": [validation]}), encoding="utf-8")
+
+        prepared = submit_task_result(
+            self.run, task["task_id"], task["attempt"], draft,
+        )
+        self.assertTrue(prepared["ok"], prepared)
+        self.assertFalse(prepared["accepted"], prepared)
+        self.assertTrue(any("'true' was expected" in row for row in prepared["errors"]))
+        result_ref = Path(task["task_file"]).with_name(f"{task['task_id']}.result.json")
+        self.assertFalse(result_ref.exists())
+        with database(self.run / "run.db") as conn:
+            current = conn.execute(
+                "SELECT status,attempts FROM tasks WHERE task_id=?", (task["task_id"],)
+            ).fetchone()
+            self.assertEqual(dict(current), {"status": "running", "attempts": 1})
 
     def test_dos_capability_requires_availability_evidence_and_validation(self):
         allocated = new_run(self.root / "dos-reports", self.target, "capability", ["CAP-DOS-001"])
@@ -350,7 +432,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         without_availability.pop("availability")
         rejected = submit_result(
             run, semantic_task["task_id"],
-            self.write_submission(semantic_task, self.semantic_result(semantic_task, [without_availability])),
+            self.write_result(semantic_task, self.semantic_result(semantic_task, [without_availability])),
             semantic_task["attempt"],
         )
         self.assertFalse(rejected["accepted"])
@@ -359,7 +441,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         semantic_task = self.claim("component_semantic_analysis", run)
         accepted = submit_result(
             run, semantic_task["task_id"],
-            self.write_submission(semantic_task, self.semantic_result(semantic_task, [group])),
+            self.write_result(semantic_task, self.semantic_result(semantic_task, [group])),
             semantic_task["attempt"],
         )
         self.assertTrue(accepted["accepted"], accepted)
@@ -383,7 +465,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             },
         })
         rejected = submit_result(
-            run, validation_task["task_id"], self.write_submission(validation_task, {
+            run, validation_task["task_id"], self.write_result(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
                 "summary": "DoS 六维验证完成", "validations": [validation],
             }), validation_task["attempt"],
@@ -391,10 +473,9 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertFalse(rejected["accepted"])
         self.assertIn("effective_containment", rejected["error"])
 
-        validation_task = self.claim("exploitability_validation", run)
         validation["availability_analysis"]["effective_containment"] = False
         accepted = submit_result(
-            run, validation_task["task_id"], self.write_submission(validation_task, {
+            run, validation_task["task_id"], self.write_result(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
                 "summary": "DoS 六维验证完成", "validations": [validation],
             }), validation_task["attempt"],
@@ -421,7 +502,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             }],
         }
         submitted = submit_result(
-            self.run, task["task_id"], self.write_submission(task, legacy), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, legacy), task["attempt"]
         )
         self.assertFalse(submitted["accepted"])
         self.assertEqual(submitted["status"], "queued")
@@ -488,7 +569,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         result = self.semantic_result(task, [group])
         result["summary"] = "处理深度链接并根据记录编号查询内容"
         submitted = submit_result(
-            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, result), task["attempt"]
         )
         self.assertTrue(submitted["accepted"], submitted)
         _, validated = self.submit_validation("protected_exposure")
@@ -544,7 +625,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         result = self.semantic_result(task, [group])
         result["coverage"]["operation_sites_checked"] = []
         submitted = submit_result(
-            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, result), task["attempt"]
         )
         self.assertTrue(submitted["accepted"], submitted)
         persisted = json.loads((self.run / "tasks" / f"{task['task_id']}.result.json").read_text())
@@ -563,7 +644,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         second = self.semantic_group()
         second["group_key"] = "same-operation-different-wording"
         result = self.semantic_result(task, [first, second])
-        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        submitted = submit_result(self.run, task["task_id"], self.write_result(task, result), task["attempt"])
         self.assertTrue(submitted["accepted"], submitted)
         self.assertEqual(submitted["operation_groups_created"], 1)
 
@@ -579,7 +660,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         }]
         result = self.semantic_result(task, [self.semantic_group(), guarded])
         submitted = submit_result(
-            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, result), task["attempt"]
         )
         self.assertTrue(submitted["accepted"], submitted)
         self.assertEqual(submitted["operation_groups_created"], 2)
@@ -598,7 +679,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "summary": "六维验证完成", "validations": [validation],
         }
         submitted = submit_result(
-            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, result), task["attempt"]
         )
         self.assertTrue(submitted["accepted"], submitted)
 
@@ -618,7 +699,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "location": "Db.ets:45", "evidence": [self.source_evidence(location="Db.ets:45")],
         })
         submitted = submit_result(
-            self.run, task["task_id"], self.write_submission(task, self.semantic_result(task, [group])),
+            self.run, task["task_id"], self.write_result(task, self.semantic_result(task, [group])),
             task["attempt"],
         )
         self.assertFalse(submitted["accepted"])
@@ -644,19 +725,20 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
                   "summary": "效果尚未确认", "validations": [validation]}
         rejected = submit_result(
-            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, result), task["attempt"]
         )
         self.assertFalse(rejected["accepted"])
         self.assertIn("true_dimension_evidence_insufficient:sink_reached", rejected["error"])
-        self.assertIn("hypothesis_evidence_not_admissible", rejected["error"])
+        self.assertTrue(any(
+            "removed_out_of_scope_evidence" in warning
+            for warning in rejected["warnings"]
+        ))
 
-        task = self.claim("exploitability_validation")
-        group = task["input"]["semantic_analysis"]["operation_groups"][0]
         inherited_only = self.validation_for(group, include_verification=False)
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
                   "summary": "仅复用语义证据", "validations": [inherited_only]}
         rejected = submit_result(
-            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, result), task["attempt"]
         )
         self.assertFalse(rejected["accepted"])
         self.assertIn("confirmed_effect_not_independently_verified", rejected["error"])
@@ -669,7 +751,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         validation["exploitability"]["sink_reached"]["evidence"] = {
             "semantic_refs": [], "verification": [],
         }
-        rejected = submit_result(self.run, task["task_id"], self.write_submission(task, {
+        rejected = submit_result(self.run, task["task_id"], self.write_result(task, {
             "task_id": task["task_id"], "entry_id": task["subject_id"],
             "summary": "缺少反证", "validations": [validation],
         }), task["attempt"])
@@ -681,7 +763,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         task = self.claim("exploitability_validation")
         group = task["input"]["semantic_analysis"]["operation_groups"][0]
         validation = self.validation_for(group, "no_exploitable_path")
-        accepted = submit_result(self.run, task["task_id"], self.write_submission(task, {
+        accepted = submit_result(self.run, task["task_id"], self.write_result(task, {
             "task_id": task["task_id"], "entry_id": task["subject_id"],
             "summary": "入口存在明确反证", "validations": [validation],
         }), task["attempt"])
@@ -711,7 +793,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             task, [self.semantic_group()], external_entry_status="excluded"
         )
         submitted = submit_result(
-            self.run, task["task_id"], self.write_submission(task, result), task["attempt"]
+            self.run, task["task_id"], self.write_result(task, result), task["attempt"]
         )
         self.assertTrue(submitted["accepted"], submitted)
         self.assertEqual(claim_batch(self.run)["reason"], "no_queued")
@@ -729,7 +811,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         task = self.claim("exploitability_validation")
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
                   "summary": "missing validation", "validations": []}
-        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        submitted = submit_result(self.run, task["task_id"], self.write_result(task, result), task["attempt"])
         self.assertFalse(submitted["accepted"])
         self.assertIn("unvalidated_operation_groups", submitted["error"])
 
@@ -741,9 +823,13 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         validation["evidence"]["semantic_refs"] = ["EVID-INVENTED"]
         result = {"task_id": task["task_id"], "entry_id": task["subject_id"],
                   "summary": "invalid evidence", "validations": [validation]}
-        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        submitted = submit_result(self.run, task["task_id"], self.write_result(task, result), task["attempt"])
         self.assertFalse(submitted["accepted"])
-        self.assertIn("evidence_outside_operation_group", submitted["error"])
+        self.assertIn("true_dimension_evidence_insufficient", submitted["error"])
+        self.assertTrue(any(
+            "removed_out_of_scope_evidence" in warning
+            for warning in submitted["warnings"]
+        ))
 
     def test_validation_cannot_borrow_evidence_from_sibling_operation_group(self):
         first = self.semantic_group()
@@ -770,12 +856,16 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         validations = [self.validation_for(group, "protected_exposure") for group in groups]
         query_validation = next(row for row in validations if row["group_id"] == query_group["group_id"])
         query_validation["evidence"]["semantic_refs"] = [sibling_only_id]
-        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, {
+        submitted = submit_result(self.run, task["task_id"], self.write_result(task, {
             "task_id": task["task_id"], "entry_id": task["subject_id"],
             "summary": "错误复用了相邻操作组证据", "validations": validations,
         }), task["attempt"])
         self.assertFalse(submitted["accepted"])
-        self.assertIn("evidence_outside_operation_group", submitted["error"])
+        self.assertIn("dimension_evidence_insufficient", submitted["error"])
+        self.assertTrue(any(
+            "removed_out_of_scope_evidence" in warning
+            for warning in submitted["warnings"]
+        ))
 
     def test_validation_can_follow_existing_call_chain_beyond_seed_files(self):
         self.submit_semantics([self.semantic_group()])
@@ -789,7 +879,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
             "task_id": task["task_id"], "entry_id": task["subject_id"],
             "summary": "followed a shared helper", "validations": [validation],
         }
-        submitted = submit_result(self.run, task["task_id"], self.write_submission(task, result), task["attempt"])
+        submitted = submit_result(self.run, task["task_id"], self.write_result(task, result), task["attempt"])
         self.assertTrue(submitted["accepted"], submitted)
 
     def test_component_correlation_connects_three_components_and_stops_cycle(self):
@@ -871,7 +961,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         }]
         for name, task in tasks.items():
             submitted = submit_result(
-                run, task["task_id"], self.write_submission(task, results[name]), task["attempt"]
+                run, task["task_id"], self.write_result(task, results[name]), task["attempt"]
             )
             self.assertTrue(submitted["accepted"], submitted)
 
@@ -890,7 +980,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         validation = self.validation_for(groups[0])
         validation["security_check_outcome"] = "bypassable"
         submitted = submit_result(
-            run, validation_task["task_id"], self.write_submission(validation_task, {
+            run, validation_task["task_id"], self.write_result(validation_task, {
                 "task_id": validation_task["task_id"], "entry_id": validation_task["subject_id"],
                 "summary": "delegated authority validated", "validations": [validation],
             }), validation_task["attempt"],
@@ -934,7 +1024,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         }
         accepted = submit_result(
             run, first["task_id"],
-            self.write_submission(first, self.semantic_result(first, [], component_calls=[component_call])),
+            self.write_result(first, self.semantic_result(first, [], component_calls=[component_call])),
             first["attempt"],
         )
         self.assertTrue(accepted["accepted"], accepted)
@@ -944,7 +1034,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         sink["controlled_properties"] = []
         accepted = submit_result(
             run, second["task_id"],
-            self.write_submission(second, self.semantic_result(second, [sink])),
+            self.write_result(second, self.semantic_result(second, [sink])),
             second["attempt"],
         )
         self.assertTrue(accepted["accepted"], accepted)
@@ -1016,7 +1106,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 }
                 result = self.semantic_result(first, [], component_calls=[component_call])
                 submitted = submit_result(
-                    run, first["task_id"], self.write_submission(first, result), first["attempt"]
+                    run, first["task_id"], self.write_result(first, result), first["attempt"]
                 )
                 self.assertTrue(submitted["accepted"], submitted)
 
@@ -1031,7 +1121,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 group["controlled_properties"] = ["want.parameters.forwardedPath"]
                 result = self.semantic_result(second, [group])
                 submitted = submit_result(
-                    run, second["task_id"], self.write_submission(second, result), second["attempt"]
+                    run, second["task_id"], self.write_result(second, result), second["attempt"]
                 )
                 self.assertTrue(submitted["accepted"], submitted)
 
@@ -1114,21 +1204,23 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported_schema_version"):
             status(self.run)
 
-    def test_reconcile_accepts_submission_without_worker_text(self):
+    def test_worker_commit_completes_before_batch_reconciliation(self):
         task = self.claim("component_semantic_analysis")
         initial_model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
         self.assertEqual(initial_model["run"]["status"], "running")
         self.assertEqual(initial_model["summary"]["tasks"], {"running": 1})
-        self.write_submission(task, self.semantic_result(task, [], "excluded"))
+        committed = submit_semantic_fixture(
+            self.run, task, self.semantic_result(task, [], "excluded"),
+        )
+        self.assertEqual(committed["status"], "completed")
         result = reconcile_batch(self.run)
-        self.assertEqual(result["completed"], 1, result)
-        self.assertTrue(result["tasks"][0]["accepted"])
+        self.assertEqual(result["count"], 0, result)
         self.assertTrue(result["live_report"]["ok"], result)
         updated_model = json.loads((self.run / "report_model.json").read_text(encoding="utf-8"))
         self.assertEqual(updated_model["summary"]["analyzed_components"], 1)
         self.assertEqual(updated_model["summary"]["tasks"], {"completed": 1})
 
-    def test_missing_submission_exhausts_only_task_and_report_is_generated(self):
+    def test_unfinished_worker_exhausts_only_task_and_report_is_generated(self):
         for attempt in range(3):
             task = self.claim("component_semantic_analysis")
             result = reconcile_batch(self.run)
@@ -1147,9 +1239,11 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         self.assertEqual(resumed["requeued_task_ids"], [task["task_id"]])
         self.assertEqual(status(self.run)["run"]["status"], "running")
         retried = self.claim("component_semantic_analysis")
-        self.write_submission(retried, self.semantic_result(retried, [], "excluded"))
+        submit_semantic_fixture(
+            self.run, retried, self.semantic_result(retried, [], "excluded"),
+        )
         reconciled = reconcile_batch(self.run)
-        self.assertEqual(reconciled["completed"], 1)
+        self.assertEqual(reconciled["count"], 0)
         self.assertTrue(readiness(self.run)["ready"])
         finalize_run(self.run)
         self.assertEqual(status(self.run)["tasks"], {"completed": 1})
@@ -1163,6 +1257,11 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
                 runtime_parser().parse_args([removed, str(self.run)])
         resumed = runtime_parser().parse_args(["resume", str(self.run)])
         self.assertEqual(resumed.command, "resume")
+        task_submit = runtime_parser().parse_args([
+            "task-submit", str(self.run), "--task-id", "TASK-1",
+            "--attempt", "1", "--input", "/tmp/result.draft.json",
+        ])
+        self.assertEqual(task_submit.command, "task-submit")
 
     def test_six_components_fill_five_semantic_slots(self):
         candidates = [{"candidate_id": f"PE-{index}", "component_id": f"CMP-{index}",

@@ -44,4 +44,13 @@
 - 涉及目标源码具体符号、文件路径、参数名时保持原样，使用输入中 `operation_group` 与 `validation` 提供的位置和符号。
 - 所有面向报告的描述使用中文；源码符号、路径、API、参数和 CWE 保持原样。
 
-Task 文件中的 `result_schema_file` 指向完整输出 Schema，必要时单独读取；输出只能使用该 Schema 声明的字段，并写入当前任务的绝对 `submission_file`。
+## 结果写入（强制）
+
+Task 文件的 `input.result_protocol` 是唯一结果写入协议：
+
+1. 将当前任务的 PoC 草稿 JSON 写入 `input.result_protocol.draft_file`。
+2. 必须执行 `input.result_protocol.commands.submit`，其调用的是绝对路径下的 `audit_orchestrator.py task-submit` Python 规范化脚本。
+3. 脚本负责补齐 `task_id`、`finding_id`、缺省字段，清理越界证据引用、执行严格校验并在同一事务中正式落库；返回 `accepted=false` 时，根据 `errors` 修正同一个草稿文件后再次执行该命令。
+4. 只有脚本返回 `accepted=true` 且 `status=completed` 才表示任务已经完成，此时才允许结束子任务。
+
+Task 文件中的 `result_schema_file` 是最终内部契约，可用于理解字段结构；Agent 输出的是草稿，不负责拼接最终任务外壳。禁止绕过 `task-submit` 修改正式结果或任务状态。
