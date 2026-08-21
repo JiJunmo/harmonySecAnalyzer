@@ -13,7 +13,7 @@ harmonySecAnalyzer 部署脚本（OpenCode / Claude Code 双工具）
   python deploy.py --tool opencode --global    # 全局安装到 ~/.config/opencode
   python deploy.py --tool claude --global      # 全局安装到 ~/.claude(并注册 atlas MCP)
   python deploy.py --tool claude --uninstall   # 卸载全局安装的资源
-  python deploy.py --tool opencode --check-only  # 不写入,校验生成物与模板一致性(供 CI)
+  python deploy.py --tool opencode --check-only  # 不写入,执行依赖、渲染与 smoke 检查
   python deploy.py --tool claude --atlas /path/to/atlas
 
 跨平台: macOS / Windows / Linux。部署脚本使用标准库,运行时依赖见 requirements.txt。
@@ -368,25 +368,25 @@ def render_tree(root, profile, atlas, base=None, runtime_base=None):
     (dest / profile["docs_file"]).write_text(render_doc(root, profile), encoding="utf-8")
 
 
-def render_drift(root, profile, atlas, dest=None):
-    """渲染到临时目录,与 dest(默认项目根)下现有生成物字节比对。
-
-    返回 (ok, problems); 用于 --check-only 与 CI 漂移校验,不写任何文件。
-    """
-    dest = dest or root
+def validate_render(root, profile, atlas):
+    """Render a complete disposable installation without touching user files."""
     with tempfile.TemporaryDirectory() as td:
         base = Path(td)
-        render_tree(root, profile, atlas, base=base, runtime_base=dest)
-        generated = {p.relative_to(base).as_posix(): p.read_bytes()
-                     for p in base.rglob("*") if p.is_file()}
-    problems = []
-    for rel, content in sorted(generated.items()):
-        cur = dest / rel
-        if not cur.exists():
-            problems.append(f"缺失: {rel}")
-        elif cur.read_bytes() != content:
-            problems.append(f"不一致: {rel}")
-    return (not problems), problems
+        render_tree(root, profile, atlas, base=base)
+        tree = base / profile["dir"]
+        required = [
+            tree / "agents" / name for name in OWNED_AGENTS
+        ] + [
+            tree / "commands" / name for name in OWNED_COMMANDS
+        ] + [
+            tree / "skills" / name / "SKILL.md" for name in OWNED_SKILLS
+        ] + [
+            base / profile["docs_file"],
+            base / profile["config_file"],
+        ]
+        missing = [path.relative_to(base).as_posix() for path in required if not path.is_file()]
+        if missing:
+            raise ValueError("临时渲染缺少文件: " + ", ".join(missing))
 
 
 # ---------------- 输出 ----------------
@@ -731,7 +731,7 @@ def main():
     ap.add_argument("--global", dest="global_install", action="store_true",
                     help="全局安装(opencode → ~/.config/opencode; claude → ~/.claude)")
     ap.add_argument("--target", help="全局目录(默认随工具)")
-    ap.add_argument("--check-only", action="store_true", help="仅检查不修改")
+    ap.add_argument("--check-only", action="store_true", help="仅执行依赖、临时渲染与 smoke 检查，不修改配置")
     ap.add_argument("--uninstall", action="store_true", help="卸载全局安装的资源")
     args = ap.parse_args()
 
@@ -800,21 +800,16 @@ def main():
 
     # [4/5] 配置/安装
     info(f"[4/5] {'全局安装' if args.global_install else '本地配置'}")
-    drift_found = False
+    render_ok = True
     if args.check_only:
-        warn("--check-only: 不写入,校验渲染产物与模板一致性")
+        warn("--check-only: 不写入,在临时目录验证完整部署产物")
         try:
-            drift_ok, problems = render_drift(root, profile, atlas)
+            validate_render(root, profile, atlas)
         except Exception as exc:
-            drift_ok, problems = False, [f"渲染校验异常: {exc}"]
-        if drift_ok:
-            ok("生成物与当前模板一致")
+            render_ok = False
+            fail(f"临时渲染失败: {exc}")
         else:
-            drift_found = True
-            fail(f"生成物与模板不一致({len(problems)} 处):")
-            for p in problems:
-                fail(f"  {p}")
-            fail(f"请重新部署: python deploy.py --tool {profile['tool']}")
+            ok("临时部署产物渲染完整")
     elif args.global_install:
         install_global(root, profile, atlas, args.target)
     else:
@@ -850,7 +845,7 @@ def main():
     print()
 
     print("=" * 60)
-    if not validation_ok or drift_found:
+    if not validation_ok or not render_ok:
         print("✗ 部署校验失败，请修复上方错误后重试。")
     elif args.global_install:
         print(f"✓ 全局安装完成。任意目录启动 {profile['tool']} 即可用 /audit。")
@@ -862,7 +857,7 @@ def main():
         print(f"    cd {root} && {profile['tool']} && /audit <目标鸿蒙仓路径>")
         print(f"    失败任务恢复: /audit --resume <run目录>")
     print("=" * 60)
-    if not validation_ok or drift_found:
+    if not validation_ok or not render_ok:
         sys.exit(4)
 
 

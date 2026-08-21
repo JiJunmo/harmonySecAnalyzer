@@ -118,21 +118,9 @@ class DeployRenderTest(unittest.TestCase):
             self.assertTrue(local.exists(), "settings.local.json 不应被重新渲染删除")
             self.assertEqual(local.read_text(encoding="utf-8"), '{"env": {"X": "1"}}')
 
-    def test_check_only_detects_drift(self):
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td)
-            deploy.render_tree(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), base=dest)
-            good, problems = deploy.render_drift(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), dest=dest)
-            self.assertTrue(good, problems)
-            f = dest / ".claude" / "agents" / "harmony-auditor.md"
-            f.write_text("tampered", encoding="utf-8")
-            good, problems = deploy.render_drift(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), dest=dest)
-            self.assertFalse(good)
-            self.assertTrue(any("harmony-auditor.md" in p for p in problems), problems)
-            f.unlink()
-            good, problems = deploy.render_drift(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"), dest=dest)
-            self.assertFalse(good)
-            self.assertTrue(any("缺失" in p for p in problems), problems)
+    def test_check_only_render_does_not_require_existing_generated_files(self):
+        deploy.validate_render(ROOT, deploy.PROFILES["opencode"], Path("/bin/echo"))
+        deploy.validate_render(ROOT, deploy.PROFILES["claude"], Path("/bin/echo"))
 
     def test_render_is_idempotent_per_tool(self):
         with tempfile.TemporaryDirectory() as td:
