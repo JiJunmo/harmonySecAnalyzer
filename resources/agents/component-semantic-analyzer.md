@@ -4,13 +4,15 @@
 
 1. 读取 task 文件，取得 `input.entry`、`input.audit_scope`、`input.analysis_contract` 和 `input.exploration_protocol`。协议中的路径和命令均为当前部署环境的绝对值；`commands.next/record/finish` 调用的都是该部署包内绝对路径的 `audit_orchestrator.py` Python 规范化脚本，禁止替换成手工写入。
 2. 原样执行 `exploration_protocol.commands.next`。返回 `round_complete=true` 时，立即原样执行 `commands.finish`；只有返回 `accepted=true` 且状态为 `queued` 或 `completed` 后才能结束任务。
-3. 返回 `work` 时，只分析该节点：
+3. 返回 `work` 时，从该安全语义断点开始分析：
    - `entry_discovery`：根据组件候选确认真实 callback、触发条件和输入，形成 `entry_assessment`，把所有需要继续分析的真实入口实现作为 successors。
-   - `function_analysis`：从 `work.symbol` 和 `work.security_state` 出发，使用 Atlas 阅读该函数及真实调用、回调、异步继续和数据传播，记录本节点直接观察到的事实、安全检查、敏感操作、组件调用、后续节点和缺口。
+   - `function_analysis`：从 `work.symbol` 和 `work.security_state` 出发，使用 Atlas 沿真实调用、回调、异步继续和数据传播向下分析。一步内可连续分析 `step_symbol_budget` 限制内的普通项目函数，并写入 `analyzed_symbols`；它们不再各自生成持久节点。本步统一记录直接观察到的事实、安全检查、敏感操作、组件调用、后续安全语义断点和缺口。
 4. 按 `step_schema_file` 生成一个步骤 JSON，写入 `step_file`，再原样执行 `commands.record`。校验失败时根据返回错误修正同一文件并重新提交；成功后回到步骤 2。
 5. 不手工拼接完整组件结果。完整结果由运行时在全部节点闭合后从 `run.db` 确定性生成并正式落库。不得绕过受控命令修改 `run.db`、任务状态、中央导出或报告。
 
-每轮默认只处理运行时允许的节点数量。轮次结束不等于组件分析结束；存在待分析节点时，调度器会用新子 Agent 上下文继续同一组件。
+运行时以完整执行路径为自然边界。当前路径未闭合时，`commands.next` 优先返回它的后续断点；路径已明确结束且本轮累计函数尚未达 `round_function_budget` 时，继续领取下一条待分析路径。单条路径过长或多条短路径的累计工作达到保护值时，运行时在已落盘证据之后结束本轮；待分析断点保留给下一轮，不形成覆盖缺口。
+
+轮次结束不等于组件分析结束；存在待分析断点时，调度器会用新子 Agent 上下文继续同一组件。组件断点总数或总轮数的最终异常保护与轮次函数保护不同：只有前者触发时才以 `resource_limit` 形成可见覆盖缺口。
 
 ## 入口判断
 
@@ -30,7 +32,14 @@
 
 `audit_scope[].entry_types` 只表示能力的优先调查入口类型，不是组件排除条件；组件真实输入可以触发该能力时必须继续分析。
 
-每次 Atlas 查询都写入 `atlas_queries`。`target_symbols` 必须完整覆盖该查询观察到且需要作出继续/停止决定的目标；每个目标在 `successors` 中恰好出现一次。无法解析的调用写入 `unresolved_targets` 和 `gaps`，不得猜测。
+每次 Atlas 查询都写入 `atlas_queries`。`target_symbols` 必须完整覆盖该查询观察到且需要作出处理决定的目标；每个目标必须恰好选择一种去向：
+
+- 已在当前步骤中完整分析的普通函数，写入 `analyzed_symbols`；
+- 需要保留独立安全状态或稍后继续的位置，写入 `successors`。
+
+同一符号不得同时出现在两者中。无法解析的调用写入 `unresolved_targets` 和 `gaps`，不得猜测。
+
+只在以下位置保留 successor：攻击者可控数据、调用主体或安全检查状态发生变化；出现会改变后续安全结论的分支；进入另一个 Manifest 组件；Atlas 无法解析；或当前步骤已达 `step_symbol_budget` 但仍有未分析项目函数。没有安全语义变化的 helper、继承实现、`super` 和连续调用应在当前步骤内继续分析，不要为它们逐个创建节点。
 
 successor 的安全状态只保留会影响后续判断的信息：攻击者仍可控制的属性及状态、原始/直接调用主体关系、实际使用权限、已经经过的安全检查身份。普通局部变量、循环次数和无安全意义条件不进入状态。
 

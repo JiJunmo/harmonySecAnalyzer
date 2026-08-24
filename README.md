@@ -39,7 +39,7 @@ python3 deploy.py --tool claude --uninstall
 | 阶段 | 组件 | 产出 |
 |---|---|---|
 | 审计准备与任务生成 | `project-modeling` Skill、Atlas Indexer、Python Runtime | 项目事实、完整索引、组件分析单元与任务 |
-| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP、Semantic Exploration Runtime | 以有限节点为一轮渐进探索，断点、调用边和安全状态写入 `run.db`；闭合后由脚本生成真实入口、数据传播、实际操作组、组件间身份权限变化和防护事实 |
+| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP、Semantic Exploration Runtime | 优先走完当前路径，短路径结束后在同一轮继续下一条；普通项目函数在一步内连续分析，长路径达到函数保护值时保存证据并换新上下文续跑 |
 | 组件关联与六维验证 | Python Correlator、`exploitability-validator` Agent、Result Writer | 跨组件参数与身份链、带证据的三态六维结论；Agent 写草稿，`audit_orchestrator.py task-submit` 统一规范化、校验并即时落库 |
 | PoC 生成 | `poc-generator` Agent、Result Writer | 已确认漏洞的可复现触发套件；脚本补齐固定字段、规范证据引用并标记“已生成但未编译验证” |
 | 状态与报告 | `audit-orchestration` Skill | SQLite 状态、根因聚合、漏洞证据路径、JSON/Markdown/HTML |

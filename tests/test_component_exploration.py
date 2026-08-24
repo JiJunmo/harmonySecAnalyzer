@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,8 +99,10 @@ class ComponentExplorationStateTest(unittest.TestCase):
         }
 
     def step(self, work, successors=None, status="completed", stop_reason=None,
-             assessment=None, gaps=None, operation_groups=None, component_calls=None):
+             assessment=None, gaps=None, operation_groups=None, component_calls=None,
+             analyzed_symbols=None):
         successors = list(successors or [])
+        analyzed_symbols = list(analyzed_symbols or [])
         document = {
             "node_id": work["node_id"],
             "work_type": work["work_type"],
@@ -110,9 +113,13 @@ class ComponentExplorationStateTest(unittest.TestCase):
                 "tool": "search" if work["work_type"] == "entry_discovery" else "calls",
                 "source_symbol": None if work["work_type"] == "entry_discovery"
                 else work["symbol"]["qualified_name"],
-                "target_symbols": sorted({row["symbol"]["qualified_name"] for row in successors}),
+                "target_symbols": sorted(
+                    {row["symbol"]["qualified_name"] for row in successors}
+                    | {row["qualified_name"] for row in analyzed_symbols}
+                ),
                 "unresolved_targets": [],
             }],
+            "analyzed_symbols": analyzed_symbols,
             "facts": [],
             "security_checks": [],
             "operation_groups": list(operation_groups or []),
@@ -205,7 +212,7 @@ class ComponentExplorationStateTest(unittest.TestCase):
             self.run, self.task["task_id"], self.task["attempt"], self.step_file,
         )
 
-    def next(self, budget=12):
+    def next(self, budget=64):
         return next_exploration_node(
             self.run, self.task["task_id"], self.task["attempt"], budget,
         )
@@ -287,40 +294,161 @@ class ComponentExplorationStateTest(unittest.TestCase):
                 "status": "stopped", "stop_reason": "platform_boundary",
             })
 
-    def test_round_budget_pauses_without_marking_component_complete(self):
+    def test_long_path_is_paused_after_evidence_is_recorded(self):
         self.seed_entry([self.successor("EntryAbility.one", 10)])
-        current = self.next(budget=2)["work"]
+        current = self.next(budget=1)["work"]
         self.assertTrue(self.record(self.step(
             current, [self.successor("EntryAbility.two", 20)],
         ))["accepted"])
-        paused = self.next(budget=2)
+        paused = self.next(budget=1)
         self.assertTrue(paused["round_complete"])
-        self.assertEqual(paused["reason"], "round_budget_reached")
+        self.assertEqual(paused["reason"], "function_budget_reached_mid_path")
+        self.assertTrue(paused["continuation_saved"])
+        self.assertEqual(paused["processed_functions"], 1)
         result = finish_exploration_round(
             self.run, self.task["task_id"], self.task["attempt"],
         )
         self.assertEqual(result["exploration_status"], "running")
         self.assertEqual(result["open_nodes"], 1)
 
-    def test_long_chain_has_no_depth_cutoff(self):
+    def test_short_path_continues_with_next_path_in_same_round(self):
+        self.seed_entry([
+            self.successor("EntryAbility.first", 10),
+            self.successor("EntryAbility.second", 20),
+        ])
+        second = self.next(budget=64)
+        self.assertEqual(second["work"]["symbol"]["qualified_name"], "EntryAbility.second")
+        self.assertTrue(self.record(self.step(second["work"]))["accepted"])
+
+        following = self.next(budget=64)
+        self.assertFalse(following["round_complete"])
+        self.assertTrue(following["starting_new_path"])
+        self.assertEqual(
+            following["work"]["symbol"]["qualified_name"], "EntryAbility.first",
+        )
+
+    def test_function_budget_stops_at_closed_path_before_next_path(self):
+        self.seed_entry([
+            self.successor("EntryAbility.first", 10),
+            self.successor("EntryAbility.second", 20),
+        ])
+        second = self.next(budget=1)["work"]
+        self.assertTrue(self.record(self.step(second))["accepted"])
+
+        paused = self.next(budget=1)
+        self.assertTrue(paused["round_complete"])
+        self.assertEqual(
+            paused["reason"], "function_budget_reached_at_path_boundary",
+        )
+        self.assertFalse(paused["continuation_saved"])
+        with database(self.run / "run.db") as conn:
+            queued = conn.execute(
+                "SELECT COUNT(*) n FROM exploration_nodes WHERE status='queued'"
+            ).fetchone()["n"]
+            self.assertEqual(queued, 1)
+
+    def test_long_ordinary_chain_is_compacted_into_bounded_checkpoints(self):
         self.seed_entry([self.successor("EntryAbility.level1", 1)])
-        for level in range(1, 51):
+        checkpoint = 1
+        checkpoint_count = 0
+        while checkpoint <= 50:
             work = self.next(budget=100)["work"]
-            self.assertEqual(work["symbol"]["qualified_name"], f"EntryAbility.level{level}")
-            successors = (
-                [self.successor(f"EntryAbility.level{level + 1}", level + 1)]
-                if level < 50 else []
+            self.assertEqual(
+                work["symbol"]["qualified_name"], f"EntryAbility.level{checkpoint}",
             )
-            self.assertTrue(self.record(self.step(work, successors))["accepted"])
+            analyzed_levels = list(range(checkpoint + 1, min(checkpoint + 9, 51)))
+            next_checkpoint = checkpoint + 9
+            successors = [
+                self.successor(f"EntryAbility.level{next_checkpoint}", next_checkpoint)
+            ] if next_checkpoint <= 50 else []
+            analyzed = [
+                self.symbol(f"EntryAbility.level{level}", level)
+                for level in analyzed_levels
+            ]
+            self.assertTrue(self.record(self.step(
+                work, successors, analyzed_symbols=analyzed,
+            ))["accepted"])
+            checkpoint_count += 1
+            checkpoint = next_checkpoint
         self.assertEqual(self.next(budget=100)["reason"], "no_open_nodes")
         result = finish_exploration_round(
             self.run, self.task["task_id"], self.task["attempt"],
         )
         self.assertEqual(result["exploration_status"], "complete")
+        self.assertEqual(checkpoint_count, 6)
         with database(self.run / "run.db") as conn:
             self.assertEqual(conn.execute(
                 "SELECT MAX(depth) depth FROM exploration_nodes"
-            ).fetchone()["depth"], 50)
+            ).fetchone()["depth"], 6)
+        compiled = json.loads(Path(result["result_ref"]).read_text(encoding="utf-8"))
+        self.assertEqual(len(compiled["coverage"]["entry_symbols_checked"]), 50)
+
+    def test_ordinary_functions_are_analyzed_inside_one_checkpoint(self):
+        self.seed_entry([self.successor("EntryAbility.handle", 10)])
+        work = self.next(budget=100)["work"]
+        analyzed = [
+            self.symbol("EntryAbility.parseInput", 20),
+            self.symbol("EntryAbility.normalizeValue", 30),
+        ]
+        outcome = self.record(self.step(work, analyzed_symbols=analyzed))
+        self.assertTrue(outcome["accepted"], outcome)
+        self.assertTrue(self.next(budget=100)["round_complete"])
+
+        result = self.close_and_build()
+        self.assertEqual(result["coverage"]["entry_symbols_checked"], [
+            "EntryAbility.handle",
+            "EntryAbility.normalizeValue",
+            "EntryAbility.parseInput",
+        ])
+        with database(self.run / "run.db") as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) n FROM exploration_nodes"
+            ).fetchone()["n"], 2)
+
+    def test_symbol_cannot_be_both_inlined_and_deferred(self):
+        self.seed_entry([self.successor("EntryAbility.handle", 10)])
+        work = self.next(budget=100)["work"]
+        shared = self.symbol("EntryAbility.shared", 20)
+        outcome = self.record(self.step(
+            work,
+            successors=[self.successor("EntryAbility.shared", 20)],
+            analyzed_symbols=[shared],
+        ))
+        self.assertFalse(outcome["accepted"])
+        self.assertTrue(any(
+            "symbol_cannot_be_analyzed_and_successor" in row
+            for row in outcome["errors"]
+        ))
+
+    def test_component_work_limit_becomes_visible_coverage_gap(self):
+        with patch(
+            "audit_runtime.semantic_exploration.MAX_COMPONENT_WORK_NODES", 2,
+        ):
+            self.seed_entry([self.successor("EntryAbility.handle", 10)])
+            work = self.next(budget=100)["work"]
+            outcome = self.record(self.step(
+                work, [self.successor("EntryAbility.deep", 20)],
+            ))
+        self.assertTrue(outcome["accepted"], outcome)
+        self.assertEqual(outcome["budget_truncated"], ["EntryAbility.deep"])
+        self.assertTrue(self.record(self.step(
+            work, [self.successor("EntryAbility.deep", 20)],
+        ))["idempotent"])
+        self.assertTrue(self.next(budget=100)["round_complete"])
+        result = self.close_and_build()
+        self.assertEqual(result["coverage"]["exploration_summary"]["status"], "partial")
+        self.assertIn("EntryAbility.deep", result["coverage"]["unresolved_targets"])
+
+    def test_component_round_limit_closes_remaining_work_as_gap(self):
+        self.seed_entry([self.successor("EntryAbility.handle", 10)])
+        with patch("audit_runtime.semantic_exploration.MAX_COMPONENT_ROUNDS", 1):
+            outcome = finish_exploration_round(
+                self.run, self.task["task_id"], self.task["attempt"],
+            )
+        self.assertEqual(outcome["status"], "completed", outcome)
+        self.assertEqual(outcome["exploration_status"], "partial")
+        result = json.loads(Path(outcome["result_ref"]).read_text(encoding="utf-8"))
+        self.assertIn("EntryAbility.handle", result["coverage"]["unresolved_targets"])
 
     def test_invalid_step_and_stale_attempt_do_not_change_state(self):
         root = self.next()["work"]
@@ -328,7 +456,7 @@ class ComponentExplorationStateTest(unittest.TestCase):
         invalid["atlas_queries"][0]["target_symbols"] = []
         outcome = self.record(invalid)
         self.assertFalse(outcome["accepted"])
-        self.assertTrue(any("successors_not_observed_by_atlas" in row for row in outcome["errors"]))
+        self.assertTrue(any("symbols_not_observed_by_atlas" in row for row in outcome["errors"]))
         with database(self.run / "run.db") as conn:
             node = conn.execute(
                 "SELECT status FROM exploration_nodes WHERE node_id=?", (root["node_id"],)
@@ -444,11 +572,13 @@ class ComponentExplorationStateTest(unittest.TestCase):
 
     def test_formal_scheduler_continues_rounds_and_compiles_final_result(self):
         self.seed_entry([self.successor("EntryAbility.level1", 10)])
-        level1 = self.next(budget=2)["work"]
+        level1 = self.next(budget=1)["work"]
         self.assertTrue(self.record(self.step(
             level1, [self.successor("EntryAbility.level2", 20)],
         ))["accepted"])
-        self.assertEqual(self.next(budget=2)["reason"], "round_budget_reached")
+        self.assertEqual(
+            self.next(budget=1)["reason"], "function_budget_reached_mid_path",
+        )
         first_round = finish_exploration_round(
             self.run, self.task["task_id"], self.task["attempt"],
         )
@@ -461,12 +591,24 @@ class ComponentExplorationStateTest(unittest.TestCase):
         self.assertEqual(second["attempt"], 1)
         task_doc = json.loads(Path(second["task_file"]).read_text(encoding="utf-8"))
         self.assertEqual(task_doc["input"]["exploration_protocol"]["round_no"], 2)
+        self.assertEqual(
+            task_doc["input"]["exploration_protocol"]["round_function_budget"], 64,
+        )
+        self.assertEqual(
+            task_doc["input"]["exploration_protocol"]["step_symbol_budget"], 8,
+        )
+        self.assertEqual(
+            task_doc["input"]["exploration_protocol"]["component_checkpoint_limit"], 64,
+        )
+        self.assertEqual(
+            task_doc["input"]["exploration_protocol"]["component_round_limit"], 8,
+        )
         self.assertTrue(second["result_schema_file"].endswith(
             "component-exploration-step.schema.json"
         ))
 
         level2 = next_exploration_node(
-            self.run, second["task_id"], second["attempt"], budget=2,
+            self.run, second["task_id"], second["attempt"], budget=1,
         )["work"]
         self.step_file.write_text(json.dumps(self.step(level2)), encoding="utf-8")
         self.assertTrue(record_exploration_step(

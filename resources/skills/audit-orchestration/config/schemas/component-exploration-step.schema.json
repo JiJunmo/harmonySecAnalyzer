@@ -7,6 +7,7 @@
     "status",
     "summary",
     "atlas_queries",
+    "analyzed_symbols",
     "facts",
     "security_checks",
     "operation_groups",
@@ -38,6 +39,13 @@
       "type": "array",
       "items": {"$ref": "#/$defs/atlasQuery"}
     },
+    "analyzed_symbols": {
+      "type": "array",
+      "description": "Ordinary call targets fully analyzed inside this step; they do not become persisted frontier nodes.",
+      "items": {"$ref": "#/$defs/symbol"},
+      "maxItems": 8,
+      "uniqueItems": true
+    },
     "facts": {
       "type": "array",
       "items": {"$ref": "#/$defs/fact"}
@@ -56,7 +64,8 @@
     },
     "successors": {
       "type": "array",
-      "items": {"$ref": "#/$defs/successor"}
+      "items": {"$ref": "#/$defs/successor"},
+      "maxItems": 32
     },
     "gaps": {
       "type": "array",

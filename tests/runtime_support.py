@@ -52,6 +52,7 @@ def _step(work, summary, successors=None, assessment=None, groups=None, calls=No
             }),
             "unresolved_targets": unresolved,
         }],
+        "analyzed_symbols": [],
         "facts": [], "security_checks": [],
         "operation_groups": list(groups or []), "component_calls": list(calls or []),
         "successors": successors, "gaps": unresolved,

@@ -164,6 +164,11 @@ def task_context(conn, task, paths=None):
         analysis_contract = {
             "task_unit": "one bounded round of a persistent component exploration",
             "phases": ["claim_node", "query_atlas", "record_step", "repeat_until_round_complete", "finish_round"],
+            "exploration_unit": "a security-semantic checkpoint, not every ordinary function",
+            "inline_analysis": "continue through ordinary project functions inside one step until security semantics change or the step budget is exhausted",
+            "checkpoint_when": ["security_state_changes", "security_relevant_branch", "component_boundary", "unresolved_target", "step_budget_exhausted"],
+            "round_policy": "finish the active path first; continue with another short path while the cumulative function budget remains",
+            "long_path_policy": "persist the current segment and resume the queued continuation in the next round without creating a coverage gap",
             "group_by": ["capability", "operation_location", "controlled_properties", "security_semantics"],
             "component_completion": "all discovered nodes are completed, stopped with a reason, or recorded as coverage gaps",
             "sensitive_operation_is_not_a_stop_condition": True,
@@ -196,6 +201,11 @@ def task_context(conn, task, paths=None):
             "analysis_contract": analysis_contract,
         }
         if paths:
+            from .semantic_exploration import (
+                MAX_COMPONENT_ROUNDS, MAX_COMPONENT_WORK_NODES,
+                ROUND_FUNCTION_BUDGET, STEP_SYMBOL_BUDGET,
+            )
+
             exploration = conn.execute(
                 "SELECT * FROM component_explorations WHERE entry_id=?", (task["subject_id"],)
             ).fetchone()
@@ -219,6 +229,10 @@ def task_context(conn, task, paths=None):
                 "round_no": (exploration["round_no"] + 1) if exploration else 1,
                 "current_status": exploration["status"] if exploration else "pending",
                 "node_counts": node_counts,
+                "round_function_budget": ROUND_FUNCTION_BUDGET,
+                "step_symbol_budget": STEP_SYMBOL_BUDGET,
+                "component_checkpoint_limit": MAX_COMPONENT_WORK_NODES,
+                "component_round_limit": MAX_COMPONENT_ROUNDS,
                 "step_file": step_file,
                 "step_schema_file": str(SCHEMAS_DIR / "component-exploration-step.schema.json"),
                 "semantic_schema_file": str(SCHEMAS_DIR / "component-semantic-result.schema.json"),

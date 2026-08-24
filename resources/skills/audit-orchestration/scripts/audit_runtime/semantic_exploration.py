@@ -11,7 +11,10 @@ from .semantic_results import validate_exploration_step_semantics
 from .store import append_event, database, row_json, transaction
 
 
-ROUND_NODE_BUDGET = 12
+ROUND_FUNCTION_BUDGET = 64
+STEP_SYMBOL_BUDGET = 8
+MAX_COMPONENT_WORK_NODES = 64
+MAX_COMPONENT_ROUNDS = 8
 STEP_SCHEMA = "component-exploration-step.schema.json"
 
 
@@ -172,10 +175,39 @@ def _path_context(conn, node):
     return list(reversed(path))
 
 
-def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_NODE_BUDGET):
+def _attempt_progress(conn, exploration_id, task_id, attempt):
+    rows = conn.execute(
+        """SELECT * FROM exploration_nodes
+           WHERE exploration_id=? AND lease_task_id=? AND lease_attempt=?
+           AND status IN ('completed','stopped','gap')""",
+        (exploration_id, task_id, int(attempt)),
+    ).fetchall()
+    function_count = sum(
+        1 + len(row_json(row, "observation_json", {}).get("analyzed_symbols", []))
+        for row in rows if row["work_type"] == "function_analysis"
+    )
+    last_node = max(
+        rows, key=lambda row: (row["updated_at"], row["discovered_order"]),
+        default=None,
+    )
+    return len(rows), function_count, last_node
+
+
+def _queued_continuation(conn, exploration_id, source_node_id):
+    return conn.execute(
+        """SELECT n.* FROM exploration_edges e
+           JOIN exploration_nodes n ON n.node_id=e.target_node_id
+           WHERE e.exploration_id=? AND e.source_node_id=? AND e.decision='follow'
+           AND n.status='queued'
+           ORDER BY n.depth DESC,n.discovered_order DESC,n.node_id LIMIT 1""",
+        (exploration_id, source_node_id),
+    ).fetchone()
+
+
+def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_FUNCTION_BUDGET):
     budget = int(budget)
     if budget <= 0:
-        raise ValueError("round_node_budget_must_be_positive")
+        raise ValueError("round_function_budget_must_be_positive")
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn, transaction(conn):
         task = _task(conn, task_id, attempt)
@@ -186,28 +218,41 @@ def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_NODE_BUDGET):
                AND lease_attempt<>?""",
             (now(), exploration_id, task_id, int(attempt)),
         )
-        processed = conn.execute(
-            """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
-               AND lease_task_id=? AND lease_attempt=? AND status IN ('completed','stopped','gap')""",
-            (exploration_id, task_id, int(attempt)),
-        ).fetchone()["n"]
-        if processed >= budget:
-            return {
-                "ok": True, "exploration_id": exploration_id, "work": None,
-                "round_complete": True, "reason": "round_budget_reached",
-                "processed_nodes": processed, "round_node_budget": budget,
-            }
+        processed, processed_functions, last_node = _attempt_progress(
+            conn, exploration_id, task_id, attempt,
+        )
+        starting_new_path = False
         node = conn.execute(
             """SELECT * FROM exploration_nodes WHERE exploration_id=? AND status='leased'
                AND lease_task_id=? AND lease_attempt=? ORDER BY depth DESC,discovered_order DESC LIMIT 1""",
             (exploration_id, task_id, int(attempt)),
         ).fetchone()
         if not node:
-            node = conn.execute(
-                """SELECT * FROM exploration_nodes WHERE exploration_id=? AND status='queued'
-                   ORDER BY depth DESC,discovered_order DESC,node_id LIMIT 1""",
-                (exploration_id,),
-            ).fetchone()
+            continuation = _queued_continuation(
+                conn, exploration_id, last_node["node_id"],
+            ) if last_node else None
+            if processed_functions >= budget:
+                return {
+                    "ok": True, "exploration_id": exploration_id, "work": None,
+                    "round_complete": True,
+                    "reason": (
+                        "function_budget_reached_mid_path"
+                        if continuation else "function_budget_reached_at_path_boundary"
+                    ),
+                    "continuation_saved": bool(continuation),
+                    "processed_nodes": processed,
+                    "processed_functions": processed_functions,
+                    "round_function_budget": budget,
+                }
+            node = continuation
+            starting_new_path = False
+            if not node:
+                node = conn.execute(
+                    """SELECT * FROM exploration_nodes WHERE exploration_id=? AND status='queued'
+                       ORDER BY depth DESC,discovered_order DESC,node_id LIMIT 1""",
+                    (exploration_id,),
+                ).fetchone()
+                starting_new_path = bool(last_node and node)
             if node:
                 conn.execute(
                     """UPDATE exploration_nodes SET status='leased',lease_task_id=?,lease_attempt=?,updated_at=?
@@ -228,7 +273,9 @@ def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_NODE_BUDGET):
             return {
                 "ok": True, "exploration_id": exploration_id, "work": None,
                 "round_complete": True, "reason": "no_open_nodes",
-                "processed_nodes": processed, "round_node_budget": budget,
+                "processed_nodes": processed,
+                "processed_functions": processed_functions,
+                "round_function_budget": budget,
             }
         return {
             "ok": True, "exploration_id": exploration_id,
@@ -239,7 +286,9 @@ def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_NODE_BUDGET):
                 "path_context": _path_context(conn, node),
             },
             "round_complete": False, "processed_nodes": processed,
-            "round_node_budget": budget,
+            "processed_functions": processed_functions,
+            "round_function_budget": budget,
+            "starting_new_path": starting_new_path,
             "step_schema_file": str(SCHEMAS_DIR / STEP_SCHEMA),
         }
 
@@ -252,6 +301,8 @@ def _business_errors(step, node):
         errors.append("work_type_mismatch")
     assessment = step.get("entry_assessment", {})
     if node["work_type"] == "entry_discovery":
+        if step.get("analyzed_symbols"):
+            errors.append("entry_discovery_cannot_inline_function_analysis")
         if assessment.get("entry_status") == "excluded":
             if assessment.get("external_entry_status") != "excluded":
                 errors.append("excluded_entry_requires_excluded_external_entry")
@@ -268,17 +319,26 @@ def _business_errors(step, node):
         symbol for query in step.get("atlas_queries", [])
         for symbol in query.get("target_symbols", [])
     }
+    analyzed = {
+        symbol.get("qualified_name") for symbol in step.get("analyzed_symbols", [])
+        if symbol.get("qualified_name")
+    }
     decided = {
         successor.get("symbol", {}).get("qualified_name")
         for successor in step.get("successors", [])
     }
-    if observed != decided:
-        missing = sorted(observed - decided)
-        unknown = sorted(decided - observed)
+    if analyzed & decided:
+        errors.append("symbol_cannot_be_analyzed_and_successor:" + ",".join(sorted(analyzed & decided)))
+    covered = analyzed | decided
+    if observed != covered:
+        missing = sorted(observed - covered)
+        unknown = sorted(covered - observed)
         if missing:
             errors.append("atlas_targets_without_decision:" + ",".join(missing))
         if unknown:
-            errors.append("successors_not_observed_by_atlas:" + ",".join(unknown))
+            errors.append("symbols_not_observed_by_atlas:" + ",".join(unknown))
+    if len(analyzed) > STEP_SYMBOL_BUDGET:
+        errors.append(f"step_symbol_budget_exceeded:{len(analyzed)}>{STEP_SYMBOL_BUDGET}")
     for index, successor in enumerate(step.get("successors", [])):
         if successor.get("relation") == "component_boundary" and not (
             successor.get("decision") == "stop" and successor.get("stop_reason") == "component_boundary"
@@ -287,6 +347,45 @@ def _business_errors(step, node):
     if step.get("status") == "gap" and not step.get("gaps"):
         errors.append("gap_status_requires_gap")
     return errors
+
+
+def _apply_component_work_budget(conn, exploration_id, step):
+    """Turn overflow frontier work into explicit gaps instead of unbounded continuation."""
+    used = conn.execute(
+        """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
+           AND status IN ('queued','leased','completed')""",
+        (exploration_id,),
+    ).fetchone()["n"]
+    remaining = max(0, MAX_COMPONENT_WORK_NODES - used)
+    truncated = []
+    normalized = []
+    for successor in step["successors"]:
+        successor = dict(successor)
+        if successor["decision"] != "follow":
+            normalized.append(successor)
+            continue
+        symbol = _normalize_symbol(successor["symbol"])
+        state = _normalize_state(successor["state"])
+        node_id = stable_id("XNODE", [
+            exploration_id, _symbol_key(symbol), canonical_json(state),
+        ])
+        exists = conn.execute(
+            "SELECT 1 FROM exploration_nodes WHERE node_id=?", (node_id,),
+        ).fetchone()
+        if exists or remaining > 0:
+            normalized.append(successor)
+            if not exists:
+                remaining -= 1
+            continue
+        successor["decision"] = "stop"
+        successor["stop_reason"] = "resource_limit"
+        normalized.append(successor)
+        truncated.append(symbol["qualified_name"])
+    if truncated:
+        step = dict(step)
+        step["successors"] = normalized
+        step["gaps"] = sorted(set(step.get("gaps", [])) | set(truncated))
+    return step, truncated
 
 
 def _insert_successor(conn, exploration_id, source, successor):
@@ -379,6 +478,9 @@ def record_exploration_step(run_dir, task_id, attempt, input_path):
             ))
         if errors:
             return {"ok": True, "accepted": False, "errors": errors}
+        effective_step, truncated = _apply_component_work_budget(
+            conn, exploration_id, step,
+        )
         assessment = step.get("entry_assessment")
         if assessment:
             conn.execute(
@@ -391,7 +493,7 @@ def record_exploration_step(run_dir, task_id, attempt, input_path):
             )
         created = 0
         successor_ids = []
-        for successor in step["successors"]:
+        for successor in effective_step["successors"]:
             successor_id, was_created = _insert_successor(conn, exploration_id, node, successor)
             successor_ids.append(successor_id)
             created += int(was_created)
@@ -408,6 +510,7 @@ def record_exploration_step(run_dir, task_id, attempt, input_path):
             "ok": True, "accepted": True, "idempotent": False,
             "node_id": node["node_id"], "status": step["status"],
             "successor_ids": successor_ids, "created_successors": created,
+            "budget_truncated": truncated,
         }
 
 
@@ -467,6 +570,29 @@ def finish_exploration_round(run_dir, task_id, attempt):
             exploration = conn.execute(
                 "SELECT * FROM component_explorations WHERE exploration_id=?", (exploration_id,)
             ).fetchone()
+            next_round_no = exploration["round_no"] + 1
+            if open_nodes and next_round_no >= MAX_COMPONENT_ROUNDS:
+                limited = conn.execute(
+                    """SELECT node_id,symbol_json FROM exploration_nodes
+                       WHERE exploration_id=? AND status='queued'""", (exploration_id,),
+                ).fetchall()
+                for row in limited:
+                    symbol = row_json(row, "symbol_json", {}).get("qualified_name")
+                    observation = {
+                        "node_id": row["node_id"], "work_type": "function_analysis",
+                        "status": "gap", "summary": "组件探索达到轮次保护上限",
+                        "stop_reason": "resource_limit", "atlas_queries": [],
+                        "analyzed_symbols": [], "facts": [], "security_checks": [],
+                        "operation_groups": [], "component_calls": [], "successors": [],
+                        "gaps": [symbol] if symbol else ["round_limit"],
+                    }
+                    conn.execute(
+                        """UPDATE exploration_nodes SET status='gap',stop_reason='resource_limit',
+                           observation_json=?,updated_at=? WHERE node_id=?""",
+                        (canonical_json(observation), now(), row["node_id"]),
+                    )
+                open_nodes = 0
+                has_gaps = True
             if open_nodes:
                 exploration_status = "running"
             elif (has_gaps or exploration["entry_status"] == "uncertain"
@@ -474,7 +600,7 @@ def finish_exploration_round(run_dir, task_id, attempt):
                 exploration_status = "partial"
             else:
                 exploration_status = "complete"
-            round_no = exploration["round_no"] + 1
+            round_no = next_round_no
             conn.execute(
                 """UPDATE component_explorations SET status=?,round_no=?,updated_at=?
                    WHERE exploration_id=?""",

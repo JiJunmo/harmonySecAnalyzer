@@ -52,6 +52,11 @@ def validate_exploration_step_semantics(conn, task, node, exploration, step):
         symbol = row_json(node, "symbol_json", {}).get("qualified_name")
         if symbol:
             symbols.append(symbol)
+    symbols.extend(
+        symbol.get("qualified_name")
+        for symbol in step.get("analyzed_symbols", [])
+        if isinstance(symbol, dict) and symbol.get("qualified_name")
+    )
     unresolved = [
         target
         for query in step.get("atlas_queries", [])
@@ -125,6 +130,11 @@ def build_exploration_semantic_result(conn, task):
             symbol = row_json(node, "symbol_json", {}).get("qualified_name")
             if symbol:
                 checked_symbols.add(symbol)
+        checked_symbols.update(
+            symbol.get("qualified_name")
+            for symbol in observation.get("analyzed_symbols", [])
+            if isinstance(symbol, dict) and symbol.get("qualified_name")
+        )
         operation_groups.extend(_copy(observation.get("operation_groups", [])))
         component_calls.extend(_copy(observation.get("component_calls", [])))
         unresolved.update(observation.get("gaps", []))
@@ -146,7 +156,9 @@ def build_exploration_semantic_result(conn, task):
     max_depth = max((node["depth"] for node in nodes), default=0)
     notes = [note for note in root_notes if note]
     notes.append(
-        f"渐进探索已处理 {len(observations)} 个节点，停止 {counts['stopped']} 个，缺口 {counts['gap']} 个"
+        f"渐进探索已处理 {len(observations)} 个安全语义断点，"
+        f"覆盖 {len(checked_symbols)} 个函数，停止 {counts['stopped']} 个，"
+        f"缺口 {counts['gap']} 个"
     )
     notes.extend(f"覆盖缺口：{gap}" for gap in sorted(unresolved))
     result = {
