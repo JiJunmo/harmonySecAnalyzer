@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 24
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS exploration_nodes(
   state_key TEXT NOT NULL,
   symbol_json TEXT NOT NULL,
   state_json TEXT NOT NULL,
+  resume_json TEXT NOT NULL DEFAULT '{}',
   depth INTEGER NOT NULL CHECK(depth >= 0),
   discovered_order INTEGER NOT NULL CHECK(discovered_order >= 0),
   status TEXT NOT NULL CHECK(status IN ('queued','leased','completed','stopped','gap')),
@@ -91,7 +92,7 @@ CREATE TABLE IF NOT EXISTS exploration_edges(
   exploration_id TEXT NOT NULL REFERENCES component_explorations(exploration_id) ON DELETE CASCADE,
   source_node_id TEXT NOT NULL REFERENCES exploration_nodes(node_id) ON DELETE CASCADE,
   target_node_id TEXT NOT NULL REFERENCES exploration_nodes(node_id) ON DELETE CASCADE,
-  relation TEXT NOT NULL CHECK(relation IN ('call','callback','async_continuation','branch','data_flow','component_boundary')),
+  relation TEXT NOT NULL CHECK(relation IN ('call','callback','async_continuation','branch','data_flow','component_boundary','resume')),
   decision TEXT NOT NULL CHECK(decision IN ('follow','stop')),
   condition TEXT NOT NULL,
   payload_json TEXT NOT NULL,
@@ -184,7 +185,7 @@ CREATE TABLE IF NOT EXISTS group_facts(
   fact_id TEXT PRIMARY KEY,
   fact_key TEXT NOT NULL,
   group_id TEXT NOT NULL REFERENCES operation_groups(group_id) ON DELETE CASCADE,
-  fact_type TEXT NOT NULL CHECK(fact_type IN ('entrypoint','reachability','control','transform','security_check','operation','effect','dead_end','gap')),
+  fact_type TEXT NOT NULL CHECK(fact_type IN ('entrypoint','reachability','control','transform','security_check','operation','effect','dead_end')),
   body TEXT NOT NULL,
   location TEXT,
   evidence_json TEXT NOT NULL,

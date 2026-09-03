@@ -166,9 +166,15 @@ def task_context(conn, task, paths=None):
             "phases": ["claim_node", "resolve_code_relations", "record_step", "repeat_until_round_complete", "finish_round"],
             "exploration_unit": "a security-semantic checkpoint, not every ordinary function",
             "inline_analysis": "continue through ordinary project functions inside one step until security semantics change or the step budget is exhausted",
-            "checkpoint_when": ["security_state_changes", "security_relevant_branch", "component_boundary", "unresolved_target", "step_budget_exhausted"],
+            "checkpoint_when": ["security_state_changes", "security_relevant_branch", "known_boundary", "step_budget_exhausted"],
             "round_policy": "finish the active path first; continue with another short path while the cumulative function budget remains",
             "long_path_policy": "persist the current segment and resume the queued continuation in the next round without creating a coverage gap",
+            "pause_submission": "save other unfinished functions in successors; if the current function is unfinished, fill resume with its source location, remaining_work and state instead of a self-successor; use pause_requested=true for fresh context, then next and finish",
+            "resume_policy": "resume=null declares no unfinished local work beyond the recorded successors/gaps; otherwise the runtime queues a separate segment of the same function and returns work.resume_from; do not change the function declaration location or repeat an already processed resume position",
+            "entry_assessment_updates": "next returns the current component-wide entry_assessment; later source evidence may update the same assessment, with located evidence and a complete candidate list; never replace it with a single-branch verdict",
+            "gap_policy": "each analysis failure is declared once in gaps with target, reason and located evidence; Atlas unresolved expressions must be source-resolved or match a gap target; unexamined work is not a gap; resource_limit is runtime-owned",
+            "state_ownership": "agents do not write step status or successor decision; the runtime derives scheduling and coverage from accepted facts, gaps, normal stop reasons and pause requests",
+            "security_check_identity": "inherit state.security_checks references or cite evidenced checks declared in this step; each reference uses source location, subject_kind and validated_property, never agent-generated IDs",
             "group_by": ["capability", "operation_location", "controlled_properties", "security_semantics"],
             "component_completion": "all discovered nodes are completed, stopped with a reason, or recorded as coverage gaps",
             "sensitive_operation_is_not_a_stop_condition": True,
@@ -210,10 +216,7 @@ def task_context(conn, task, paths=None):
             "analysis_contract": analysis_contract,
         }
         if paths:
-            from .semantic_exploration import (
-                MAX_COMPONENT_ROUNDS, MAX_COMPONENT_WORK_NODES,
-                ROUND_FUNCTION_BUDGET, STEP_SYMBOL_BUDGET,
-            )
+            from .semantic_exploration import ROUND_FUNCTION_BUDGET, STEP_SYMBOL_BUDGET
 
             exploration = conn.execute(
                 "SELECT * FROM component_explorations WHERE entry_id=?", (task["subject_id"],)
@@ -240,8 +243,6 @@ def task_context(conn, task, paths=None):
                 "node_counts": node_counts,
                 "round_function_budget": ROUND_FUNCTION_BUDGET,
                 "step_symbol_budget": STEP_SYMBOL_BUDGET,
-                "component_checkpoint_limit": MAX_COMPONENT_WORK_NODES,
-                "component_round_limit": MAX_COMPONENT_ROUNDS,
                 "step_file": step_file,
                 "step_schema_file": str(SCHEMAS_DIR / "component-exploration-step.schema.json"),
                 "semantic_schema_file": str(SCHEMAS_DIR / "component-semantic-result.schema.json"),

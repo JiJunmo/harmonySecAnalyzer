@@ -27,6 +27,12 @@ AI 任务严格分成 `component_semantic_analysis`、`exploitability_validation
 
 全量模式和组件级能力模式初始化全部组件探索；组件过滤模式只初始化指定组件，再按已证明的 `component_calls` 补充尚未分析的下游组件及其探索状态。能力表中的 `entry_types` 只随任务作为优先提示，不参与组件排除。没有新的下游组件后，运行时确定性连接组件，只为真实外部入口可达的本地操作和跨组件操作创建验证任务。
 
+本轮上下文容量不足时，语义 Agent 通过现有 `explore-record` 保存待分析目标并设置 `pause_requested=true`。后续目标的 `stop_reason=null` 表示待分析，有明确正常边界原因则不展开，不重复填写 decision。下一次 `explore-next` 返回 `round_complete=true`，随后 `explore-finish` 将有待办的同一 task_id 重新排队；没有待办则直接完成组件。已排队的其他分支无需重复声明。record 返回 `node_status=completed` 只表示分段已保存；finish 返回 `task_status=queued/completed` 决定轮次继续或任务完成。
+
+每步必填 resume：当前函数未完时保存源码位置、剩余工作和安全状态，脚本生成同一函数的续跑分段；已完且其他去向均已登记时为 null。不能用自指 successor 或修改函数定义行号来续跑。next 返回 `work.resume_from`，Agent 从该处继续；它与 `pause_requested` 是否换上下文是两个不同事实。入口初判允许在后续步骤通过同一个 `entry_assessment` 携带新定位证据更新，next 返回当前组件的最新判断。
+
+Agent 不填写步骤 status。每个解析缺口只在 `gaps[]` 中填写 target、reason 和 evidence，不再重复声明 gap 类型事实或 unresolved 停止原因。正常终止、真实缺口、其他待分析分支和暂停请求可以同时存在，彼此独立。查询中的未解析表达式必须被源码补全或对应一个 gap 目标；未知目标不创建虚构 successor。安全检查使用源码位置、检查对象和校验属性引用，不由 Agent 生成 ID。`resource_limit` 仅由脚本产生，且不会伪装成已分析的步骤。格式错误在当前子任务内退回修正，不消耗调度重试。
+
 六维验证和 PoC Agent 只写任务私有草稿。任务文件中的 `result_protocol` 给出绝对草稿路径和 `audit_orchestrator.py task-submit` 命令；Result Writer 确定性补齐任务 ID、对象 ID、缺省字段，规范和过滤证据引用，再以最终严格 Schema 与业务不变量验收，并在同一事务中写入正式结果、完成任务。可修复格式错误不消耗调度重试；此类拒绝仍是命令正常执行，只返回 `accepted=false`，Agent 在本次子任务中修正草稿，只有 `accepted=true` 且 `status=completed` 才允许结束。实质性证据不足、跨组引用后失去有效支持或结论冲突仍会被拒绝。
 
 验证结果落库并生成 confirmed/residual Finding 时，运行时立即为每个 Finding 派生一个 `poc_generation` 任务（`poc:{finding_id}`）。PoC 任务只为该 Finding 生成可复现触发套件，禁止重新判定漏洞或自行输出可信度；规范化后的提交必须通过 poc-result Schema 与 PoC 领域校验（证据引用、占位符、禁止越权输出、触发形态一致性）才能落库到 `poc_artifacts`，并由运行时标记为 `generated_unverified`。该状态只表示静态契约通过，不表示已经编译或在设备上执行。Finding 内容变化时已完成的任务自动重新排队；增量模式下操作组指纹与基线 PoC 快照一致时直接复用。PoC 任务达到三次尝试上限不阻塞 Run 完成，也不计入覆盖缺口，仅在对应 Finding 报告中显示 `generation_failed`。

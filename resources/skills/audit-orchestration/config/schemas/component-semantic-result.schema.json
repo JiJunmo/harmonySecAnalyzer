@@ -10,8 +10,14 @@
       "type": "object",
       "required": ["entry_status", "external_entry_status", "confirmed_external_candidate_ids", "entry_notes", "entry_symbols_checked", "operation_sites_checked", "unresolved_targets"],
       "properties": {
-        "entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
-        "external_entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
+        "entry_status": {
+          "enum": ["confirmed", "excluded", "uncertain"],
+          "description": "A real executable component input is proven, ruled out, or not established. Internal-only inputs can be confirmed; this is not a vulnerability verdict."
+        },
+        "external_entry_status": {
+          "enum": ["confirmed", "excluded", "uncertain"],
+          "description": "A non-component_scope external input is proven, ruled out, or not established. It is independent of internal component reachability."
+        },
         "confirmed_external_candidate_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "entry_notes": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "entry_symbols_checked": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
@@ -21,12 +27,15 @@
           "type": "object",
           "required": ["status", "rounds", "total_nodes", "completed_nodes", "stopped_nodes", "gap_nodes", "max_depth"],
           "properties": {
-            "status": {"enum": ["complete", "partial"]},
+            "status": {
+              "enum": ["complete", "partial"],
+              "description": "Runtime-derived coverage, not vulnerability validity: complete means no known exploration/entry gap; partial means known gaps or uncertain entry assessment. Agents do not author this field."
+            },
             "rounds": {"type": "integer", "minimum": 0},
             "total_nodes": {"type": "integer", "minimum": 1},
             "completed_nodes": {"type": "integer", "minimum": 0},
             "stopped_nodes": {"type": "integer", "minimum": 0},
-            "gap_nodes": {"type": "integer", "minimum": 0},
+            "gap_nodes": {"type": "integer", "minimum": 0, "description": "Unprocessed nodes closed by runtime limits, not the total coverage-gap count. Analysis failures inside processed segments are listed in coverage.unresolved_targets."},
             "max_depth": {"type": "integer", "minimum": 0}
           },
           "additionalProperties": false
@@ -60,7 +69,7 @@
       "required": ["fact_key", "type", "body", "evidence"],
       "properties": {
         "fact_key": {"type": "string", "minLength": 1},
-        "type": {"enum": ["entrypoint", "reachability", "control", "transform", "security_check", "operation", "dead_end", "gap"]},
+        "type": {"enum": ["entrypoint", "reachability", "control", "transform", "security_check", "operation", "dead_end"]},
         "body": {"type": "string", "minLength": 1},
         "location": {"type": ["string", "null"]},
         "evidence": {"$ref": "#/$defs/evidenceList"}
@@ -85,7 +94,10 @@
         "location": {"type": ["string", "null"]},
         "protects": {"type": "string", "minLength": 1},
         "validated_property": {"type": "string", "minLength": 1},
-        "subject_kind": {"enum": ["origin_principal", "immediate_caller", "transferred_property", "resource_owner", "security_boundary", "unknown"]},
+        "subject_kind": {
+          "enum": ["origin_principal", "immediate_caller", "transferred_property", "resource_owner", "security_boundary", "unknown"],
+          "description": "Classify by the checked value's provenance, not coincidental identity equality: caller-identity APIs use immediate_caller even for direct external calls; independently authenticated original identity uses origin_principal; unverified transferred claims use transferred_property. Resource ownership uses resource_owner; other boundary policy uses security_boundary; unknown means not established."
+        },
         "behavior": {"type": "string", "minLength": 1},
         "evidence": {"$ref": "#/$defs/evidenceList"}
       },
@@ -97,8 +109,14 @@
       "properties": {
         "caller_principal": {"type": "string", "minLength": 1},
         "callee_observed_principal": {"type": "string", "minLength": 1},
-        "origin_binding": {"enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"]},
-        "authority_used": {"enum": ["origin", "source_component", "system", "none", "unknown"]},
+        "origin_binding": {
+          "enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"],
+          "description": "Select preserved if the original identity is verifiably available; otherwise replaced_by_caller if only the immediate caller's identity is verifiably available; otherwise not_observable if the channel is proven to expose neither identity reliably; unknown if not established."
+        },
+        "authority_used": {
+          "enum": ["origin", "source_component", "system", "none", "unknown"],
+          "description": "Actual authority used: original actor, current intermediary component, proven system authority, proven no relevant authority, or insufficient evidence. Calling a system API alone does not imply system authority."
+        },
         "evidence": {"$ref": "#/$defs/evidenceList"}
       },
       "additionalProperties": false
@@ -109,7 +127,10 @@
       "properties": {
         "source_property": {"type": "string", "minLength": 1},
         "target_property": {"type": "string", "minLength": 1},
-        "control_state": {"enum": ["preserved", "constrained", "constant", "unknown"]},
+        "control_state": {
+          "enum": ["preserved", "constrained", "constant", "unknown"],
+          "description": "Select constant if independence from attacker input is proven; otherwise constrained if an explicit restriction on the input's security-relevant values is proven; otherwise preserved if influence is proven without such restriction; unknown if not established. Copying preserves upstream constraints. Constrained does not imply safe."
+        },
         "transform": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false
@@ -118,7 +139,10 @@
       "type": "object",
       "required": ["control_state", "condition", "evidence"],
       "properties": {
-        "control_state": {"enum": ["preserved", "constrained", "independent", "unknown"]},
+        "control_state": {
+          "enum": ["preserved", "constrained", "independent", "unknown"],
+          "description": "Select independent if invocation is proven independent of this input; otherwise constrained if input controls invocation under a proven restrictive condition; otherwise preserved if this control is proven without such restriction; unknown if not established. Constant arguments do not make invocation independent."
+        },
         "condition": {"type": "string", "minLength": 1},
         "evidence": {"$ref": "#/$defs/evidenceList"}
       },

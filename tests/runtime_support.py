@@ -24,7 +24,7 @@ def _state():
             "origin": "third-party application", "immediate": "third-party application",
             "origin_binding": "preserved", "authority": "origin",
         },
-        "security_check_ids": [],
+        "security_checks": [],
     }
 
 
@@ -56,7 +56,7 @@ def _step(work, summary, successors=None, assessment=None, groups=None, calls=No
         }
     document = {
         "node_id": work["node_id"], "work_type": work["work_type"],
-        "status": "completed", "summary": summary, "stop_reason": None,
+        "pause_requested": False, "resume": None, "summary": summary, "stop_reason": None,
         "atlas_queries": [{
             "tool": "search" if work["work_type"] == "entry_discovery" else "calls",
             "source_symbol": None if work["work_type"] == "entry_discovery"
@@ -70,7 +70,14 @@ def _step(work, summary, successors=None, assessment=None, groups=None, calls=No
         "analyzed_symbols": [],
         "facts": [], "security_checks": [],
         "operation_groups": list(groups or []), "component_calls": list(calls or []),
-        "successors": successors, "gaps": unresolved,
+        "successors": successors, "gaps": [{
+            "target": target, "reason": f"源码核实无法解析 {target}",
+            "evidence": [{
+                "kind": "resolution_failure", "source": "fixture",
+                "summary": f"源码核实缺少 {target} 的实现",
+                "location": work.get("symbol", {}).get("file_path") or "project_model.json",
+            }],
+        } for target in unresolved],
     }
     if assessment is not None:
         document["entry_assessment"] = assessment
@@ -108,7 +115,7 @@ def submit_semantic_fixture(run_dir, task, result):
     source_file = entry_symbol.rpartition(":")[0] if entry_symbol.rpartition(":")[2].isdigit() else entry_symbol
     successors = [{
         "symbol": _symbol(entry_symbol, source_file, 1), "relation": "callback",
-        "condition": "组件输入进入真实回调", "decision": "follow",
+        "condition": "组件输入进入真实回调",
         "stop_reason": None, "state": _state(),
     }] if entry_confirmed else []
     assessment = {
@@ -133,7 +140,7 @@ def submit_semantic_fixture(run_dir, task, result):
         )["work"]
         boundary_successors = [{
             "symbol": _symbol(call["target_symbol"]), "relation": "component_boundary",
-            "condition": call["condition"], "decision": "stop",
+            "condition": call["condition"],
             "stop_reason": "component_boundary", "state": _state(),
         } for call in candidate.get("component_calls", [])]
         step_file.write_text(json.dumps(_step(

@@ -38,9 +38,11 @@ def _handle(row, paths):
     if row["kind"] == "component_semantic_analysis":
         handle["worker_prompt"] = (
             f"只处理这个组件渐进探索轮次。读取 task_file={handle['task_file']}，严格执行其中 "
-            f"exploration_protocol：循环领取节点、使用 Atlas 分析、提交步骤，最后必须调用 finish 命令。"
+            f"exploration_protocol：循环领取节点、核实源码关系、提交步骤，最后必须调用 finish 命令。"
+            f"本轮容量不足时保存 stop_reason=null 的后续断点并设置 pause_requested=true；"
+            f"不填写步骤 status 或后续目标 decision，不得把尚未分析写成 gaps。"
             f"task_id={row['task_id']}，attempt={row['attempts']}。不要手工生成完整组件结果，"
-            f"不要修改中央状态和报告；finish 返回 accepted=true 后才能结束。"
+            f"不要修改中央状态和报告；finish 返回 accepted=true 且 task_status=queued/completed 后才能结束本轮。"
         )
     else:
         draft_file = str(

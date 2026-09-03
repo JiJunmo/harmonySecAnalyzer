@@ -32,19 +32,9 @@ def validate_semantic_result(conn, task, result):
     return errors
 
 
-def remaining_unresolved(step):
-    unresolved = {
-        target
-        for query in step.get("atlas_queries", [])
-        for target in query.get("unresolved_targets", [])
-    }
-    resolved_refs = {
-        relation.get("unresolved_ref")
-        for relation in step.get("resolved_relations", [])
-        if relation.get("resolved_by") == "source_evidence"
-        and relation.get("unresolved_ref")
-    }
-    return (unresolved - resolved_refs) | set(step.get("gaps", []))
+def step_coverage_gaps(step):
+    """Tool observations are not conclusions; only accepted step gaps are exported."""
+    return {gap["target"] for gap in step.get("gaps", [])}
 
 
 def validate_exploration_step_semantics(conn, task, node, exploration, step):
@@ -72,7 +62,7 @@ def validate_exploration_step_semantics(conn, task, node, exploration, step):
         for symbol in step.get("analyzed_symbols", [])
         if isinstance(symbol, dict) and symbol.get("qualified_name")
     )
-    unresolved = remaining_unresolved(step)
+    unresolved = step_coverage_gaps(step)
     result = {
         "task_id": task["task_id"],
         "entry_id": task["subject_id"],
@@ -124,7 +114,9 @@ def build_exploration_semantic_result(conn, task):
     component_calls = []
     unresolved = set()
     checked_symbols = set()
+    entry_symbols = set()
     root_notes = []
+    gap_notes = set()
     for node in nodes:
         observation = row_json(node, "observation_json", {})
         if observation.get("node_id") != node["node_id"]:
@@ -132,11 +124,13 @@ def build_exploration_semantic_result(conn, task):
                 symbol = row_json(node, "symbol_json", {}).get("qualified_name")
                 if symbol:
                     unresolved.add(symbol)
+                    gap_notes.add(f"覆盖缺口：{symbol}：组件探索达到总量保护上限，尚未分析")
             continue
         observations.append(observation)
         if node["work_type"] == "entry_discovery":
             root_notes.append(observation.get("summary"))
-        else:
+            entry_symbols.update(row["symbol"]["qualified_name"] for row in observation["successors"])
+        elif not observation.get("resume"):
             symbol = row_json(node, "symbol_json", {}).get("qualified_name")
             if symbol:
                 checked_symbols.add(symbol)
@@ -147,7 +141,8 @@ def build_exploration_semantic_result(conn, task):
         )
         operation_groups.extend(_copy(observation.get("operation_groups", [])))
         component_calls.extend(_copy(observation.get("component_calls", [])))
-        unresolved.update(remaining_unresolved(observation))
+        unresolved.update(step_coverage_gaps(observation))
+        gap_notes.update(f"覆盖缺口：{gap['target']}：{gap['reason']}" for gap in observation.get("gaps", []))
 
     for group in operation_groups:
         if isinstance(group, dict) and isinstance(group.get("operation"), dict):
@@ -166,9 +161,9 @@ def build_exploration_semantic_result(conn, task):
     notes.append(
         f"渐进探索已处理 {len(observations)} 个安全语义断点，"
         f"覆盖 {len(checked_symbols)} 个函数，停止 {counts['stopped']} 个，"
-        f"缺口 {counts['gap']} 个"
+        f"覆盖缺口 {len(unresolved)} 个"
     )
-    notes.extend(f"覆盖缺口：{gap}" for gap in sorted(unresolved))
+    notes.extend(sorted(gap_notes))
     result = {
         "task_id": task["task_id"],
         "entry_id": task["subject_id"],
@@ -180,7 +175,7 @@ def build_exploration_semantic_result(conn, task):
                 exploration, "confirmed_candidates_json", []
             ),
             "entry_notes": sorted(set(notes)),
-            "entry_symbols_checked": sorted(checked_symbols),
+            "entry_symbols_checked": sorted(entry_symbols | checked_symbols),
             "operation_sites_checked": [],
             "unresolved_targets": sorted(unresolved),
             "exploration_summary": {

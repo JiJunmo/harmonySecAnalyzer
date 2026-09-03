@@ -1212,7 +1212,7 @@ class SplitPipelineRuntimeTest(unittest.TestCase):
         committed = submit_semantic_fixture(
             self.run, task, self.semantic_result(task, [], "excluded"),
         )
-        self.assertEqual(committed["status"], "completed")
+        self.assertEqual(committed["task_status"], "completed")
         result = reconcile_batch(self.run)
         self.assertEqual(result["count"], 0, result)
         self.assertTrue(result["live_report"]["ok"], result)

@@ -6,8 +6,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from .common import SCHEMAS_DIR, canonical_json, normalize_text, now, read_json, run_paths, stable_id, write_json
-from .semantic_results import remaining_unresolved, validate_exploration_step_semantics
+from .common import SCHEMAS_DIR, canonical_json, normalize_location, normalize_text, now, read_json, run_paths, stable_id, write_json
+from .semantic_results import step_coverage_gaps, validate_exploration_step_semantics
 from .store import append_event, database, row_json, transaction
 
 
@@ -46,14 +46,44 @@ def _normalize_symbol(symbol):
     }
 
 
-def _symbol_key(symbol):
+def _symbol_key(symbol, resume_location=None):
     normalized = _normalize_symbol(symbol)
-    return canonical_json([
+    key = [
         normalize_text(normalized["qualified_name"]),
         normalize_text(normalized["file_path"]),
         normalized["line"],
         normalized["kind"],
-    ])
+    ]
+    if resume_location:
+        key.append(normalize_location(resume_location))
+    return canonical_json(key)
+
+
+def _successor_identity(exploration_id, successor):
+    symbol_key = _symbol_key(successor["symbol"], successor.get("resume", {}).get("location"))
+    state_key = canonical_json(_normalize_state(successor["state"]))
+    return stable_id("XNODE", [exploration_id, symbol_key, state_key]), symbol_key, state_key
+
+
+def _step_successors(step, node):
+    successors = list(step["successors"])
+    if step["resume"]:
+        resume = step["resume"]
+        successors.append({
+            "symbol": row_json(node, "symbol_json", {}),
+            "relation": "resume", "condition": resume["remaining_work"],
+            "stop_reason": None, "state": resume["state"],
+            "resume": {key: resume[key] for key in ("location", "remaining_work")},
+        })
+    return successors
+
+
+def _check_reference(check):
+    return {
+        "location": str(check.get("location") or "").strip().replace("\\", "/"),
+        "subject_kind": check.get("subject_kind"),
+        "validated_property": " ".join(str(check.get("validated_property") or "").split()),
+    }
 
 
 def _normalize_state(state):
@@ -63,6 +93,10 @@ def _normalize_state(state):
         if name:
             properties[name] = item.get("control_state")
     principal = state.get("principal", {})
+    checks = {}
+    for check in state["security_checks"]:
+        reference = _check_reference(check)
+        checks[stable_id("CHECK", reference)] = reference
     return {
         "controlled_properties": [
             {"name": name, "control_state": properties[name]}
@@ -74,10 +108,7 @@ def _normalize_state(state):
             "origin_binding": principal.get("origin_binding"),
             "authority": principal.get("authority"),
         },
-        "security_check_ids": sorted({
-            normalize_text(value) for value in state.get("security_check_ids", [])
-            if normalize_text(value)
-        }),
+        "security_checks": [checks[key] for key in sorted(checks)],
     }
 
 
@@ -132,7 +163,7 @@ def ensure_component_exploration(conn, entry_id):
             "origin": "unknown", "immediate": "unknown",
             "origin_binding": "unknown", "authority": "unknown",
         },
-        "security_check_ids": [],
+        "security_checks": [],
     }
     node_id = stable_id("XNODE", [exploration_id, _symbol_key(root_symbol), canonical_json(root_state)])
     conn.execute(
@@ -157,6 +188,9 @@ def _path_context(conn, node):
         observation = row_json(current, "observation_json", {})
         relevant = (
             current["work_type"] == "entry_discovery"
+            or observation.get("pause_requested")
+            or observation.get("resume")
+            or observation.get("entry_assessment")
             or any(observation.get(key) for key in (
                 "facts", "security_checks", "operation_groups", "component_calls", "gaps"
             ))
@@ -166,7 +200,9 @@ def _path_context(conn, node):
                 "node_id": current["node_id"],
                 "symbol": row_json(current, "symbol_json", {}),
                 "summary": observation.get("summary"),
-                "status": current["status"],
+                "node_status": current["status"],
+                "resume_from": row_json(current, "resume_json", {}),
+                "pause_requested": observation.get("pause_requested", False),
             })
         parent_id = current["parent_node_id"]
         current = conn.execute(
@@ -179,7 +215,7 @@ def _attempt_progress(conn, exploration_id, task_id, attempt):
     rows = conn.execute(
         """SELECT * FROM exploration_nodes
            WHERE exploration_id=? AND lease_task_id=? AND lease_attempt=?
-           AND status IN ('completed','stopped','gap')""",
+           AND status='completed'""",
         (exploration_id, task_id, int(attempt)),
     ).fetchall()
     function_count = sum(
@@ -231,15 +267,27 @@ def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_FUNCTION_BUDGE
             continuation = _queued_continuation(
                 conn, exploration_id, last_node["node_id"],
             ) if last_node else None
-            if processed_functions >= budget:
+            paused = bool(last_node and row_json(
+                last_node, "observation_json", {},
+            ).get("pause_requested"))
+            if paused or processed_functions >= budget:
+                pending = conn.execute(
+                    "SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=? AND status='queued'",
+                    (exploration_id,),
+                ).fetchone()["n"]
+                if paused:
+                    reason = "pause_requested" if pending else "no_open_nodes"
+                else:
+                    reason = (
+                        "function_budget_reached_mid_path" if continuation
+                        else "function_budget_reached_at_path_boundary"
+                    )
                 return {
                     "ok": True, "exploration_id": exploration_id, "work": None,
                     "round_complete": True,
-                    "reason": (
-                        "function_budget_reached_mid_path"
-                        if continuation else "function_budget_reached_at_path_boundary"
-                    ),
+                    "reason": reason,
                     "continuation_saved": bool(continuation),
+                    "pending_nodes": pending,
                     "processed_nodes": processed,
                     "processed_functions": processed_functions,
                     "round_function_budget": budget,
@@ -277,13 +325,23 @@ def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_FUNCTION_BUDGE
                 "processed_functions": processed_functions,
                 "round_function_budget": budget,
             }
+        exploration = conn.execute(
+            "SELECT * FROM component_explorations WHERE exploration_id=?", (exploration_id,),
+        ).fetchone()
         return {
             "ok": True, "exploration_id": exploration_id,
             "work": {
                 "node_id": node["node_id"], "work_type": node["work_type"],
                 "symbol": row_json(node, "symbol_json", {}),
-                "security_state": row_json(node, "state_json", {}),
+                "security_state": _normalize_state(row_json(node, "state_json", {})),
+                "resume_from": row_json(node, "resume_json", {}),
                 "path_context": _path_context(conn, node),
+            },
+            "entry_assessment": {
+                "entry_status": exploration["entry_status"],
+                "external_entry_status": exploration["external_entry_status"],
+                "confirmed_external_candidate_ids": row_json(exploration, "confirmed_candidates_json", []),
+                "component_summary": exploration["component_summary"],
             },
             "round_complete": False, "processed_nodes": processed,
             "processed_functions": processed_functions,
@@ -303,10 +361,11 @@ def _business_errors(step, node):
     if node["work_type"] == "entry_discovery":
         if step.get("analyzed_symbols"):
             errors.append("entry_discovery_cannot_inline_function_analysis")
+    if assessment:
         if assessment.get("entry_status") == "excluded":
             if assessment.get("external_entry_status") != "excluded":
                 errors.append("excluded_entry_requires_excluded_external_entry")
-            if step.get("successors"):
+            if step.get("successors") or step["resume"]:
                 errors.append("excluded_entry_cannot_have_successors")
         if assessment.get("external_entry_status") == "confirmed":
             if assessment.get("entry_status") != "confirmed":
@@ -379,16 +438,37 @@ def _business_errors(step, node):
         )
         if pair not in relation_pairs:
             errors.append(f"successors[{index}]:relation_resolution_missing")
-        if successor.get("relation") == "component_boundary" and not (
-            successor.get("decision") == "stop" and successor.get("stop_reason") == "component_boundary"
-        ):
+        if (successor.get("relation") == "component_boundary"
+                and successor.get("stop_reason") != "component_boundary"):
             errors.append(f"successors[{index}]:component_boundary_must_stop")
-    if step.get("status") == "gap" and not step.get("gaps"):
-        errors.append("gap_status_requires_gap")
+    unresolved = step_coverage_gaps(step)
+    source_resolved = {
+        relation.get("unresolved_ref") for relation in relations
+        if relation.get("resolved_by") == "source_evidence"
+    }
+    unaccounted = atlas_unresolved - source_resolved - unresolved
+    if unaccounted:
+        errors.append("unresolved_query_requires_gap_or_source_resolution:" + ",".join(sorted(unaccounted)))
+    inherited = row_json(node, "state_json", {}).get("security_checks", [])
+    known_checks = {stable_id("CHECK", _check_reference(check)) for check in inherited}
+    declared_checks = list(step["security_checks"])
+    for owner in step["operation_groups"] + step["component_calls"]:
+        checks = owner.get("security_checks", [])
+        if isinstance(checks, list):
+            declared_checks.extend(check for check in checks if isinstance(check, dict))
+    known_checks.update(
+        stable_id("CHECK", _check_reference(check))
+        for check in declared_checks if check.get("location") and check.get("evidence")
+    )
+    for index, successor in enumerate(_step_successors(step, node)):
+        label = f"successors[{index}]" if index < len(step["successors"]) else "resume"
+        for check in successor["state"]["security_checks"]:
+            if stable_id("CHECK", _check_reference(check)) not in known_checks:
+                errors.append(f"{label}:security_check_not_evidenced:{check['location']}")
     return errors
 
 
-def _apply_component_work_budget(conn, exploration_id, step):
+def _apply_component_work_budget(conn, exploration_id, successors):
     """Turn overflow frontier work into explicit gaps instead of unbounded continuation."""
     used = conn.execute(
         """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
@@ -398,16 +478,13 @@ def _apply_component_work_budget(conn, exploration_id, step):
     remaining = max(0, MAX_COMPONENT_WORK_NODES - used)
     truncated = []
     normalized = []
-    for successor in step["successors"]:
+    for successor in successors:
         successor = dict(successor)
-        if successor["decision"] != "follow":
+        if successor.get("stop_reason"):
             normalized.append(successor)
             continue
         symbol = _normalize_symbol(successor["symbol"])
-        state = _normalize_state(successor["state"])
-        node_id = stable_id("XNODE", [
-            exploration_id, _symbol_key(symbol), canonical_json(state),
-        ])
+        node_id, _, _ = _successor_identity(exploration_id, successor)
         exists = conn.execute(
             "SELECT 1 FROM exploration_nodes WHERE node_id=?", (node_id,),
         ).fetchone()
@@ -416,27 +493,20 @@ def _apply_component_work_budget(conn, exploration_id, step):
             if not exists:
                 remaining -= 1
             continue
-        successor["decision"] = "stop"
         successor["stop_reason"] = "resource_limit"
         normalized.append(successor)
         truncated.append(symbol["qualified_name"])
-    if truncated:
-        step = dict(step)
-        step["successors"] = normalized
-        step["gaps"] = sorted(set(step.get("gaps", [])) | set(truncated))
-    return step, truncated
+    return normalized, truncated
 
 
 def _insert_successor(conn, exploration_id, source, successor):
     symbol = _normalize_symbol(successor["symbol"])
     state = _normalize_state(successor["state"])
-    symbol_key = _symbol_key(symbol)
-    state_key = canonical_json(state)
-    node_id = stable_id("XNODE", [exploration_id, symbol_key, state_key])
+    node_id, symbol_key, state_key = _successor_identity(exploration_id, successor)
     existing = conn.execute(
         "SELECT * FROM exploration_nodes WHERE node_id=?", (node_id,)
     ).fetchone()
-    decision = successor["decision"]
+    decision = "stop" if successor.get("stop_reason") else "follow"
     stamp = now()
     if not existing:
         order = conn.execute(
@@ -444,21 +514,24 @@ def _insert_successor(conn, exploration_id, source, successor):
             (exploration_id,),
         ).fetchone()["n"]
         status = "queued" if decision == "follow" else (
-            "gap" if successor.get("stop_reason") in {"unresolved", "resource_limit"} else "stopped"
+            "gap" if successor.get("stop_reason") == "resource_limit" else "stopped"
         )
         conn.execute(
             """INSERT INTO exploration_nodes
                (node_id,exploration_id,parent_node_id,work_type,symbol_key,state_key,symbol_json,
-                state_json,depth,discovered_order,status,stop_reason,observation_json,created_at,updated_at)
-               VALUES (?,?,?,'function_analysis',?,?,?,?,?,?,?,?,?,?,?)""",
+                state_json,resume_json,depth,discovered_order,status,stop_reason,observation_json,created_at,updated_at)
+               VALUES (?,?,?,'function_analysis',?,?,?,?,?,?,?,?,?,?,?,?)""",
             (node_id, exploration_id, source["node_id"], symbol_key, state_key,
-             canonical_json(symbol), canonical_json(state), source["depth"] + 1, order, status,
+             canonical_json(symbol), canonical_json(state), canonical_json(successor.get("resume", {})),
+             source["depth"] + 1, order, status,
              successor.get("stop_reason"), canonical_json({"terminal_successor": successor}), stamp, stamp),
         )
         created = True
     else:
         created = False
-        if decision == "follow" and existing["status"] in {"stopped", "gap"}:
+        # Only an unexpanded boundary can be reopened by newly discovered work.
+        # Submitted analysis is always completed; runtime-limited work stays a gap.
+        if decision == "follow" and existing["status"] == "stopped":
             conn.execute(
                 "UPDATE exploration_nodes SET status='queued',stop_reason=NULL,updated_at=? WHERE node_id=?",
                 (stamp, node_id),
@@ -498,11 +571,12 @@ def record_exploration_step(run_dir, task_id, attempt, input_path):
         ).fetchone()
         if not node:
             raise ValueError("exploration_node_not_found")
-        if node["status"] in {"completed", "stopped", "gap"}:
+        if node["status"] == "completed":
             if row_json(node, "observation_json", {}) == step:
                 return {
                     "ok": True, "accepted": True, "idempotent": True,
-                    "node_id": node["node_id"], "status": node["status"],
+                    "node_id": node["node_id"], "node_status": node["status"],
+                    "pause_requested": step["pause_requested"],
                 }
             raise ValueError("exploration_node_already_recorded")
         if not (
@@ -511,14 +585,29 @@ def record_exploration_step(run_dir, task_id, attempt, input_path):
         ):
             raise ValueError("exploration_node_not_leased_by_task")
         errors = _business_errors(step, node)
+        successors = _step_successors(step, node)
+        if step["resume"]:
+            resume_id, _, _ = _successor_identity(exploration_id, successors[-1])
+            existing = conn.execute(
+                "SELECT status FROM exploration_nodes WHERE node_id=?", (resume_id,),
+            ).fetchone()
+            if existing and existing["status"] != "queued":
+                errors.append("resume_position_already_processed:save_the_next_unexamined_position")
+        if step.get("entry_assessment", {}).get("entry_status") == "excluded":
+            previous = conn.execute(
+                "SELECT observation_json FROM exploration_nodes WHERE exploration_id=?", (exploration_id,),
+            ).fetchall()
+            if any(row_json(row, "observation_json", {}).get(key)
+                   for row in previous for key in ("operation_groups", "component_calls")):
+                errors.append("excluded_entry_conflicts_with_recorded_semantic_outputs")
         if not errors:
             errors.extend(validate_exploration_step_semantics(
                 conn, task, node, exploration, step,
             ))
         if errors:
             return {"ok": True, "accepted": False, "errors": errors}
-        effective_step, truncated = _apply_component_work_budget(
-            conn, exploration_id, step,
+        successors, truncated = _apply_component_work_budget(
+            conn, exploration_id, successors,
         )
         assessment = step.get("entry_assessment")
         if assessment:
@@ -532,22 +621,24 @@ def record_exploration_step(run_dir, task_id, attempt, input_path):
             )
         created = 0
         successor_ids = []
-        for successor in effective_step["successors"]:
+        for successor in successors:
             successor_id, was_created = _insert_successor(conn, exploration_id, node, successor)
             successor_ids.append(successor_id)
             created += int(was_created)
         conn.execute(
-            """UPDATE exploration_nodes SET status=?,stop_reason=?,observation_json=?,updated_at=?
+            """UPDATE exploration_nodes SET status='completed',stop_reason=?,observation_json=?,updated_at=?
                WHERE node_id=?""",
-            (step["status"], step.get("stop_reason"), canonical_json(step), now(), node["node_id"]),
+            (step.get("stop_reason"), canonical_json(step), now(), node["node_id"]),
         )
         append_event(conn, "exploration_node_recorded", node["node_id"], {
-            "task_id": task_id, "attempt": int(attempt), "status": step["status"],
+            "task_id": task_id, "attempt": int(attempt), "node_status": "completed",
+            "pause_requested": step["pause_requested"],
             "successors": len(successor_ids), "created_successors": created,
         })
         return {
             "ok": True, "accepted": True, "idempotent": False,
-            "node_id": node["node_id"], "status": step["status"],
+            "node_id": node["node_id"], "node_status": "completed",
+            "pause_requested": step["pause_requested"],
             "successor_ids": successor_ids, "created_successors": created,
             "budget_truncated": truncated,
         }
@@ -567,7 +658,7 @@ def finish_exploration_round(run_dir, task_id, attempt):
             if task["status"] == "completed" and task["attempts"] == int(attempt):
                 return {
                     "ok": True, "accepted": True, "task_id": task_id,
-                    "status": "completed", "result_ref": task["result_ref"],
+                    "task_status": "completed", "result_ref": task["result_ref"],
                     "continuation": False, "idempotent": True,
                 }
             task = _task(conn, task_id, attempt)
@@ -580,12 +671,12 @@ def finish_exploration_round(run_dir, task_id, attempt):
             if leased:
                 return {
                     "ok": True, "accepted": False, "task_id": task_id,
-                    "status": "running", "errors": [f"leased_nodes_must_be_recorded:{leased}"],
+                    "task_status": "running", "errors": [f"leased_nodes_must_be_recorded:{leased}"],
                 }
             processed_nodes = conn.execute(
                 """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
                    AND lease_task_id=? AND lease_attempt=?
-                   AND status IN ('completed','stopped','gap')""",
+                   AND status='completed'""",
                 (exploration_id, task_id, int(attempt)),
             ).fetchone()["n"]
             open_nodes = conn.execute(
@@ -598,8 +689,7 @@ def finish_exploration_round(run_dir, task_id, attempt):
             ).fetchall()
             has_gaps = any(
                 row["status"] == "gap"
-                or row["stop_reason"] in {"unresolved", "resource_limit"}
-                or bool(remaining_unresolved(row_json(row, "observation_json", {})))
+                or bool(step_coverage_gaps(row_json(row, "observation_json", {})))
                 for row in gap_rows
             )
             exploration = conn.execute(
@@ -607,26 +697,10 @@ def finish_exploration_round(run_dir, task_id, attempt):
             ).fetchone()
             next_round_no = exploration["round_no"] + 1
             if open_nodes and next_round_no >= MAX_COMPONENT_ROUNDS:
-                limited = conn.execute(
-                    """SELECT node_id,symbol_json FROM exploration_nodes
-                       WHERE exploration_id=? AND status='queued'""", (exploration_id,),
-                ).fetchall()
-                for row in limited:
-                    symbol = row_json(row, "symbol_json", {}).get("qualified_name")
-                    observation = {
-                        "node_id": row["node_id"], "work_type": "function_analysis",
-                        "status": "gap", "summary": "组件探索达到轮次保护上限",
-                        "stop_reason": "resource_limit", "atlas_queries": [],
-                        "resolved_relations": [],
-                        "analyzed_symbols": [], "facts": [], "security_checks": [],
-                        "operation_groups": [], "component_calls": [], "successors": [],
-                        "gaps": [symbol] if symbol else ["round_limit"],
-                    }
-                    conn.execute(
-                        """UPDATE exploration_nodes SET status='gap',stop_reason='resource_limit',
-                           observation_json=?,updated_at=? WHERE node_id=?""",
-                        (canonical_json(observation), now(), row["node_id"]),
-                    )
+                conn.execute(
+                    """UPDATE exploration_nodes SET status='gap',stop_reason='resource_limit',updated_at=?
+                       WHERE exploration_id=? AND status='queued'""", (now(), exploration_id),
+                )
                 open_nodes = 0
                 has_gaps = True
             if open_nodes:
@@ -648,7 +722,7 @@ def finish_exploration_round(run_dir, task_id, attempt):
                 conn.execute(
                     """UPDATE exploration_nodes SET lease_task_id=NULL,lease_attempt=NULL,updated_at=?
                        WHERE exploration_id=? AND lease_task_id=? AND lease_attempt=?
-                       AND status IN ('completed','stopped','gap')""",
+                       AND status='completed'""",
                     (now(), exploration_id, task_id, int(attempt)),
                 )
                 conn.execute(
@@ -685,6 +759,6 @@ def finish_exploration_round(run_dir, task_id, attempt):
     from .reporting import refresh_live_report
     return {
         "ok": True, "accepted": True, "task_id": task_id,
-        "status": final_status, "result_ref": str(result_ref) if result_ref else None,
+        "task_status": final_status, "result_ref": str(result_ref) if result_ref else None,
         "live_report": refresh_live_report(run_dir), "idempotent": False, **summary,
     }

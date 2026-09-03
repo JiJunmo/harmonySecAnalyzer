@@ -4,7 +4,8 @@
   "required": [
     "node_id",
     "work_type",
-    "status",
+    "pause_requested",
+    "resume",
     "summary",
     "atlas_queries",
     "resolved_relations",
@@ -19,7 +20,26 @@
   "properties": {
     "node_id": {"type": "string", "minLength": 1},
     "work_type": {"enum": ["entry_discovery", "function_analysis"]},
-    "status": {"enum": ["completed", "stopped", "gap"]},
+    "pause_requested": {
+      "type": "boolean",
+      "description": "Request a fresh context after saving this segment. Not a coverage or node status. Known unfinished targets must already be saved in successors; the runtime continues any queued work next round."
+    },
+    "resume": {
+      "description": "Unfinished work inside the current function, not a call or a gap. Save its exact source position, remaining work and security state. null means this segment has no unfinished local work beyond the declared successors/gaps.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["location", "remaining_work", "state"],
+          "properties": {
+            "location": {"type": "string", "minLength": 1, "description": "Source-relative file:line[:column] of the next unexamined statement or branch. Do not change the function symbol's declaration location."},
+            "remaining_work": {"type": "string", "minLength": 1, "description": "What has been checked and which statements/branches remain. Must let the next round resume without restarting the function."},
+            "state": {"$ref": "#/$defs/securityState"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "summary": {"type": "string", "minLength": 1},
     "stop_reason": {
       "type": ["string", "null"],
@@ -29,11 +49,9 @@
         "component_boundary",
         "platform_boundary",
         "third_party_boundary",
-        "security_influence_ended",
-        "unresolved",
-        "resource_limit",
-        "other"
-      ]
+        "security_influence_ended"
+      ],
+      "description": "Optional explanation of the current segment's normal terminal boundary. Does not control node/task status or stop other successors. Analysis failures belong only in gaps."
     },
     "entry_assessment": {"$ref": "#/$defs/entryAssessment"},
     "atlas_queries": {
@@ -59,7 +77,7 @@
     },
     "security_checks": {
       "type": "array",
-      "items": {"type": "object"}
+      "items": {"$ref": "#/$defs/securityCheck"}
     },
     "operation_groups": {
       "type": "array",
@@ -71,29 +89,22 @@
     },
     "successors": {
       "type": "array",
+      "description": "Known targets: stop_reason=null means unfinished work to queue; a normal boundary reason means do not expand. No separate decision/status field. Unknown targets belong in gaps.",
       "items": {"$ref": "#/$defs/successor"},
       "maxItems": 32
     },
     "gaps": {
       "type": "array",
-      "items": {"type": "string", "minLength": 1},
+      "description": "The only place to declare analysis failures, including their target, reason and evidence. Every Atlas unresolved expression must be source-resolved or have a gap with that exact target. Unexamined work belongs in successors.",
+      "items": {"$ref": "#/$defs/gap"},
       "uniqueItems": true
     }
   },
   "allOf": [
     {
       "if": {"properties": {"work_type": {"const": "entry_discovery"}}},
-      "then": {"required": ["entry_assessment"]}
-    },
-    {
-      "if": {"properties": {"status": {"enum": ["stopped", "gap"]}}},
-      "then": {
-        "required": ["stop_reason"],
-        "properties": {
-          "stop_reason": {"type": "string"},
-          "successors": {"maxItems": 0}
-        }
-      }
+      "then": {"required": ["entry_assessment"], "properties": {"resume": {"type": "null"}}},
+      "else": {"properties": {"entry_assessment": {"required": ["evidence"]}}}
     }
   ],
   "$defs": {
@@ -110,6 +121,25 @@
       },
       "additionalProperties": false
     },
+    "gap": {
+      "type": "object",
+      "required": ["target", "reason", "evidence"],
+      "properties": {
+        "target": {"type": "string", "minLength": 1, "description": "Exact unresolved expression from Atlas, or a source-located target when source inspection fails."},
+        "reason": {"type": "string", "minLength": 1, "description": "What was attempted and why resolution failed. Capacity limits are not source failures."},
+        "evidence": {
+          "type": "array", "minItems": 1,
+          "items": {"$ref": "#/$defs/evidence"},
+          "contains": {
+            "anyOf": [
+              {"required": ["location"], "properties": {"location": {"type": "string", "minLength": 1}}},
+              {"required": ["content_ref"], "properties": {"content_ref": {"type": "string", "minLength": 1}}}
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "entryAssessment": {
       "type": "object",
       "required": [
@@ -119,14 +149,31 @@
         "component_summary"
       ],
       "properties": {
-        "entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
-        "external_entry_status": {"enum": ["confirmed", "excluded", "uncertain"]},
+        "entry_status": {
+          "enum": ["confirmed", "excluded", "uncertain"],
+          "description": "confirmed: a real executable component input exists, including internal input; excluded: evidence rules out all candidates; uncertain: evidence is insufficient. Not a vulnerability verdict."
+        },
+        "external_entry_status": {
+          "enum": ["confirmed", "excluded", "uncertain"],
+          "description": "Whether non-component_scope candidates establish a real external input: proven, ruled out, or not established. An internal-only component can be confirmed/excluded across the two entry fields."
+        },
         "confirmed_external_candidate_ids": {
           "type": "array",
           "items": {"type": "string", "minLength": 1},
           "uniqueItems": true
         },
-        "component_summary": {"type": "string", "minLength": 1}
+        "component_summary": {"type": "string", "minLength": 1},
+        "evidence": {
+          "type": "array", "minItems": 1,
+          "description": "New source evidence supporting the updated component-wide assessment; required for updates after entry discovery.",
+          "items": {"$ref": "#/$defs/evidence"},
+          "contains": {
+            "anyOf": [
+              {"required": ["location"], "properties": {"location": {"type": "string", "minLength": 1}}},
+              {"required": ["content_ref"], "properties": {"content_ref": {"type": "string", "minLength": 1}}}
+            ]
+          }
+        }
       },
       "additionalProperties": false
     },
@@ -143,6 +190,7 @@
         },
         "unresolved_targets": {
           "type": "array",
+          "description": "Only targets this Atlas query actually failed to resolve, not calls left unexamined because of budget or context capacity.",
           "items": {"type": "string", "minLength": 1},
           "uniqueItems": true
         }
@@ -219,8 +267,7 @@
             "transform",
             "security_check",
             "operation",
-            "dead_end",
-            "gap"
+            "dead_end"
           ]
         },
         "body": {"type": "string", "minLength": 1},
@@ -248,7 +295,10 @@
       "required": ["name", "control_state"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
-        "control_state": {"enum": ["preserved", "constrained", "constant", "unknown"]}
+        "control_state": {
+          "enum": ["preserved", "constrained", "constant", "unknown"],
+          "description": "Select constant if independence from attacker input is proven; otherwise constrained if an explicit restriction on the input's security-relevant values is proven; otherwise preserved if influence is proven without such restriction; unknown if not established. Copying preserves upstream constraints. Constrained does not imply safe."
+        }
       },
       "additionalProperties": false
     },
@@ -258,60 +308,84 @@
       "properties": {
         "origin": {"type": "string", "minLength": 1},
         "immediate": {"type": "string", "minLength": 1},
-        "origin_binding": {"enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"]},
-        "authority": {"enum": ["origin", "source_component", "system", "none", "unknown"]}
+        "origin_binding": {
+          "enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"],
+          "description": "Select preserved if the original identity is verifiably available; otherwise replaced_by_caller if only the immediate caller's identity is verifiably available; otherwise not_observable if the channel is proven to expose neither identity reliably; unknown if not established."
+        },
+        "authority": {
+          "enum": ["origin", "source_component", "system", "none", "unknown"],
+          "description": "Actual authority used: original actor, current intermediary component, proven system authority, proven no relevant authority, or insufficient evidence. Calling a system API alone does not imply system authority."
+        }
       },
       "additionalProperties": false
     },
     "securityState": {
       "type": "object",
-      "required": ["controlled_properties", "principal", "security_check_ids"],
+      "required": ["controlled_properties", "principal", "security_checks"],
       "properties": {
         "controlled_properties": {
           "type": "array",
           "items": {"$ref": "#/$defs/controlledProperty"}
         },
         "principal": {"$ref": "#/$defs/principal"},
-        "security_check_ids": {
+        "security_checks": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
+          "description": "Checks already traversed on this branch. Inherit existing references or reference evidenced checks from this step. The runtime derives stable identities; do not invent IDs.",
+          "items": {"$ref": "#/$defs/securityCheckReference"},
           "uniqueItems": true
         }
       },
       "additionalProperties": false
     },
+    "securityCheckReference": {
+      "type": "object",
+      "required": ["location", "subject_kind", "validated_property"],
+      "properties": {
+        "location": {"type": "string", "minLength": 1},
+        "subject_kind": {
+          "enum": ["origin_principal", "immediate_caller", "transferred_property", "resource_owner", "security_boundary", "unknown"],
+          "description": "Classify by the checked value's provenance, not coincidental identity equality: caller-identity APIs use immediate_caller even for direct external calls; independently authenticated original identity uses origin_principal; unverified transferred claims use transferred_property. Resource ownership uses resource_owner; other boundary policy uses security_boundary; unknown means not established."
+        },
+        "validated_property": {"type": "string", "minLength": 1, "description": "Use the checked source expression/property, not a paraphrased label."}
+      },
+      "additionalProperties": false
+    },
+    "securityCheck": {
+      "type": "object",
+      "required": ["type", "location", "protects", "subject_kind", "validated_property", "behavior", "evidence"],
+      "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "location": {"type": "string", "minLength": 1},
+        "protects": {"type": "string", "minLength": 1},
+        "subject_kind": {"$ref": "#/$defs/securityCheckReference/properties/subject_kind"},
+        "validated_property": {"$ref": "#/$defs/securityCheckReference/properties/validated_property"},
+        "behavior": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "additionalProperties": false
+    },
     "successor": {
       "type": "object",
-      "required": ["symbol", "relation", "condition", "decision", "stop_reason", "state"],
+      "required": ["symbol", "relation", "condition", "stop_reason", "state"],
       "properties": {
         "symbol": {"$ref": "#/$defs/symbol"},
         "relation": {
           "enum": ["call", "callback", "async_continuation", "branch", "data_flow", "component_boundary"]
         },
         "condition": {"type": "string", "minLength": 1},
-        "decision": {"enum": ["follow", "stop"]},
         "stop_reason": {
           "type": ["string", "null"],
+          "description": "null: queue for analysis. A named boundary: record the target but do not expand. This is the sole routing input.",
           "enum": [
             null,
             "component_boundary",
             "platform_boundary",
             "third_party_boundary",
-            "security_influence_ended",
-            "unresolved",
-            "resource_limit",
-            "other"
+            "security_influence_ended"
           ]
         },
         "state": {"$ref": "#/$defs/securityState"}
       },
-      "allOf": [
-        {
-          "if": {"properties": {"decision": {"const": "follow"}}},
-          "then": {"properties": {"stop_reason": {"type": "null"}}},
-          "else": {"properties": {"stop_reason": {"type": "string"}}}
-        }
-      ],
       "additionalProperties": false
     }
   },
