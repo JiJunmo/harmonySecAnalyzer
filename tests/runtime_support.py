@@ -40,6 +40,20 @@ def _symbol(qualified_name, file_path=None, line=1):
 def _step(work, summary, successors=None, assessment=None, groups=None, calls=None, gaps=None):
     successors = list(successors or [])
     unresolved = list(gaps or [])
+    relations = {}
+    for row in successors:
+        target = row["symbol"]["qualified_name"]
+        relations[(target, row["relation"])] = {
+            "source_symbol": None if work["work_type"] == "entry_discovery"
+            else work["symbol"]["qualified_name"],
+            "target_symbol": target,
+            "relation": row["relation"],
+            "resolved_by": "atlas_index",
+            "mechanism": "atlas_index",
+            "unresolved_ref": None,
+            "reason": "Atlas 返回该调用目标",
+            "evidence": [],
+        }
     document = {
         "node_id": work["node_id"], "work_type": work["work_type"],
         "status": "completed", "summary": summary, "stop_reason": None,
@@ -52,6 +66,7 @@ def _step(work, summary, successors=None, assessment=None, groups=None, calls=No
             }),
             "unresolved_targets": unresolved,
         }],
+        "resolved_relations": list(relations.values()),
         "analyzed_symbols": [],
         "facts": [], "security_checks": [],
         "operation_groups": list(groups or []), "component_calls": list(calls or []),

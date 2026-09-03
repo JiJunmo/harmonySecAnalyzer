@@ -7,6 +7,7 @@
     "status",
     "summary",
     "atlas_queries",
+    "resolved_relations",
     "analyzed_symbols",
     "facts",
     "security_checks",
@@ -38,6 +39,12 @@
     "atlas_queries": {
       "type": "array",
       "items": {"$ref": "#/$defs/atlasQuery"}
+    },
+    "resolved_relations": {
+      "type": "array",
+      "description": "Call/data relations accepted for this step, proven by Atlas or bounded source inspection.",
+      "items": {"$ref": "#/$defs/resolvedRelation"},
+      "uniqueItems": true
     },
     "analyzed_symbols": {
       "type": "array",
@@ -140,6 +147,64 @@
           "uniqueItems": true
         }
       },
+      "additionalProperties": false
+    },
+    "resolvedRelation": {
+      "type": "object",
+      "required": [
+        "source_symbol",
+        "target_symbol",
+        "relation",
+        "resolved_by",
+        "mechanism",
+        "unresolved_ref",
+        "reason",
+        "evidence"
+      ],
+      "properties": {
+        "source_symbol": {"type": ["string", "null"], "minLength": 1},
+        "target_symbol": {"type": "string", "minLength": 1},
+        "relation": {
+          "enum": ["call", "callback", "async_continuation", "branch", "data_flow", "component_boundary"]
+        },
+        "resolved_by": {"enum": ["atlas_index", "source_evidence"]},
+        "mechanism": {
+          "enum": [
+            "atlas_index",
+            "direct_source_call",
+            "callback_binding",
+            "function_assignment",
+            "polymorphic_dispatch",
+            "registry_dispatch",
+            "name_dispatch",
+            "inheritance_dispatch",
+            "other_source_dispatch"
+          ]
+        },
+        "unresolved_ref": {"type": ["string", "null"], "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"resolved_by": {"const": "source_evidence"}}},
+          "then": {
+            "properties": {
+              "evidence": {"minItems": 2},
+              "mechanism": {"not": {"const": "atlas_index"}}
+            }
+          },
+          "else": {
+            "properties": {
+              "mechanism": {"const": "atlas_index"},
+              "unresolved_ref": {"type": "null"}
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "fact": {

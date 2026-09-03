@@ -32,6 +32,21 @@ def validate_semantic_result(conn, task, result):
     return errors
 
 
+def remaining_unresolved(step):
+    unresolved = {
+        target
+        for query in step.get("atlas_queries", [])
+        for target in query.get("unresolved_targets", [])
+    }
+    resolved_refs = {
+        relation.get("unresolved_ref")
+        for relation in step.get("resolved_relations", [])
+        if relation.get("resolved_by") == "source_evidence"
+        and relation.get("unresolved_ref")
+    }
+    return (unresolved - resolved_refs) | set(step.get("gaps", []))
+
+
 def validate_exploration_step_semantics(conn, task, node, exploration, step):
     """Apply the final semantic contract to one step's groups and component calls."""
     assessment = step.get("entry_assessment") or {
@@ -57,12 +72,7 @@ def validate_exploration_step_semantics(conn, task, node, exploration, step):
         for symbol in step.get("analyzed_symbols", [])
         if isinstance(symbol, dict) and symbol.get("qualified_name")
     )
-    unresolved = [
-        target
-        for query in step.get("atlas_queries", [])
-        for target in query.get("unresolved_targets", [])
-    ]
-    unresolved.extend(step.get("gaps", []))
+    unresolved = remaining_unresolved(step)
     result = {
         "task_id": task["task_id"],
         "entry_id": task["subject_id"],
@@ -76,7 +86,7 @@ def validate_exploration_step_semantics(conn, task, node, exploration, step):
             "entry_notes": [step["summary"]],
             "entry_symbols_checked": sorted(set(symbols)),
             "operation_sites_checked": [],
-            "unresolved_targets": sorted(set(unresolved)),
+            "unresolved_targets": sorted(unresolved),
         },
         "operation_groups": _copy(step.get("operation_groups", [])),
         "component_calls": _copy(step.get("component_calls", [])),
@@ -137,9 +147,7 @@ def build_exploration_semantic_result(conn, task):
         )
         operation_groups.extend(_copy(observation.get("operation_groups", [])))
         component_calls.extend(_copy(observation.get("component_calls", [])))
-        unresolved.update(observation.get("gaps", []))
-        for query in observation.get("atlas_queries", []):
-            unresolved.update(query.get("unresolved_targets", []))
+        unresolved.update(remaining_unresolved(observation))
 
     for group in operation_groups:
         if isinstance(group, dict) and isinstance(group.get("operation"), dict):

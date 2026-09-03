@@ -1,5 +1,5 @@
 - `run.db` 是可变状态唯一事实源；Agent 不直接修改中央状态或报告。
-- 源码事实查询使用 Atlas MCP；项目配置由 `project_profiler.py` 确定性解析。
+- 项目配置由 `project_profiler.py` 确定性解析。源码关系优先使用 Atlas MCP；Atlas 缺失动态分派边时，可围绕当前调用点和绑定/赋值/覆写点进行受限源码核实，不能凭名称猜测或无锚点扫描全仓。
 - 能力注册表只定义审计范围；安全判定统一由六维验证契约完成。
 - `exports/attack_matrix.json` 是 Entry、Operation Group 和 Finding 的确定性覆盖视图。
 - 审计目标源码只读；运行时只允许生成 `.atlas/` 和 `reports/`。

@@ -77,7 +77,7 @@ LEGACY_SKILLS = ["attack-patterns"]
 
 AGENT_DESCRIPTIONS = {
     "harmony-auditor.md": "鸿蒙 ArkTS 白盒安全审计编排者。负责确定性初始化、任务调度和报告准入，不直接分析源码。",
-    "component-semantic-analyzer.md": "按受控节点渐进探索单个组件的输入、安全相关操作和跨组件调用控制事实。只处理 component_semantic_analysis 任务。",
+    "component-semantic-analyzer.md": "按受控节点渐进探索单个组件，优先使用 Atlas 并以源码证据补全动态调用关系。只处理 component_semantic_analysis 任务。",
     "exploitability-validator.md": "根据已落盘语义事实执行有界的六维漏洞有效性验证。只处理 exploitability_validation 任务。",
     "poc-generator.md": "为已确认漏洞生成结构化、可人工复现的 PoC 触发套件，产出 ArkTS/Shell 等可执行片段。只处理 poc_generation 任务。",
 }
@@ -115,7 +115,10 @@ def _opencode_permission(agent, tools):
             "bash": {"*": "deny", "python3 *audit_orchestrator.py*": "allow"},
             "edit": "deny",
         }
-    permissions = {"external_directory": "allow", "read": "allow", "edit": "allow", **atlas}
+    permissions = {
+        "external_directory": "allow", "read": "allow", "grep": "allow",
+        "glob": "allow", "edit": "allow", **atlas,
+    }
     if agent in {"component-semantic-analyzer.md", "exploitability-validator.md", "poc-generator.md"}:
         permissions["bash"] = {"python3 *audit_orchestrator.py*": "allow"}
     return permissions

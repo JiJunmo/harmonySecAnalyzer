@@ -163,7 +163,7 @@ def task_context(conn, task, paths=None):
         } for row in load_capabilities() if row["capability_id"] in profile_ids]
         analysis_contract = {
             "task_unit": "one bounded round of a persistent component exploration",
-            "phases": ["claim_node", "query_atlas", "record_step", "repeat_until_round_complete", "finish_round"],
+            "phases": ["claim_node", "resolve_code_relations", "record_step", "repeat_until_round_complete", "finish_round"],
             "exploration_unit": "a security-semantic checkpoint, not every ordinary function",
             "inline_analysis": "continue through ordinary project functions inside one step until security semantics change or the step budget is exhausted",
             "checkpoint_when": ["security_state_changes", "security_relevant_branch", "component_boundary", "unresolved_target", "step_budget_exhausted"],
@@ -179,6 +179,15 @@ def task_context(conn, task, paths=None):
             },
             "capability_entry_types": "priority hints for investigation, never component exclusion rules",
             "minimum_evidence_chain": "omit only irrelevant nodes; retain every branch, transform and security check that can change later validation",
+            "relation_resolution": {
+                "atlas_role": "preferred symbol and call index, not a completeness oracle",
+                "source_fallback": "when Atlas misses dynamic dispatch, inspect only the current call site and its binding, assignment, override or registry chain",
+                "required_source_proof": {
+                    "function_analysis": ["call_site", "binding_or_dispatch_site"],
+                    "entry_discovery": ["candidate_trigger", "callback_implementation"],
+                },
+                "forbidden": ["name_only_inference", "comment_only_inference", "unanchored_repository_scan"],
+            },
             "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
             "evidence_model": {
                 "facts": "only directly observed source facts",

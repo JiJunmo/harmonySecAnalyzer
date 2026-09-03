@@ -103,6 +103,33 @@ class ComponentExplorationStateTest(unittest.TestCase):
              analyzed_symbols=None):
         successors = list(successors or [])
         analyzed_symbols = list(analyzed_symbols or [])
+        relations = {}
+        for row in successors:
+            target = row["symbol"]["qualified_name"]
+            relations[(target, row["relation"])] = {
+                "source_symbol": None if work["work_type"] == "entry_discovery"
+                else work["symbol"]["qualified_name"],
+                "target_symbol": target,
+                "relation": row["relation"],
+                "resolved_by": "atlas_index",
+                "mechanism": "atlas_index",
+                "unresolved_ref": None,
+                "reason": "Atlas 返回该调用目标",
+                "evidence": [],
+            }
+        for row in analyzed_symbols:
+            target = row["qualified_name"]
+            relations.setdefault((target, "call"), {
+                "source_symbol": None if work["work_type"] == "entry_discovery"
+                else work["symbol"]["qualified_name"],
+                "target_symbol": target,
+                "relation": "call",
+                "resolved_by": "atlas_index",
+                "mechanism": "atlas_index",
+                "unresolved_ref": None,
+                "reason": "Atlas 返回该调用目标",
+                "evidence": [],
+            })
         document = {
             "node_id": work["node_id"],
             "work_type": work["work_type"],
@@ -119,6 +146,7 @@ class ComponentExplorationStateTest(unittest.TestCase):
                 ),
                 "unresolved_targets": [],
             }],
+            "resolved_relations": list(relations.values()),
             "analyzed_symbols": analyzed_symbols,
             "facts": [],
             "security_checks": [],
@@ -456,7 +484,7 @@ class ComponentExplorationStateTest(unittest.TestCase):
         invalid["atlas_queries"][0]["target_symbols"] = []
         outcome = self.record(invalid)
         self.assertFalse(outcome["accepted"])
-        self.assertTrue(any("symbols_not_observed_by_atlas" in row for row in outcome["errors"]))
+        self.assertTrue(any("atlas_target_not_observed" in row for row in outcome["errors"]))
         with database(self.run / "run.db") as conn:
             node = conn.execute(
                 "SELECT status FROM exploration_nodes WHERE node_id=?", (root["node_id"],)
@@ -464,6 +492,68 @@ class ComponentExplorationStateTest(unittest.TestCase):
             self.assertEqual(node["status"], "leased")
         with self.assertRaisesRegex(ValueError, "stale_attempt"):
             next_exploration_node(self.run, self.task["task_id"], self.task["attempt"] + 1)
+
+    def test_source_evidence_can_resolve_dynamic_call_missing_from_atlas(self):
+        self.seed_entry([self.successor("EntryAbility.handle", 10)])
+        work = self.next(budget=100)["work"]
+        dynamic = self.successor(
+            "DynamicHandler.run", 40, relation="callback",
+        )
+        document = self.step(work, successors=[dynamic])
+        document["atlas_queries"][0]["target_symbols"] = []
+        document["atlas_queries"][0]["unresolved_targets"] = ["handler.invoke"]
+        document["resolved_relations"] = [{
+            "source_symbol": "EntryAbility.handle",
+            "target_symbol": "DynamicHandler.run",
+            "relation": "callback",
+            "resolved_by": "source_evidence",
+            "mechanism": "callback_binding",
+            "unresolved_ref": "handler.invoke",
+            "reason": "调用点使用已注册 handler，注册点绑定到 DynamicHandler.run",
+            "evidence": [
+                {
+                    "kind": "source_call_site", "source": "source_inspection",
+                    "summary": "调用保存的 handler", "location": "EntryAbility.ets:40",
+                },
+                {
+                    "kind": "source_binding", "source": "source_inspection",
+                    "summary": "注册点绑定 DynamicHandler.run", "location": "EntryAbility.ets:18",
+                },
+            ],
+        }]
+        outcome = self.record(document)
+        self.assertTrue(outcome["accepted"], outcome)
+        follow_up = self.next(budget=100)
+        self.assertEqual(follow_up["work"]["symbol"]["qualified_name"], "DynamicHandler.run")
+        self.assertTrue(self.record(self.step(follow_up["work"]))["accepted"])
+        self.assertTrue(self.next(budget=100)["round_complete"])
+
+        result = self.close_and_build()
+        self.assertNotIn("handler.invoke", result["coverage"]["unresolved_targets"])
+        self.assertEqual(result["coverage"]["exploration_summary"]["status"], "complete")
+
+    def test_source_evidence_rejects_unanchored_dynamic_guess(self):
+        root = self.next()["work"]
+        dynamic = self.successor("DynamicHandler.run", 40, relation="callback")
+        document = self.step(root, successors=[dynamic])
+        document["atlas_queries"][0]["target_symbols"] = []
+        document["atlas_queries"][0]["unresolved_targets"] = ["handler.invoke"]
+        document["resolved_relations"] = [{
+            "source_symbol": None,
+            "target_symbol": "DynamicHandler.run",
+            "relation": "callback",
+            "resolved_by": "source_evidence",
+            "mechanism": "callback_binding",
+            "unresolved_ref": "handler.invoke",
+            "reason": "仅凭名称推测动态目标",
+            "evidence": [{
+                "kind": "source_call_site", "source": "source_inspection",
+                "summary": "只找到调用点", "location": "EntryAbility.ets:40",
+            }],
+        }]
+        outcome = self.record(document)
+        self.assertFalse(outcome["accepted"])
+        self.assertTrue(any("resolved_relations" in row for row in outcome["errors"]))
 
     def test_retry_reclaims_the_node_leased_by_previous_attempt(self):
         first = self.next()["work"]

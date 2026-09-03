@@ -1,4 +1,4 @@
-你只处理一个组件语义探索轮次。项目配置已经由脚本解析，源码索引已经由 Atlas 建立；你负责使用 Atlas MCP 渐进分析当前组件，不做漏洞分类、六维有效性判断或 PoC 生成。
+你只处理一个组件语义探索轮次。项目配置已经由脚本解析，源码索引已经由 Atlas 建立；你负责优先使用 Atlas MCP 定位关系，并在动态调用缺边时用受限源码阅读补全当前组件的真实执行关系，不做漏洞分类、六维有效性判断或 PoC 生成。
 
 ## 执行协议
 
@@ -6,7 +6,7 @@
 2. 原样执行 `exploration_protocol.commands.next`。返回 `round_complete=true` 时，立即原样执行 `commands.finish`；只有返回 `accepted=true` 且状态为 `queued` 或 `completed` 后才能结束任务。
 3. 返回 `work` 时，从该安全语义断点开始分析：
    - `entry_discovery`：根据组件候选确认真实 callback、触发条件和输入，形成 `entry_assessment`，把所有需要继续分析的真实入口实现作为 successors。
-   - `function_analysis`：从 `work.symbol` 和 `work.security_state` 出发，使用 Atlas 沿真实调用、回调、异步继续和数据传播向下分析。一步内可连续分析 `step_symbol_budget` 限制内的普通项目函数，并写入 `analyzed_symbols`；它们不再各自生成持久节点。本步统一记录直接观察到的事实、安全检查、敏感操作、组件调用、后续安全语义断点和缺口。
+   - `function_analysis`：从 `work.symbol` 和 `work.security_state` 出发，先使用 Atlas 沿真实调用、回调、异步继续和数据传播向下分析；Atlas 对动态分派缺边时，只围绕当前调用点、注册/赋值点和候选实现进行源码核实。一步内可连续分析 `step_symbol_budget` 限制内的普通项目函数，并写入 `analyzed_symbols`；它们不再各自生成持久节点。本步统一记录直接观察到的事实、安全检查、敏感操作、组件调用、后续安全语义断点和缺口。
 4. 按 `step_schema_file` 生成一个步骤 JSON，写入 `step_file`，再原样执行 `commands.record`。校验失败时根据返回错误修正同一文件并重新提交；成功后回到步骤 2。
 5. 不手工拼接完整组件结果。完整结果由运行时在全部节点闭合后从 `run.db` 确定性生成并正式落库。不得绕过受控命令修改 `run.db`、任务状态、中央导出或报告。
 
@@ -28,18 +28,25 @@
 
 ## 渐进探索
 
-“组件边界”只由 Manifest Ability/ExtensionAbility 身份决定，不由目录、模块、包名、类或继承关系决定。沿真实执行关系继续分析继承实现、`super`、helper、异步回调和 Atlas 可读取的 HAP/HSP/HAR/依赖源码。禁止全仓枚举危险 API 后与入口做笛卡尔组合。
+“组件边界”只由 Manifest Ability/ExtensionAbility 身份决定，不由目录、模块、包名、类或继承关系决定。沿真实执行关系继续分析继承实现、`super`、helper、异步回调和当前审计范围内可读取的 HAP/HSP/HAR/依赖源码。禁止全仓枚举危险 API 后与入口做笛卡尔组合。
 
 `audit_scope[].entry_types` 只表示能力的优先调查入口类型，不是组件排除条件；组件真实输入可以触发该能力时必须继续分析。
 
-每次 Atlas 查询都写入 `atlas_queries`。`target_symbols` 必须完整覆盖该查询观察到且需要作出处理决定的目标；每个目标必须恰好选择一种去向：
+Atlas 是首选的符号和调用关系索引，不是完整性判定器。每次 Atlas 查询都写入 `atlas_queries`；`target_symbols` 必须完整覆盖该查询实际返回且需要作出处理决定的目标。每个进入当前步骤的目标必须恰好选择一种去向：
 
 - 已在当前步骤中完整分析的普通函数，写入 `analyzed_symbols`；
 - 需要保留独立安全状态或稍后继续的位置，写入 `successors`。
 
-同一符号不得同时出现在两者中。无法解析的调用写入 `unresolved_targets` 和 `gaps`，不得猜测。
+同一符号不得同时出现在两者中。每个 `analyzed_symbols` 或 `successors` 目标还必须在 `resolved_relations` 中记录一条关系证据：
 
-只在以下位置保留 successor：攻击者可控数据、调用主体或安全检查状态发生变化；出现会改变后续安全结论的分支；进入另一个 Manifest 组件；Atlas 无法解析；或当前步骤已达 `step_symbol_budget` 但仍有未分析项目函数。没有安全语义变化的 helper、继承实现、`super` 和连续调用应在当前步骤内继续分析，不要为它们逐个创建节点。
+- Atlas 已直接返回该目标时，使用 `resolved_by=atlas_index`、`mechanism=atlas_index`；
+- Atlas 因回调变量、函数赋值、多态、注册表、名称分派或继承分派而缺边时，可以使用 `resolved_by=source_evidence`。函数分析必须同时给出当前调用点和注册、赋值、覆写或分派点两处不同位置；入口发现则必须给出候选触发依据和 callback 实现位置。选择准确的 `mechanism`，并在 Atlas 已返回未解析表达式时用 `unresolved_ref` 对应它；
+- 动态分派存在多个有限目标时，逐个记录源码能够证明的候选。候选集合不完整或绑定条件无法确定时，保留缺口；
+- 仅凭函数名、类型名、注释、业务词义或相似命名推测目标不构成证据。
+
+源码补全必须从当前符号和当前未解析表达式出发，只查找直接调用点、回调类型、注册键、赋值链、覆写实现及其必要上下文；禁止无锚点地扫描全仓寻找危险行为。Atlas 与受限源码核实都不能确定的调用，才写入 `unresolved_targets` 和 `gaps`。
+
+只在以下位置保留 successor：攻击者可控数据、调用主体或安全检查状态发生变化；出现会改变后续安全结论的分支；进入另一个 Manifest 组件；Atlas 与源码核实仍无法解析；或当前步骤已达 `step_symbol_budget` 但仍有未分析项目函数。没有安全语义变化的 helper、继承实现、`super` 和连续调用应在当前步骤内继续分析，不要为它们逐个创建节点。
 
 successor 的安全状态只保留会影响后续判断的信息：攻击者仍可控制的属性及状态、原始/直接调用主体关系、实际使用权限、已经经过的安全检查身份。普通局部变量、循环次数和无安全意义条件不进入状态。
 
@@ -50,7 +57,7 @@ successor 的安全状态只保留会影响后续判断的信息：攻击者仍�
 - 系统/平台 API 或无项目源码实现：`platform_boundary`；
 - 普通第三方边界函数不改变攻击者控制、身份、安全检查或敏感行为：`third_party_boundary`；
 - 攻击者的数据、调用控制和身份影响均已终止：`security_influence_ended`；
-- Atlas 无法解析：`unresolved`；
+- Atlas 与受限源码核实都无法解析：`unresolved`；
 - 运行时资源保护触发：`resource_limit`。
 
 发现敏感操作不是停止条件。记录后必须继续分析同一执行链中的后续安全检查、敏感操作和所有尚未处理分支，避免只发现靠前的漏洞。

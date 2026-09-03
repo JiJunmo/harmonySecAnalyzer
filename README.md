@@ -1,6 +1,6 @@
 # harmonySecAnalyzer-v3.1
 
-面向 HarmonyOS ArkTS 项目的多智能体白盒安全审计系统，同时支持 OpenCode 与 Claude Code。脚本完成项目建模、Atlas 索引、组件探索状态和任务生成；组件语义 Agent 使用 Atlas 分轮探索源码事实，运行时从闭合节点生成最终语义结果，独立验证 Agent 再完成六维漏洞有效性判断。
+面向 HarmonyOS ArkTS 项目的多智能体白盒安全审计系统，同时支持 OpenCode 与 Claude Code。脚本完成项目建模、Atlas 索引、组件探索状态和任务生成；组件语义 Agent 优先使用 Atlas 分轮探索源码事实，并以受限源码证据补全动态调用缺边，运行时从闭合节点生成最终语义结果，独立验证 Agent 再完成六维漏洞有效性判断。
 
 OpenCode 使用 `.opencode/` 资源目录；Claude Code 使用 `.claude/` 资源目录（含 `.mcp.json` 的 Atlas MCP 与 `/audit` 命令）。部署时会把 Agent、Skill、脚本、Schema 和配置复制到对应工具的配置目录；运行时不依赖本源码仓库的相对路径。
 
@@ -39,7 +39,7 @@ python3 deploy.py --tool claude --uninstall
 | 阶段 | 组件 | 产出 |
 |---|---|---|
 | 审计准备与任务生成 | `project-modeling` Skill、Atlas Indexer、Python Runtime | 项目事实、完整索引、组件分析单元与任务 |
-| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP、Semantic Exploration Runtime | 优先走完当前路径，短路径结束后在同一轮继续下一条；普通项目函数在一步内连续分析，长路径达到函数保护值时保存证据并换新上下文续跑 |
+| 组件语义分析 | `component-semantic-analyzer` Agent、Atlas MCP、Semantic Exploration Runtime | Atlas 优先定位并由源码证据补全动态调用；优先走完当前路径，短路径结束后在同一轮继续下一条，长路径保存证据后换新上下文续跑 |
 | 组件关联与六维验证 | Python Correlator、`exploitability-validator` Agent、Result Writer | 跨组件参数与身份链、带证据的三态六维结论；Agent 写草稿，`audit_orchestrator.py task-submit` 统一规范化、校验并即时落库 |
 | PoC 生成 | `poc-generator` Agent、Result Writer | 已确认漏洞的可复现触发套件；脚本补齐固定字段、规范证据引用并标记“已生成但未编译验证” |
 | 状态与报告 | `audit-orchestration` Skill | SQLite 状态、根因聚合、漏洞证据路径、JSON/Markdown/HTML |

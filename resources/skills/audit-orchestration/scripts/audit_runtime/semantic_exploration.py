@@ -7,7 +7,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from .common import SCHEMAS_DIR, canonical_json, normalize_text, now, read_json, run_paths, stable_id, write_json
-from .semantic_results import validate_exploration_step_semantics
+from .semantic_results import remaining_unresolved, validate_exploration_step_semantics
 from .store import append_event, database, row_json, transaction
 
 
@@ -319,6 +319,10 @@ def _business_errors(step, node):
         symbol for query in step.get("atlas_queries", [])
         for symbol in query.get("target_symbols", [])
     }
+    atlas_unresolved = {
+        symbol for query in step.get("atlas_queries", [])
+        for symbol in query.get("unresolved_targets", [])
+    }
     analyzed = {
         symbol.get("qualified_name") for symbol in step.get("analyzed_symbols", [])
         if symbol.get("qualified_name")
@@ -330,16 +334,51 @@ def _business_errors(step, node):
     if analyzed & decided:
         errors.append("symbol_cannot_be_analyzed_and_successor:" + ",".join(sorted(analyzed & decided)))
     covered = analyzed | decided
-    if observed != covered:
-        missing = sorted(observed - covered)
-        unknown = sorted(covered - observed)
-        if missing:
-            errors.append("atlas_targets_without_decision:" + ",".join(missing))
-        if unknown:
-            errors.append("symbols_not_observed_by_atlas:" + ",".join(unknown))
+    relations = step.get("resolved_relations", [])
+    resolved = {relation.get("target_symbol") for relation in relations}
+    if observed - covered:
+        errors.append("atlas_targets_without_decision:" + ",".join(sorted(observed - covered)))
+    if covered - resolved:
+        errors.append("targets_without_resolution:" + ",".join(sorted(covered - resolved)))
+    if resolved - covered:
+        errors.append("resolutions_without_target:" + ",".join(sorted(resolved - covered)))
+    relation_pairs = [
+        (relation.get("target_symbol"), relation.get("relation"))
+        for relation in relations
+    ]
+    duplicate_pairs = sorted({
+        f"{target}:{relation}" for target, relation in relation_pairs
+        if relation_pairs.count((target, relation)) > 1
+    })
+    if duplicate_pairs:
+        errors.append("duplicate_target_resolution:" + ",".join(duplicate_pairs))
+    for index, relation in enumerate(relations):
+        target = relation.get("target_symbol")
+        if relation.get("resolved_by") == "atlas_index" and target not in observed:
+            errors.append(f"resolved_relations[{index}]:atlas_target_not_observed:{target}")
+        if relation.get("resolved_by") == "source_evidence":
+            unresolved_ref = relation.get("unresolved_ref")
+            if unresolved_ref and unresolved_ref not in atlas_unresolved:
+                errors.append(
+                    f"resolved_relations[{index}]:unresolved_ref_not_reported:{unresolved_ref}"
+                )
+            locations = {
+                evidence.get("location") for evidence in relation.get("evidence", [])
+                if evidence.get("location")
+            }
+            if len(locations) < 2:
+                errors.append(
+                    f"resolved_relations[{index}]:source_resolution_requires_two_locations"
+                )
     if len(analyzed) > STEP_SYMBOL_BUDGET:
         errors.append(f"step_symbol_budget_exceeded:{len(analyzed)}>{STEP_SYMBOL_BUDGET}")
     for index, successor in enumerate(step.get("successors", [])):
+        pair = (
+            successor.get("symbol", {}).get("qualified_name"),
+            successor.get("relation"),
+        )
+        if pair not in relation_pairs:
+            errors.append(f"successors[{index}]:relation_resolution_missing")
         if successor.get("relation") == "component_boundary" and not (
             successor.get("decision") == "stop" and successor.get("stop_reason") == "component_boundary"
         ):
@@ -560,11 +599,7 @@ def finish_exploration_round(run_dir, task_id, attempt):
             has_gaps = any(
                 row["status"] == "gap"
                 or row["stop_reason"] in {"unresolved", "resource_limit"}
-                or bool(row_json(row, "observation_json", {}).get("gaps"))
-                or any(
-                    query.get("unresolved_targets", [])
-                    for query in row_json(row, "observation_json", {}).get("atlas_queries", [])
-                )
+                or bool(remaining_unresolved(row_json(row, "observation_json", {})))
                 for row in gap_rows
             )
             exploration = conn.execute(
@@ -582,6 +617,7 @@ def finish_exploration_round(run_dir, task_id, attempt):
                         "node_id": row["node_id"], "work_type": "function_analysis",
                         "status": "gap", "summary": "组件探索达到轮次保护上限",
                         "stop_reason": "resource_limit", "atlas_queries": [],
+                        "resolved_relations": [],
                         "analyzed_symbols": [], "facts": [], "security_checks": [],
                         "operation_groups": [], "component_calls": [], "successors": [],
                         "gaps": [symbol] if symbol else ["round_limit"],
