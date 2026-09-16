@@ -264,7 +264,7 @@ collab://portal/support?article=<external>
 - `decode-order`：先校验原始字符串、后解码并加载，解码后目标可变为本地资源 scheme。
 - `redirect-gap`：只校验初始合作方 Origin，重定向后的最终目标不复验且仍携带应用特权上下文。
 - `isolated-browser`：允许任意公开网络 URL，但不携带应用会话、特权 header、本地资源或 Native Bridge；预期为正常业务。
-- `redirect-unresolved`：最终目标和依赖内策略无法由 Atlas 解析；预期为证据不足，不得猜测漏洞或安全。
+- `redirect-unresolved`：最终目标和依赖内策略经 Atlas 与受限源码核实后仍无法确定；预期为证据不足，不得猜测漏洞或安全。
 
 每个变体都应使用独立业务函数和稳定路由参数，便于 `/audit capability CAP-WEB-001` 对根因、
 控制组件和最终分类做确定性比对；不要通过复制多个 Ability 制造入口噪声。

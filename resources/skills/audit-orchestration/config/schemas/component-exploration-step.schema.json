@@ -95,7 +95,7 @@
     },
     "gaps": {
       "type": "array",
-      "description": "The only place to declare analysis failures, including their target, reason and evidence. Every Atlas unresolved expression must be source-resolved or have a gap with that exact target. Unexamined work belongs in successors.",
+      "description": "The only place to declare final analysis failures after bounded source inspection. An Atlas miss alone is not a gap. A complete source-proven target set continues without a gap; a partially proven set continues proven targets and records the unresolved remainder here; no proven target records only the exact evidenced gap. Unexamined work belongs in successors.",
       "items": {"$ref": "#/$defs/gap"},
       "uniqueItems": true
     }
@@ -126,7 +126,7 @@
       "required": ["target", "reason", "evidence"],
       "properties": {
         "target": {"type": "string", "minLength": 1, "description": "Exact unresolved expression from Atlas, or a source-located target when source inspection fails."},
-        "reason": {"type": "string", "minLength": 1, "description": "What was attempted and why resolution failed. Capacity limits are not source failures."},
+        "reason": {"type": "string", "minLength": 1, "description": "Which anchored call and binding/dispatch source locations were inspected and why they still did not resolve the target. Atlas failure or capacity limits alone are not source failures."},
         "evidence": {
           "type": "array", "minItems": 1,
           "items": {"$ref": "#/$defs/evidence"},

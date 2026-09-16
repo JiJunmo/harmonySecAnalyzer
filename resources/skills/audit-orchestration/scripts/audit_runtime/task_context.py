@@ -172,7 +172,7 @@ def task_context(conn, task, paths=None):
             "pause_submission": "save other unfinished functions in successors; if the current function is unfinished, fill resume with its source location, remaining_work and state instead of a self-successor; use pause_requested=true for fresh context, then next and finish",
             "resume_policy": "resume=null declares no unfinished local work beyond the recorded successors/gaps; otherwise the runtime queues a separate segment of the same function and returns work.resume_from; do not change the function declaration location or repeat an already processed resume position",
             "entry_assessment_updates": "next returns the current component-wide entry_assessment; later source evidence may update the same assessment, with located evidence and a complete candidate list; never replace it with a single-branch verdict",
-            "gap_policy": "each analysis failure is declared once in gaps with target, reason and located evidence; Atlas unresolved expressions must be source-resolved or match a gap target; unexamined work is not a gap; resource_limit is runtime-owned",
+            "gap_policy": "Atlas failure alone is never a gap: first inspect anchored call and binding/dispatch source; a complete source-proven target set continues without a gap, a partially proven set continues proven targets and records the unresolved remainder as a gap, and no proven target records only the evidenced gap; unexamined work is not a gap; resource_limit is runtime-owned",
             "state_ownership": "agents do not write step status or successor decision; the runtime derives scheduling and coverage from accepted facts, gaps, normal stop reasons and pause requests",
             "security_check_identity": "inherit state.security_checks references or cite evidenced checks declared in this step; each reference uses source location, subject_kind and validated_property, never agent-generated IDs",
             "group_by": ["capability", "operation_location", "controlled_properties", "security_semantics"],
@@ -188,6 +188,8 @@ def task_context(conn, task, paths=None):
             "relation_resolution": {
                 "atlas_role": "preferred symbol and call index, not a completeness oracle",
                 "source_fallback": "when Atlas misses dynamic dispatch, inspect only the current call site and its binding, assignment, override or registry chain",
+                "required_order": ["query_atlas", "inspect_anchored_source_if_unresolved", "continue_complete_source_targets_without_gap_or_continue_partial_targets_with_residual_gap_or_declare_gap"],
+                "no_guessing_meaning": "forbid relations without Atlas or source evidence; a relation proven by call-site plus binding/dispatch source is evidence, not guessing",
                 "required_source_proof": {
                     "function_analysis": ["call_site", "binding_or_dispatch_site"],
                     "entry_discovery": ["candidate_trigger", "callback_implementation"],

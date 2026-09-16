@@ -131,7 +131,7 @@ Agent 不填写步骤 status。需要换新上下文时设置 `pause_requested=t
 
 每个维度只有一个输入：正常终止原因写 stop_reason，缺口和证据只写 gaps，换上下文只写 pause_requested。正常返回、失败分支、其他待办和暂停请求可以同时存在，不用互斥状态替代事实。删除 gap 类型事实及 unresolved 停止原因，避免重复声明。
 
-查询的 `unresolved_targets` 是 Atlas 观察，步骤的 `gaps` 才是最终覆盖缺口。每个未解析表达式必须被源码关系的 `unresolved_ref` 补全，或原样进入 `gaps[].target` 并在该项附失败原因及定位证据。未知目标不伪造 successor。record 成功统一返回 `node_status=completed`，只表示分段处理并保存，不表示覆盖完整或任务完成。
+查询的 `unresolved_targets` 是 Atlas 的中间观察，步骤的 `gaps` 才是最终覆盖缺口。固定处理顺序为：先查询 Atlas；未解析时围绕当前调用点核实绑定、赋值、注册、覆写或分派源码；完整证明目标集合时用 `source_evidence` 补全并继续，不写 gap；只证明部分候选时继续已证明目标，同时记录剩余候选范围缺口；不能证明任何目标时只记录 gap。gap 必须附核实位置和失败原因。Atlas 未命中本身不能形成 gap。“不得猜测”只禁止缺少 Atlas 或源码证据的关系，不禁止 AI 依据调用点和绑定点源码完成连接。未知目标不伪造 successor。record 成功统一返回 `node_status=completed`，只表示分段处理并保存，不表示覆盖完整或任务完成。
 
 ### 5.3 `explore-finish`
 

@@ -950,6 +950,50 @@ class ComponentExplorationStateTest(unittest.TestCase):
         self.assertNotIn("handler.invoke", result["coverage"]["unresolved_targets"])
         self.assertEqual(result["coverage"]["exploration_summary"]["status"], "complete")
 
+    def test_partial_source_resolution_continues_proven_target_and_keeps_gap(self):
+        self.seed_entry([self.successor("EntryAbility.handle", 10)])
+        work = self.next(budget=100)["work"]
+        dynamic = self.successor(
+            "DynamicHandler.run", 40, relation="callback",
+        )
+        document = self.step(
+            work,
+            successors=[dynamic],
+            gaps=[self.gap("handler.invoke")],
+        )
+        document["atlas_queries"][0]["target_symbols"] = []
+        document["atlas_queries"][0]["unresolved_targets"] = ["handler.invoke"]
+        document["resolved_relations"] = [{
+            "source_symbol": "EntryAbility.handle",
+            "target_symbol": "DynamicHandler.run",
+            "relation": "callback",
+            "resolved_by": "source_evidence",
+            "mechanism": "callback_binding",
+            "unresolved_ref": "handler.invoke",
+            "reason": "源码证明一个候选实现，但注册表仍可能包含其他运行时目标",
+            "evidence": [
+                {
+                    "kind": "source_call_site", "source": "source_inspection",
+                    "summary": "调用保存的 handler", "location": "EntryAbility.ets:40",
+                },
+                {
+                    "kind": "source_binding", "source": "source_inspection",
+                    "summary": "注册点绑定 DynamicHandler.run", "location": "EntryAbility.ets:18",
+                },
+            ],
+        }]
+        outcome = self.record(document)
+        self.assertTrue(outcome["accepted"], outcome)
+
+        follow_up = self.next(budget=100)
+        self.assertEqual(follow_up["work"]["symbol"]["qualified_name"], "DynamicHandler.run")
+        self.assertTrue(self.record(self.step(follow_up["work"]))["accepted"])
+        self.assertTrue(self.next(budget=100)["round_complete"])
+
+        result = self.close_and_build()
+        self.assertIn("handler.invoke", result["coverage"]["unresolved_targets"])
+        self.assertEqual(result["coverage"]["exploration_summary"]["status"], "partial")
+
     def test_source_evidence_rejects_unanchored_dynamic_guess(self):
         root = self.next()["work"]
         dynamic = self.successor("DynamicHandler.run", 40, relation="callback")

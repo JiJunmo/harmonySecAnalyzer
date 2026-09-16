@@ -86,6 +86,9 @@ class DeployRenderTest(unittest.TestCase):
             self.assertIn("tools: Read, Grep, Glob, Edit, Write", semantic)
             self.assertIn("`pause_requested=true`", semantic)
             self.assertIn("Agent 不得输出 `resource_limit`", semantic)
+            self.assertIn("Atlas 未命中本身不是覆盖缺口", semantic)
+            self.assertIn("不禁止 AI 根据源码连接调用关系", semantic)
+            self.assertIn("源码只能证明部分候选时", semantic)
             for name in deploy.OWNED_SKILLS:
                 skill = (base / ".claude" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
                 self.assertNotIn("slash: false", skill, name)
@@ -108,6 +111,7 @@ class DeployRenderTest(unittest.TestCase):
             self.assertIn("resume", schema["required"])
             self.assertEqual(schema["allOf"][0]["else"]["properties"]["entry_assessment"]["required"], ["evidence"])
             self.assertNotIn("decision", schema["$defs"]["successor"]["properties"])
+            self.assertIn("An Atlas miss alone is not a gap", schema["properties"]["gaps"]["description"])
             self.assertNotIn("gap", schema["$defs"]["fact"]["properties"]["type"]["enum"])
             self.assertEqual(schema["$defs"]["gap"]["required"], ["target", "reason", "evidence"])
             self.assertNotIn("resource_limit", schema["properties"]["stop_reason"]["enum"])

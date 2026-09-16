@@ -31,7 +31,7 @@ AI 任务严格分成 `component_semantic_analysis`、`exploitability_validation
 
 每步必填 resume：当前函数未完时保存源码位置、剩余工作和安全状态，脚本生成同一函数的续跑分段；已完且其他去向均已登记时为 null。不能用自指 successor 或修改函数定义行号来续跑。next 返回 `work.resume_from`，Agent 从该处继续；它与 `pause_requested` 是否换上下文是两个不同事实。入口初判允许在后续步骤通过同一个 `entry_assessment` 携带新定位证据更新，next 返回当前组件的最新判断。
 
-Agent 不填写步骤 status。每个解析缺口只在 `gaps[]` 中填写 target、reason 和 evidence，不再重复声明 gap 类型事实或 unresolved 停止原因。正常终止、真实缺口、其他待分析分支和暂停请求可以同时存在，彼此独立。查询中的未解析表达式必须被源码补全或对应一个 gap 目标；未知目标不创建虚构 successor。安全检查使用源码位置、检查对象和校验属性引用，不由 Agent 生成 ID。`resource_limit` 仅由脚本产生，且不会伪装成已分析的步骤。格式错误在当前子任务内退回修正，不消耗调度重试。
+Agent 不填写步骤 status。每个解析缺口只在 `gaps[]` 中填写 target、reason 和 evidence，不再重复声明 gap 类型事实或 unresolved 停止原因。正常终止、真实缺口、其他待分析分支和暂停请求可以同时存在，彼此独立。Atlas 未解析只是中间观察，必须先围绕调用点核实绑定、赋值、注册、覆写或分派源码；源码完整证明目标集合时使用 `source_evidence` 接续且不写 gap，只证明部分候选时接续已证明目标并为剩余候选保留 gap，完全不能证明时只记录 gap。禁止的是没有 Atlas 或源码证据的猜测，不是基于源码连接关系。未知目标不创建虚构 successor。安全检查使用源码位置、检查对象和校验属性引用，不由 Agent 生成 ID。`resource_limit` 仅由脚本产生，且不会伪装成已分析的步骤。格式错误在当前子任务内退回修正，不消耗调度重试。
 
 六维验证和 PoC Agent 只写任务私有草稿。任务文件中的 `result_protocol` 给出绝对草稿路径和 `audit_orchestrator.py task-submit` 命令；Result Writer 确定性补齐任务 ID、对象 ID、缺省字段，规范和过滤证据引用，再以最终严格 Schema 与业务不变量验收，并在同一事务中写入正式结果、完成任务。可修复格式错误不消耗调度重试；此类拒绝仍是命令正常执行，只返回 `accepted=false`，Agent 在本次子任务中修正草稿，只有 `accepted=true` 且 `status=completed` 才允许结束。实质性证据不足、跨组引用后失去有效支持或结论冲突仍会被拒绝。
 
