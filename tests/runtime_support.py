@@ -37,48 +37,33 @@ def _symbol(qualified_name, file_path=None, line=1):
     }
 
 
-def _step(work, summary, successors=None, assessment=None, groups=None, calls=None, gaps=None):
-    successors = list(successors or [])
-    unresolved = list(gaps or [])
-    relations = {}
-    for row in successors:
-        target = row["symbol"]["qualified_name"]
-        relations[(target, row["relation"])] = {
-            "source_symbol": None if work["work_type"] == "entry_discovery"
-            else work["symbol"]["qualified_name"],
-            "target_symbol": target,
-            "relation": row["relation"],
-            "resolved_by": "atlas_index",
-            "mechanism": "atlas_index",
-            "unresolved_ref": None,
-            "reason": "Atlas 返回该调用目标",
-            "evidence": [],
-        }
-    document = {
-        "node_id": work["node_id"], "work_type": work["work_type"],
-        "pause_requested": False, "resume": None, "summary": summary, "stop_reason": None,
-        "atlas_queries": [{
-            "tool": "search" if work["work_type"] == "entry_discovery" else "calls",
-            "source_symbol": None if work["work_type"] == "entry_discovery"
-            else work["symbol"]["qualified_name"],
-            "target_symbols": sorted({
-                row["symbol"]["qualified_name"] for row in successors
-            }),
-            "unresolved_targets": unresolved,
-        }],
-        "resolved_relations": list(relations.values()),
-        "analyzed_symbols": [],
-        "facts": [], "security_checks": [],
-        "operation_groups": list(groups or []), "component_calls": list(calls or []),
-        "successors": successors, "gaps": [{
-            "target": target, "reason": f"源码核实无法解析 {target}",
-            "evidence": [{
-                "kind": "resolution_failure", "source": "fixture",
-                "summary": f"源码核实缺少 {target} 的实现",
-                "location": work.get("symbol", {}).get("file_path") or "project_model.json",
-            }],
-        } for target in unresolved],
+def _step(work, summary, targets=None, assessment=None, groups=None, calls=None, gaps=None):
+    scope = work["scope"]
+    evidence = [{"kind": "source", "source": "fixture", "summary": summary,
+                 "location": scope["symbol"].get("file_path") or "project_model.json"}]
+    result = {
+        "summary": summary,
+        "checked": [] if scope["kind"] == "entry" else [{"start": scope["start"], "end": scope["end"]}],
+        "termination": None if scope["kind"] == "entry" else {
+            "kind": "return", "reason": "源码范围结束", "evidence": evidence},
+        "facts": [], "security_checks": [], "operation_groups": list(groups or []),
+        "component_calls": list(calls or []),
+        "gaps": [{"target": t, "reason": "源码核实后仍无法确定目标", "evidence": evidence} for t in gaps or []],
     }
+    ranges, transitions = [], []
+    for i, target in enumerate(targets or []):
+        symbol = target["symbol"]
+        ref = f"entry-{i}"
+        ranges.append({
+            "ref": ref, "scope": {"symbol": symbol, "start": symbol["line"] or 1,
+                                  "end": symbol["line"] or 1, "kind": "function"},
+            "state": target["state"], "conditions": [target["condition"]],
+            "wait_for": [], "result": None,
+        })
+        transitions.append({"from": "$current", "to": ref, "relation": "callback",
+                            "condition": target["condition"], "evidence": evidence})
+    document = {"work_id": work["work_id"], "pause_requested": False, "result": result,
+                "ranges": ranges, "transitions": transitions}
     if assessment is not None:
         document["entry_assessment"] = assessment
     return document
@@ -138,13 +123,9 @@ def submit_semantic_fixture(run_dir, task, result):
         work = next_exploration_node(
             run_dir, task["task_id"], task["attempt"], budget=100,
         )["work"]
-        boundary_successors = [{
-            "symbol": _symbol(call["target_symbol"]), "relation": "component_boundary",
-            "condition": call["condition"],
-            "stop_reason": "component_boundary", "state": _state(),
-        } for call in candidate.get("component_calls", [])]
+
         step_file.write_text(json.dumps(_step(
-            work, "测试夹具记录组件语义", boundary_successors,
+            work, "测试夹具记录组件语义",
             groups=candidate["operation_groups"], calls=candidate["component_calls"],
             gaps=coverage.get("unresolved_targets", []),
         )), encoding="utf-8")

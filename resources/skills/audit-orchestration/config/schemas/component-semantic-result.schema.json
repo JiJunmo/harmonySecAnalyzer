@@ -35,7 +35,7 @@
             "total_nodes": {"type": "integer", "minimum": 1},
             "completed_nodes": {"type": "integer", "minimum": 0},
             "stopped_nodes": {"type": "integer", "minimum": 0},
-            "gap_nodes": {"type": "integer", "minimum": 0, "description": "Unprocessed nodes closed by runtime limits, not the total coverage-gap count. Analysis failures inside processed segments are listed in coverage.unresolved_targets."},
+            "gap_nodes": {"type": "integer", "minimum": 0, "description": "Work ranges containing explicit coverage gaps, including ranges closed by runtime limits; not the number of individual gaps."},
             "max_depth": {"type": "integer", "minimum": 0}
           },
           "additionalProperties": false

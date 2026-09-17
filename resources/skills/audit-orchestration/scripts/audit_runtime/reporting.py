@@ -137,69 +137,44 @@ def _component_result_status(analysis, coverage, groups):
 
 
 def _exploration_graph(conn):
-    components = []
-    all_nodes = []
-    all_edges = []
-    for exploration in conn.execute(
-        "SELECT * FROM component_explorations ORDER BY entry_id"
-    ):
+    from .semantic_exploration import work_rows, closed_work_ids
+    components, all_nodes, all_edges = [], [], []
+    for exploration in conn.execute("SELECT * FROM component_explorations ORDER BY entry_id"):
+        exp_id = exploration["exploration_id"]
+        closed = closed_work_ids(conn, exp_id)
         nodes = []
-        for raw in conn.execute(
-            """SELECT * FROM exploration_nodes WHERE exploration_id=?
-               ORDER BY depth,discovered_order,node_id""", (exploration["exploration_id"],),
-        ):
-            observation = json.loads(raw["observation_json"] or "{}")
-            analyzed_symbols = observation.get("analyzed_symbols", [])
-            resolved_relations = observation.get("resolved_relations", [])
-            symbol = json.loads(raw["symbol_json"])
-            gaps = list(observation.get("gaps", []))
-            if raw["status"] == "gap":
-                gaps.append({
-                    "target": symbol["qualified_name"],
-                    "reason": "组件探索达到总量保护上限，尚未分析", "evidence": [],
-                })
+        for raw in work_rows(conn, exp_id):
+            scope = json.loads(raw["scope_json"])
+            result = json.loads(raw["result_json"] or "{}")
+            term = result.get("termination") or {}
             node = {
-                "node_id": raw["node_id"], "parent_node_id": raw["parent_node_id"],
-                "work_type": raw["work_type"], "symbol": symbol,
-                "resume_from": json.loads(raw["resume_json"]),
-                "security_state": json.loads(raw["state_json"]), "depth": raw["depth"],
+                "node_id": raw["node_id"], "work_id": raw["work_id"],
+                "scope": scope, "symbol": scope["symbol"], "depth": raw["depth"],
                 "order": raw["discovered_order"], "status": raw["status"],
-                "stop_reason": raw["stop_reason"], "summary": observation.get("summary"),
-                "operation_groups": len(observation.get("operation_groups", [])),
-                "component_calls": len(observation.get("component_calls", [])),
-                "analyzed_symbols": analyzed_symbols,
-                "analyzed_symbol_count": len(analyzed_symbols),
-                "resolved_relations": resolved_relations,
-                "source_resolved_relation_count": sum(
-                    row.get("resolved_by") == "source_evidence"
-                    for row in resolved_relations
-                ),
-                "pause_requested": observation.get("pause_requested", False),
-                "gaps": gaps,
+                "scope_complete": raw["work_id"] in closed,
+                "conditions": json.loads(raw["conditions_json"]),
+                "wait_for": json.loads(raw["dependencies_json"]),
+                "security_state": json.loads(raw["state_json"]),
+                "stop_reason": term.get("reason"), "termination": term,
+                "summary": result.get("summary"), "checked": result.get("checked", []),
+                "operation_groups": len(result.get("operation_groups", [])),
+                "component_calls": len(result.get("component_calls", [])),
+                "gaps": result.get("gaps", []),
             }
             nodes.append(node)
-            all_nodes.append({"exploration_id": exploration["exploration_id"], **node})
-        edges = []
-        for raw in conn.execute(
-            """SELECT * FROM exploration_edges WHERE exploration_id=?
-               ORDER BY created_at,edge_id""", (exploration["exploration_id"],),
-        ):
-            edge = {
-                "edge_id": raw["edge_id"], "source_node_id": raw["source_node_id"],
-                "target_node_id": raw["target_node_id"], "relation": raw["relation"],
-                "decision": raw["decision"], "condition": raw["condition"],
-            }
-            edges.append(edge)
-            all_edges.append({"exploration_id": exploration["exploration_id"], **edge})
-        counts = dict(Counter(node["status"] for node in nodes))
+            all_nodes.append({"exploration_id": exp_id, **node})
+        edges = [dict(r) for r in conn.execute(
+            "SELECT * FROM exploration_edges WHERE exploration_id=? ORDER BY created_at,edge_id", (exp_id,))]
+        for edge in edges:
+            edge["evidence"] = json.loads(edge.pop("evidence_json"))
+        all_edges.extend(edges)
         components.append({
-            "exploration_id": exploration["exploration_id"], "entry_id": exploration["entry_id"],
+            "exploration_id": exp_id, "entry_id": exploration["entry_id"],
             "status": exploration["status"], "entry_status": exploration["entry_status"],
             "external_entry_status": exploration["external_entry_status"],
-            "component_summary": exploration["component_summary"],
-            "rounds": exploration["round_no"], "node_counts": counts,
-            "gap_count": len({gap["target"] for node in nodes for gap in node["gaps"]}),
-            "nodes": nodes, "edges": edges,
+            "component_summary": exploration["component_summary"], "rounds": exploration["round_no"],
+            "node_counts": dict(Counter(n["status"] for n in nodes)),
+            "gap_count": sum(bool(n["gaps"]) for n in nodes), "nodes": nodes, "edges": edges,
         })
     return {"components": components, "nodes": all_nodes, "edges": all_edges}
 
@@ -360,13 +335,13 @@ def build_report(run_dir, live=False, report_status=None):
             for node in exploration_graph["nodes"]
             for symbol in (
                 [node.get("symbol", {}).get("qualified_name")]
-                + [row.get("qualified_name") for row in node.get("analyzed_symbols", [])]
             )
             if symbol and symbol != "$entry_discovery"
         }
         source_resolved_relations = sum(
-            node.get("source_resolved_relation_count", 0)
-            for node in exploration_graph["nodes"]
+            any(e.get("source") in {"source_inspection", "source_evidence"} for e in edge["evidence"])
+            for edge in exploration_graph["edges"]
+            if edge["relation"] in {"call", "callback"}
         )
         poc_tasks = {row["subject_id"]: row for row in tasks if row["kind"] == "poc_generation"}
         for finding in findings:
@@ -581,7 +556,7 @@ def _render_markdown(model):
         f"- 组件范围：`{', '.join(model['run']['components']) or '全部组件'}`",
         f"- 能力范围：`{', '.join(model['run']['capabilities']) or '全部能力'}`",
         f"- 组件目录：{summary['entries']}",
-        f"- 安全语义断点：{summary['exploration_nodes']}",
+        f"- 代码范围：{summary['exploration_nodes']}",
         f"- 已覆盖函数：{summary['exploration_symbols']}",
         f"- 源码补全的动态关系：{summary.get('source_resolved_relations', 0)}",
         f"- 已分析组件：{summary['analyzed_components']}",
@@ -825,7 +800,8 @@ const I=obj(D.run.incremental),CS=obj(I.change_set),IP=obj(I.impact_plan),RC=obj
 const componentSelect=document.getElementById('component-result');[...new Set(arr(D.component_results).map(x=>x.status))].forEach(k=>componentSelect.insertAdjacentHTML('beforeend',`<option value="${{esc(k)}}">${{esc(label(k))}}</option>`));
 function renderComponents(){{const q=document.getElementById('component-search').value.toLowerCase(),r=componentSelect.value;const rows=arr(D.component_results).filter(x=>{{const coverage=obj(x.coverage),facets=arr(x.facets).map(f=>label(f.entry_type)).join(' '),text=[x.component,x.module,x.module_id,x.symbol,x.function_summary,facets,...arr(coverage.entry_symbols_checked)].join(' ').toLowerCase();return(!q||text.includes(q))&&(!r||x.status===r)}});document.getElementById('component-count').textContent=`显示 ${{rows.length}} / ${{arr(D.component_results).length}} 个组件`;document.getElementById('component-result-body').innerHTML=rows.map(x=>{{const coverage=obj(x.coverage),exploration=obj(x.exploration),counts=obj(exploration.node_counts),entries=arr(x.facets).map(f=>label(f.entry_type)).join('、')||label(coverage.entry_status),operations=arr(x.operation_groups),checks=arr(x.security_checks),progress=Object.keys(exploration).length?`${{label(exploration.status)}} · ${{exploration.rounds||0}} 轮 · 已分析 ${{counts.completed||0}} / 待分析 ${{counts.queued||0}} / 分析中 ${{counts.leased||0}} / 覆盖缺口 ${{exploration.gap_count||0}}`:'';return`<tr class="component-row" data-entry-id="${{esc(x.entry_id)}}"><td>${{badge(x.status)}}</td><td><strong>${{esc(x.component||x.entry_id)}}</strong><br><span class="muted">${{esc(x.module||x.module_id||'-')}}</span><br><code>${{esc(x.symbol||'')}}</code></td><td>${{esc(x.function_summary)}}${{progress?`<br><span class="muted">${{esc(progress)}}</span>`:''}}</td><td>${{esc(entries)}}<br><span class="muted">组件输入：${{esc(label(coverage.entry_status))}} · 外部入口：${{esc(label(coverage.external_entry_status))}}</span></td><td>${{operations.length}} 项</td><td>${{checks.length}} 项</td></tr>`}}).join('')||'<tr><td colspan="6"><div class="empty">没有符合条件的组件</div></td></tr>';document.querySelectorAll('.component-row').forEach(row=>row.onclick=()=>openComponent(row.dataset.entryId));}}
 ['component-search','component-result'].forEach(id=>document.getElementById(id).addEventListener(id==='component-search'?'input':'change',renderComponents));
-function openComponent(id){{const x=arr(D.component_results).find(row=>row.entry_id===id);if(!x)return;const coverage=obj(x.coverage);const refs=v=>arr(v).map(r=>`<code>${{esc(r)}}</code>`).join(' · ');const groups=arr(x.operation_groups).map(g=>{{const operation=obj(g.operation),context=obj(g.context),result=g.classification||'verification_incomplete',checks=arr(g.security_checks).map(c=>`<div class="structure-item"><strong>${{esc(label(c.type))}}</strong><div>${{esc(c.behavior||c.protects||'-')}}</div><div class="muted">校验对象：${{esc(c.validated_property||'-')}} · 约束主体：${{esc(label(c.subject_kind))}} · ${{esc(c.location||'-')}}</div></div>`).join('');const facts=arr(g.facts).map(f=>`<li><b>${{esc(label(f.type))}} · ${{esc(f.body)}}</b><code>${{esc(f.location||'')}}</code></li>`).join('');const conclusion=g.impact||g.demotion_reason||g.evidence_gap||'尚未形成六维验证结论';return`<div class="panel"><h3>${{esc(g.title||g.group_id)}} · ${{badge(result)}}</h3><dl class="kv"><dt>安全相关操作</dt><dd>${{esc(operation.body||g.operation_location||'-')}}</dd><dt>源码位置</dt><dd><code>${{esc(operation.location||g.operation_location||'-')}}</code></dd><dt>受控参数</dt><dd>${{esc(arr(g.controlled_properties).join('、')||'无外部受控参数')}}</dd><dt>业务用途</dt><dd>${{esc(context.intended_behavior||obj(g.business_intent).declared_or_inferred_purpose||'-')}}</dd><dt>验证结论</dt><dd>${{esc(conclusion)}}</dd></dl>${{checks?`<h3>该操作前的防护</h3><div class="structure-list">${{checks}}</div>`:''}}${{facts?`<h3>语义证据</h3><ol class="timeline">${{facts}}</ol>`:''}}</div>`}}).join('')||'<div class="empty">本次分析未识别到可达的安全相关操作。请结合组件功能和下方覆盖范围复核是否遗漏敏感行为。</div>';const defenses=arr(x.security_checks).map(c=>`<div class="structure-item"><strong>${{esc(label(c.type))}}</strong><div>${{esc(c.behavior||c.protects||'-')}}</div><div class="muted">保护目标：${{esc(c.protects||'-')}} · 校验对象：${{esc(c.validated_property||'-')}} · 约束主体：${{esc(label(c.subject_kind))}} · 位置：${{esc(c.location||'-')}}</div>${{arr(c.evidence_refs).length?`<div class="muted">证据：${{refs(c.evidence_refs)}}</div>`:''}}</div>`).join('')||'<div class="empty">未观察到显式防护事实；若组件未执行安全相关操作，这不表示组件存在漏洞。</div>';const calls=[...arr(x.outgoing_calls).map(c=>['调用下游组件',c.target_component_id,c]),...arr(x.incoming_calls).map(c=>['被上游组件调用',c.source_component_id,c])].map(([direction,target,c])=>`<div class="structure-item"><strong>${{esc(direction)}} · ${{esc(target||'-')}}</strong><div>${{esc(c.condition||'-')}}</div><div class="muted">方式：${{esc(c.transport||'-')}} · 位置：${{esc(c.call_location||'-')}}</div></div>`).join('')||'<div class="empty">未记录跨组件调用。</div>';const exploration=obj(x.exploration),nodeCounts=obj(exploration.node_counts),explorationNodes=arr(exploration.nodes).map(n=>`<div class="explore-node" style="margin-left:${{Math.min(n.depth||0,8)*12}}px"><strong>${{badge(n.status)}} ${{esc(obj(n.symbol).qualified_name||'-')}}</strong><code>${{esc(obj(n.symbol).file_path||'')}}${{obj(n.symbol).line?`:${{obj(n.symbol).line}}`:''}}</code><span class="muted">${{esc(n.summary||obj(n.resume_from).remaining_work||n.stop_reason||'等待分析')}} · 本段函数 ${{n.analyzed_symbol_count||0}} · 源码补全关系 ${{n.source_resolved_relation_count||0}} · 操作 ${{n.operation_groups||0}} · 组件调用 ${{n.component_calls||0}}</span>${{obj(n.resume_from).location?`<div class="muted">函数内续跑：<code>${{esc(obj(n.resume_from).location)}}</code> · ${{esc(obj(n.resume_from).remaining_work||'')}}</div>`:''}}${{arr(n.gaps).map(g=>`<div class="gap-item"><strong>覆盖缺口 · ${{esc(g.target)}}</strong><div>${{esc(g.reason)}}</div>${{arr(g.evidence).map(e=>`<code>${{esc(e.location||e.content_ref||'')}}</code>`).join('')}}</div>`).join('')}}</div>`).join('')||'<div class="empty">该组件没有渐进探索记录，可能来自增量基线复用。</div>';const explorationHtml=Object.keys(exploration).length?`<dl class="kv"><dt>探索状态</dt><dd>${{badge(exploration.status)}}</dd><dt>探索轮次</dt><dd>${{exploration.rounds||0}}</dd><dt>断点统计</dt><dd>已分析 ${{nodeCounts.completed||0}} · 待分析 ${{nodeCounts.queued||0}} · 分析中 ${{nodeCounts.leased||0}} · 边界 ${{nodeCounts.stopped||0}} · 总量截断 ${{nodeCounts.gap||0}}</dd><dt>覆盖缺口</dt><dd>${{exploration.gap_count||0}}</dd></dl>${{explorationNodes}}`:explorationNodes;const notes=arr(x.review_notes).map(n=>`<div class="gap-item">${{esc(n)}}</div>`).join('')||'<div class="empty">当前未记录额外覆盖缺口。</div>';document.getElementById('drawer-kind').textContent='组件审计详情';document.getElementById('drawer-title').textContent=x.component||x.entry_id;document.getElementById('drawer-body').innerHTML=`<dl class="kv"><dt>审计结论</dt><dd>${{badge(x.status)}}</dd><dt>所属模块</dt><dd>${{esc(x.module||x.module_id||'-')}}</dd><dt>组件功能</dt><dd>${{esc(x.function_summary)}}</dd><dt>入口状态</dt><dd>${{esc(label(coverage.entry_status))}}</dd><dt>入口渠道</dt><dd>${{esc(arr(x.facets).map(f=>label(f.entry_type)).join('、')||'-')}}</dd><dt>已检查入口</dt><dd>${{arr(coverage.entry_symbols_checked).map(v=>`<code>${{esc(v)}}</code>`).join('<br>')||'无'}}</dd><dt>已检查操作位置</dt><dd>${{arr(coverage.operation_sites_checked).map(v=>`<code>${{esc(v)}}</code>`).join('<br>')||'无'}}</dd></dl><h3>渐进探索过程</h3>${{explorationHtml}}<h3>安全相关操作与验证</h3>${{groups}}<h3>防护事实</h3><div class="structure-list">${{defenses}}</div><h3>跨组件调用</h3><div class="structure-list">${{calls}}</div><h3>人工复核提示</h3><div class="gap-list">${{notes}}</div>`;document.getElementById('drawer-backdrop').classList.add('open');}}
+function renderExplorationRange(n,edges){{const scope=obj(n.scope),term=obj(n.termination);const links=arr(edges).filter(e=>e.source_work_id===n.work_id).map(e=>`<li>${{esc(label(e.relation))}} · ${{esc(e.condition)}} → <code>${{esc(e.target_work_id)}}</code></li>`).join('');return `<div class="explore-node"><strong>${{badge(n.status)}} ${{esc(obj(n.symbol).qualified_name)}} · ${{n.scope_complete?'范围闭合':'范围未闭合'}}</strong><code>${{esc(obj(n.symbol).file_path||'入口识别')}}:${{scope.start}}-${{scope.end}}</code><div>进入条件：${{esc(arr(n.conditions).join('；')||'无附加条件')}}</div><div>${{esc(n.summary||'尚未分析')}}</div><div>已检查：${{esc(arr(n.checked).map(s=>s.start+'-'+s.end).join('、')||'无')}} · 操作 ${{n.operation_groups||0}}</div>${{term.reason?`<div>停止依据：${{esc(term.reason)}} ${{arr(term.evidence).map(e=>esc(e.location||e.content_ref||'')).join('、')}}</div>`:''}}${{arr(n.wait_for).length?`<div>等待范围：${{esc(n.wait_for.join('、'))}}</div>`:''}}<ul>${{links}}</ul>${{arr(n.gaps).map(g=>`<div class="gap-item">${{esc(g.target)}}：${{esc(g.reason)}}</div>`).join('')}}</div>`;}}
+function openComponent(id){{const x=arr(D.component_results).find(row=>row.entry_id===id);if(!x)return;const coverage=obj(x.coverage);const refs=v=>arr(v).map(r=>`<code>${{esc(r)}}</code>`).join(' · ');const groups=arr(x.operation_groups).map(g=>{{const operation=obj(g.operation),context=obj(g.context),result=g.classification||'verification_incomplete',checks=arr(g.security_checks).map(c=>`<div class="structure-item"><strong>${{esc(label(c.type))}}</strong><div>${{esc(c.behavior||c.protects||'-')}}</div><div class="muted">校验对象：${{esc(c.validated_property||'-')}} · 约束主体：${{esc(label(c.subject_kind))}} · ${{esc(c.location||'-')}}</div></div>`).join('');const facts=arr(g.facts).map(f=>`<li><b>${{esc(label(f.type))}} · ${{esc(f.body)}}</b><code>${{esc(f.location||'')}}</code></li>`).join('');const conclusion=g.impact||g.demotion_reason||g.evidence_gap||'尚未形成六维验证结论';return`<div class="panel"><h3>${{esc(g.title||g.group_id)}} · ${{badge(result)}}</h3><dl class="kv"><dt>安全相关操作</dt><dd>${{esc(operation.body||g.operation_location||'-')}}</dd><dt>源码位置</dt><dd><code>${{esc(operation.location||g.operation_location||'-')}}</code></dd><dt>受控参数</dt><dd>${{esc(arr(g.controlled_properties).join('、')||'无外部受控参数')}}</dd><dt>业务用途</dt><dd>${{esc(context.intended_behavior||obj(g.business_intent).declared_or_inferred_purpose||'-')}}</dd><dt>验证结论</dt><dd>${{esc(conclusion)}}</dd></dl>${{checks?`<h3>该操作前的防护</h3><div class="structure-list">${{checks}}</div>`:''}}${{facts?`<h3>语义证据</h3><ol class="timeline">${{facts}}</ol>`:''}}</div>`}}).join('')||'<div class="empty">本次分析未识别到可达的安全相关操作。请结合组件功能和下方覆盖范围复核是否遗漏敏感行为。</div>';const defenses=arr(x.security_checks).map(c=>`<div class="structure-item"><strong>${{esc(label(c.type))}}</strong><div>${{esc(c.behavior||c.protects||'-')}}</div><div class="muted">保护目标：${{esc(c.protects||'-')}} · 校验对象：${{esc(c.validated_property||'-')}} · 约束主体：${{esc(label(c.subject_kind))}} · 位置：${{esc(c.location||'-')}}</div>${{arr(c.evidence_refs).length?`<div class="muted">证据：${{refs(c.evidence_refs)}}</div>`:''}}</div>`).join('')||'<div class="empty">未观察到显式防护事实；若组件未执行安全相关操作，这不表示组件存在漏洞。</div>';const calls=[...arr(x.outgoing_calls).map(c=>['调用下游组件',c.target_component_id,c]),...arr(x.incoming_calls).map(c=>['被上游组件调用',c.source_component_id,c])].map(([direction,target,c])=>`<div class="structure-item"><strong>${{esc(direction)}} · ${{esc(target||'-')}}</strong><div>${{esc(c.condition||'-')}}</div><div class="muted">方式：${{esc(c.transport||'-')}} · 位置：${{esc(c.call_location||'-')}}</div></div>`).join('')||'<div class="empty">未记录跨组件调用。</div>';const exploration=obj(x.exploration),nodeCounts=obj(exploration.node_counts),explorationNodes=arr(exploration.nodes).map(n=>renderExplorationRange(n,exploration.edges)).join('')||'<div class="empty">没有本轮范围记录，可能来自增量基线。</div>';const explorationHtml=Object.keys(exploration).length?`<dl class="kv"><dt>探索状态</dt><dd>${{badge(exploration.status)}}</dd><dt>探索轮次</dt><dd>${{exploration.rounds||0}}</dd><dt>范围工作统计</dt><dd>已分析 ${{nodeCounts.completed||0}} · 待分析 ${{nodeCounts.queued||0}} · 分析中 ${{nodeCounts.leased||0}}</dd><dt>覆盖缺口</dt><dd>${{exploration.gap_count||0}}</dd></dl>${{explorationNodes}}`:explorationNodes;const notes=arr(x.review_notes).map(n=>`<div class="gap-item">${{esc(n)}}</div>`).join('')||'<div class="empty">当前未记录额外覆盖缺口。</div>';document.getElementById('drawer-kind').textContent='组件审计详情';document.getElementById('drawer-title').textContent=x.component||x.entry_id;document.getElementById('drawer-body').innerHTML=`<dl class="kv"><dt>审计结论</dt><dd>${{badge(x.status)}}</dd><dt>所属模块</dt><dd>${{esc(x.module||x.module_id||'-')}}</dd><dt>组件功能</dt><dd>${{esc(x.function_summary)}}</dd><dt>入口状态</dt><dd>${{esc(label(coverage.entry_status))}}</dd><dt>入口渠道</dt><dd>${{esc(arr(x.facets).map(f=>label(f.entry_type)).join('、')||'-')}}</dd><dt>已检查入口</dt><dd>${{arr(coverage.entry_symbols_checked).map(v=>`<code>${{esc(v)}}</code>`).join('<br>')||'无'}}</dd><dt>已检查操作位置</dt><dd>${{arr(coverage.operation_sites_checked).map(v=>`<code>${{esc(v)}}</code>`).join('<br>')||'无'}}</dd></dl><h3>渐进探索过程</h3>${{explorationHtml}}<h3>安全相关操作与验证</h3>${{groups}}<h3>防护事实</h3><div class="structure-list">${{defenses}}</div><h3>跨组件调用</h3><div class="structure-list">${{calls}}</div><h3>人工复核提示</h3><div class="gap-list">${{notes}}</div>`;document.getElementById('drawer-backdrop').classList.add('open');}}
 const resultSelect=document.getElementById('path-result');[...new Set(arr(D.paths).map(p=>pathResult(p).classification||p.status))].forEach(k=>resultSelect.insertAdjacentHTML('beforeend',`<option value="${{esc(k)}}">${{esc(label(k))}}</option>`));
 function renderPaths(){{const q=document.getElementById('search').value.toLowerCase(),r=resultSelect.value,s=document.getElementById('path-severity').value;const rows=arr(D.paths).filter(p=>{{const x=pathResult(p),state=x.classification||p.status,text=[p.path_id,p.branch_key,p.controlled_property,p.current_symbol,p.entry?.component,p.entry?.module,p.entry?.module_id,p.entry?.symbol,x.title].join(' ').toLowerCase();return(!q||text.includes(q))&&(!r||state===r)&&(!s||x.severity===s)}});document.getElementById('path-count').textContent=`显示 ${{rows.length}} / ${{arr(D.paths).length}} 条路径`;document.getElementById('path-body').innerHTML=rows.map(p=>{{const x=pathResult(p),state=x.classification||p.status;return`<tr class="path-row" data-path-id="${{esc(p.path_id)}}"><td>${{badge(state)}}</td><td>${{esc(label(x.severity||'-'))}}</td><td><strong>${{esc(p.entry?.component||p.root_entry_id)}}</strong><br><span class="muted">${{esc(p.entry?.module||p.entry?.module_id||'')}}</span><br><code>${{esc(p.entry?.symbol||'')}}</code></td><td>${{esc(p.branch_key)}}</td><td><code>${{esc(p.controlled_property)}}</code></td><td>${{esc(x.operation_location||p.current_symbol)}}</td></tr>`}}).join('');document.querySelectorAll('.path-row').forEach(row=>row.onclick=()=>openPath(row.dataset.pathId));}}
 ['search','path-result','path-severity'].forEach(id=>document.getElementById(id).addEventListener(id==='search'?'input':'change',renderPaths));
@@ -836,7 +812,7 @@ const perms=[...arr(D.project.requested_permissions).map(x=>['申请权限',x]),
 document.getElementById('module-list').innerHTML=arr(D.project.modules).map(x=>`<div class="structure-item"><strong>${{esc(x.name)}} · ${{esc((x.output_kind||x.type||'未知类型').toUpperCase())}}</strong><div class="muted">${{esc(x.root||x.source_scope||x.file)}} · ${{esc(arr(x.products).join(', ')||'全部产品')}} · <code>${{esc(x.module_id||'')}}</code></div></div>`).join('')||'<div class="empty">无模块信息</div>';document.getElementById('component-body').innerHTML=arr(D.project.components).map(x=>`<tr><td><strong>${{esc(x.name)}}</strong></td><td>${{esc(x.extension_type||x.kind)}}</td><td>${{esc(x.module_name)}}<br><code>${{esc(x.module_id||'')}}</code></td><td>${{x.exported===true?'是':x.exported===false?'否':'-'}}</td><td>${{esc(arr(x.permissions).join(', ')||'-')}}</td><td><code>${{esc(x.source_file_hint||x.src_entry||'-')}}</code></td></tr>`).join('');
 const C=D.coverage,es=obj(C.entry_status),ac=obj(C.assessment_status),tc=obj(C.task_status),cc=obj(C.component_correlation);
 document.getElementById('coverage-metrics').innerHTML=metric(C.status,'覆盖状态')+metric(C.component_catalog||0,'组件目录')+metric(C.analysis_units||0,'实际分析组件')+metric(es.confirmed||0,'已确认输入')+metric(es.excluded||0,'已排除输入')+metric(es.uncertain||0,'不确定输入')+metric(arr(C.gaps).length,'缺口与注记');
-document.getElementById('coverage-summary').innerHTML=`<div class="structure-item"><strong>渐进语义探索</strong><div class="muted">已创建 ${{C.exploration_components||0}} 个组件探索 · 记录 ${{C.exploration_nodes||0}} 个安全语义断点 · 覆盖 ${{C.exploration_symbols||0}} 个函数 · 源码补全 ${{C.source_resolved_relations||0}} 条动态关系 · 已生成 ${{C.semantic_analyses||0}} 个最终组件结果</div></div><div class="structure-item"><strong>安全相关操作</strong><div class="muted">归并 ${{C.operation_groups||0}} 个操作组 · 记录 ${{C.component_calls||0}} 条组件传递</div></div><div class="structure-item"><strong>组件连接</strong><div class="muted">生成 ${{S.cross_component_groups||0}} 个跨组件操作组 · 检查 ${{cc.states_visited||0}} 个连接状态</div></div><div class="structure-item"><strong>六维验证</strong><div class="muted">漏洞 ${{ac.confirmed_vulnerability||0}} · 风险 ${{ac.residual_risk||0}} · 防护 ${{ac.protected_exposure||0}} · 不可利用 ${{ac.no_exploitable_path||0}} · 正常 ${{ac.benign_business_flow||0}} · 缺证据 ${{ac.insufficient_evidence||0}}</div></div>`;
+document.getElementById('coverage-summary').innerHTML=`<div class="structure-item"><strong>渐进语义探索</strong><div class="muted">已创建 ${{C.exploration_components||0}} 个组件探索 · 记录 ${{C.exploration_nodes||0}} 个代码范围 · 覆盖 ${{C.exploration_symbols||0}} 个函数 · 源码补全 ${{C.source_resolved_relations||0}} 条动态关系 · 已生成 ${{C.semantic_analyses||0}} 个最终组件结果</div></div><div class="structure-item"><strong>安全相关操作</strong><div class="muted">归并 ${{C.operation_groups||0}} 个操作组 · 记录 ${{C.component_calls||0}} 条组件传递</div></div><div class="structure-item"><strong>组件连接</strong><div class="muted">生成 ${{S.cross_component_groups||0}} 个跨组件操作组 · 检查 ${{cc.states_visited||0}} 个连接状态</div></div><div class="structure-item"><strong>六维验证</strong><div class="muted">漏洞 ${{ac.confirmed_vulnerability||0}} · 风险 ${{ac.residual_risk||0}} · 防护 ${{ac.protected_exposure||0}} · 不可利用 ${{ac.no_exploitable_path||0}} · 正常 ${{ac.benign_business_flow||0}} · 缺证据 ${{ac.insufficient_evidence||0}}</div></div>`;
 document.getElementById('task-summary').innerHTML=Object.entries(tc).map(([k,v])=>`<div class="structure-item"><strong>${{esc(label(k))}}</strong><div class="muted">${{v}} 个任务</div></div>`).join('')||'<div class="empty">无任务信息</div>';
 document.getElementById('gap-list').innerHTML=arr(C.gaps).map(x=>`<div class="gap-item"><strong>${{esc(x.type)}} · ${{esc(x.subject)}}</strong><div>${{esc(x.description)}}</div></div>`).join('')||'<div class="empty">未发现覆盖缺口</div>';
 renderComponents();renderPaths();

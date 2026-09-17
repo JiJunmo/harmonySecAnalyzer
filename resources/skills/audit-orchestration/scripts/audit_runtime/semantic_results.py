@@ -1,12 +1,10 @@
-"""Compile, validate, and persist the canonical component semantic result."""
+"""Compile canonical component semantics from accepted range results."""
 from __future__ import annotations
 
 import json
 
-from .common import (canonical_json, normalize_location, now, operation_group_identity,
-                     stable_id)
-from .contracts import (normalize_semantic_result, schema_errors,
-                        validate_semantic_analysis)
+from .common import canonical_json, now, operation_group_identity, stable_id, normalize_location
+from .contracts import normalize_semantic_result, schema_errors, validate_semantic_analysis
 from .evidence import materialize_component_call, materialize_semantic_group
 from .store import append_event, row_json
 
@@ -15,190 +13,100 @@ def _copy(value):
     return json.loads(json.dumps(value))
 
 
-def _call_identity(component_call):
-    return canonical_json([
-        component_call.get("target_component_id"),
-        normalize_location(component_call.get("call_location")),
-        component_call.get("invocation_control", {}),
-        component_call.get("parameter_mappings", []),
-        component_call.get("principal_transition", {}),
-    ])
+def _call_identity(call):
+    return canonical_json([call.get("target_component_id"), normalize_location(call.get("call_location")),
+                           call.get("invocation_control", {}), call.get("parameter_mappings", []),
+                           call.get("principal_transition", {})])
 
 
 def validate_semantic_result(conn, task, result):
-    errors = schema_errors("component_semantic_analysis", result)
-    if not errors:
-        errors.extend(validate_semantic_analysis(result, task, conn))
-    return errors
+    return schema_errors("component_semantic_analysis", result) or validate_semantic_analysis(result, task, conn)
 
 
-def step_coverage_gaps(step):
-    """Tool observations are not conclusions; only accepted step gaps are exported."""
-    return {gap["target"] for gap in step.get("gaps", [])}
+def step_coverage_gaps(result):
+    return {gap["target"] for gap in result.get("gaps", [])}
 
 
-def validate_exploration_step_semantics(conn, task, node, exploration, step):
-    """Apply the final semantic contract to one step's groups and component calls."""
-    assessment = step.get("entry_assessment") or {
+def validate_exploration_step_semantics(conn, task, scope, assessment, result):
+    if scope["kind"] == "entry":
+        return ["entry_discovery_cannot_emit_operations"] if result["operation_groups"] or result["component_calls"] else []
+    exploration = conn.execute("SELECT * FROM component_explorations WHERE entry_id=?", (task["subject_id"],)).fetchone()
+    assessment = assessment or {
         "entry_status": exploration["entry_status"],
         "external_entry_status": exploration["external_entry_status"],
-        "confirmed_external_candidate_ids": row_json(
-            exploration, "confirmed_candidates_json", []
-        ),
+        "confirmed_external_candidate_ids": row_json(exploration, "confirmed_candidates_json", []),
     }
-    symbols = []
-    if node["work_type"] == "entry_discovery":
-        symbols = [
-            row.get("symbol", {}).get("qualified_name")
-            for row in step.get("successors", [])
-            if row.get("symbol", {}).get("qualified_name")
-        ]
-    else:
-        symbol = row_json(node, "symbol_json", {}).get("qualified_name")
-        if symbol:
-            symbols.append(symbol)
-    symbols.extend(
-        symbol.get("qualified_name")
-        for symbol in step.get("analyzed_symbols", [])
-        if isinstance(symbol, dict) and symbol.get("qualified_name")
-    )
-    unresolved = step_coverage_gaps(step)
-    result = {
-        "task_id": task["task_id"],
-        "entry_id": task["subject_id"],
-        "summary": step["summary"],
+    candidate = {
+        "task_id": task["task_id"], "entry_id": task["subject_id"], "summary": result["summary"],
         "coverage": {
-            "entry_status": assessment["entry_status"],
-            "external_entry_status": assessment["external_entry_status"],
-            "confirmed_external_candidate_ids": list(
-                assessment["confirmed_external_candidate_ids"]
-            ),
-            "entry_notes": [step["summary"]],
-            "entry_symbols_checked": sorted(set(symbols)),
-            "operation_sites_checked": [],
-            "unresolved_targets": sorted(unresolved),
+            **{k: assessment[k] for k in ("entry_status", "external_entry_status", "confirmed_external_candidate_ids")},
+            "entry_notes": [result["summary"]],
+            "entry_symbols_checked": [] if scope["kind"] == "entry" else [scope["symbol"]["qualified_name"]],
+            "operation_sites_checked": [], "unresolved_targets": sorted(step_coverage_gaps(result)),
         },
-        "operation_groups": _copy(step.get("operation_groups", [])),
-        "component_calls": _copy(step.get("component_calls", [])),
+        "operation_groups": _copy(result["operation_groups"]), "component_calls": _copy(result["component_calls"]),
     }
-    result = normalize_semantic_result(result, task["subject_id"])
-    return validate_semantic_result(conn, task, result)
+    return validate_semantic_result(conn, task, normalize_semantic_result(candidate, task["subject_id"]))
 
 
 def build_exploration_semantic_result(conn, task):
-    """Build one downstream semantic result after every exploration branch closes."""
-    if task["kind"] != "component_semantic_analysis":
-        raise ValueError("task_not_component_semantic_analysis")
-    exploration = conn.execute(
-        "SELECT * FROM component_explorations WHERE entry_id=?", (task["subject_id"],)
-    ).fetchone()
-    if not exploration:
-        raise ValueError("component_exploration_not_found")
-    if exploration["status"] not in {"complete", "partial"}:
-        raise ValueError(f"component_exploration_not_closed:{exploration['status']}")
-    open_nodes = conn.execute(
-        """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
-           AND status IN ('queued','leased')""",
-        (exploration["exploration_id"],),
-    ).fetchone()["n"]
-    if open_nodes:
-        raise ValueError(f"component_exploration_has_open_nodes:{open_nodes}")
-
-    nodes = conn.execute(
-        """SELECT * FROM exploration_nodes WHERE exploration_id=?
-           ORDER BY depth,discovered_order,node_id""",
-        (exploration["exploration_id"],),
-    ).fetchall()
-    observations = []
-    operation_groups = []
-    component_calls = []
-    unresolved = set()
-    checked_symbols = set()
-    entry_symbols = set()
-    root_notes = []
-    gap_notes = set()
-    for node in nodes:
-        observation = row_json(node, "observation_json", {})
-        if observation.get("node_id") != node["node_id"]:
-            if node["status"] == "gap":
-                symbol = row_json(node, "symbol_json", {}).get("qualified_name")
-                if symbol:
-                    unresolved.add(symbol)
-                    gap_notes.add(f"覆盖缺口：{symbol}：组件探索达到总量保护上限，尚未分析")
-            continue
-        observations.append(observation)
-        if node["work_type"] == "entry_discovery":
-            root_notes.append(observation.get("summary"))
-            entry_symbols.update(row["symbol"]["qualified_name"] for row in observation["successors"])
-        elif not observation.get("resume"):
-            symbol = row_json(node, "symbol_json", {}).get("qualified_name")
-            if symbol:
-                checked_symbols.add(symbol)
-        checked_symbols.update(
-            symbol.get("qualified_name")
-            for symbol in observation.get("analyzed_symbols", [])
-            if isinstance(symbol, dict) and symbol.get("qualified_name")
-        )
-        operation_groups.extend(_copy(observation.get("operation_groups", [])))
-        component_calls.extend(_copy(observation.get("component_calls", [])))
-        unresolved.update(step_coverage_gaps(observation))
-        gap_notes.update(f"覆盖缺口：{gap['target']}：{gap['reason']}" for gap in observation.get("gaps", []))
-
-    for group in operation_groups:
-        if isinstance(group, dict) and isinstance(group.get("operation"), dict):
-            group["group_key"] = stable_id(
-                "OG", operation_group_identity(task["subject_id"], group)
-            )
-    for component_call in component_calls:
-        if isinstance(component_call, dict):
-            component_call["call_key"] = stable_id("CC", _call_identity(component_call))
-
-    counts = {status: 0 for status in ("queued", "leased", "completed", "stopped", "gap")}
-    for node in nodes:
-        counts[node["status"]] = counts.get(node["status"], 0) + 1
-    max_depth = max((node["depth"] for node in nodes), default=0)
-    notes = [note for note in root_notes if note]
-    notes.append(
-        f"渐进探索已处理 {len(observations)} 个安全语义断点，"
-        f"覆盖 {len(checked_symbols)} 个函数，停止 {counts['stopped']} 个，"
-        f"覆盖缺口 {len(unresolved)} 个"
-    )
-    notes.extend(sorted(gap_notes))
-    result = {
-        "task_id": task["task_id"],
-        "entry_id": task["subject_id"],
-        "summary": exploration["component_summary"] or "组件语义探索完成",
+    from .semantic_exploration import work_rows, closed_work_ids
+    exploration = conn.execute("SELECT * FROM component_explorations WHERE entry_id=?", (task["subject_id"],)).fetchone()
+    if not exploration or exploration["status"] not in {"complete", "partial"}:
+        raise ValueError("component_exploration_not_closed")
+    rows = work_rows(conn, exploration["exploration_id"])
+    if any(r["status"] != "completed" for r in rows):
+        raise ValueError("component_exploration_has_open_work")
+    closed = closed_work_ids(conn, exploration["exploration_id"])
+    groups, calls, notes, unresolved = [], [], [], set()
+    functions = {}
+    stopped = gaps = 0
+    for row in rows:
+        scope = row_json(row, "scope_json", {})
+        result = row_json(row, "result_json", {})
+        groups.extend(_copy(result.get("operation_groups", [])))
+        calls.extend(_copy(result.get("component_calls", [])))
+        unresolved.update(step_coverage_gaps(result))
+        notes.extend(f"覆盖缺口：{g['target']}：{g['reason']}" for g in result.get("gaps", []))
+        stopped += bool(result.get("termination"))
+        gaps += bool(result.get("gaps"))
+        if scope["kind"] != "entry":
+            functions.setdefault(scope["symbol"]["qualified_name"], []).append(row)
+    checked = sorted(name for name, work in functions.items()
+                     if all(r["work_id"] in closed and not row_json(r, "result_json", {}).get("gaps") for r in work))
+    roots = {r["work_id"] for r in rows if row_json(r, "scope_json", {})["kind"] == "entry"}
+    entry_targets = {
+        edge["target_work_id"] for edge in conn.execute(
+            "SELECT * FROM exploration_edges WHERE exploration_id=?", (exploration["exploration_id"],))
+        if edge["source_work_id"] in roots
+    }
+    # A confirmed callback identity is checked even when its body has a coverage gap.
+    entry_symbols = {
+        row_json(r, "scope_json", {})["symbol"]["qualified_name"]
+        for r in rows if r["work_id"] in entry_targets
+    }
+    for group in groups:
+        group["group_key"] = stable_id("OG", operation_group_identity(task["subject_id"], group))
+    for call in calls:
+        call["call_key"] = stable_id("CC", _call_identity(call))
+    notes.append(f"已登记范围 {len(rows)} 个；覆盖仅表示已登记结构的处理进度，不证明源码分支穷尽")
+    result = normalize_semantic_result({
+        "task_id": task["task_id"], "entry_id": task["subject_id"],
+        "summary": exploration["component_summary"] or "组件范围探索完成",
         "coverage": {
             "entry_status": exploration["entry_status"],
             "external_entry_status": exploration["external_entry_status"],
-            "confirmed_external_candidate_ids": row_json(
-                exploration, "confirmed_candidates_json", []
-            ),
-            "entry_notes": sorted(set(notes)),
-            "entry_symbols_checked": sorted(entry_symbols | checked_symbols),
-            "operation_sites_checked": [],
-            "unresolved_targets": sorted(unresolved),
+            "confirmed_external_candidate_ids": row_json(exploration, "confirmed_candidates_json", []),
+            "entry_notes": sorted(set(notes)), "entry_symbols_checked": sorted(set(checked) | entry_symbols),
+            "operation_sites_checked": [], "unresolved_targets": sorted(unresolved),
             "exploration_summary": {
-                "status": exploration["status"],
-                "rounds": exploration["round_no"],
-                "total_nodes": len(nodes),
-                "completed_nodes": counts["completed"],
-                "stopped_nodes": counts["stopped"],
-                "gap_nodes": counts["gap"],
-                "max_depth": max_depth,
+                "status": exploration["status"], "rounds": exploration["round_no"],
+                "total_nodes": len(rows), "completed_nodes": len(rows),
+                "stopped_nodes": stopped, "gap_nodes": gaps,
+                "max_depth": max((r["depth"] for r in rows), default=0),
             },
-        },
-        "operation_groups": operation_groups,
-        "component_calls": component_calls,
-    }
-    result = normalize_semantic_result(result, task["subject_id"])
-    result["operation_groups"] = sorted(
-        result["operation_groups"],
-        key=lambda group: operation_group_identity(task["subject_id"], group),
-    )
-    result["component_calls"] = sorted(
-        result["component_calls"], key=_call_identity
-    )
+        }, "operation_groups": groups, "component_calls": calls,
+    }, task["subject_id"])
     errors = validate_semantic_result(conn, task, result)
     if errors:
         raise ValueError("invalid_compiled_semantic_result:" + "|".join(errors))

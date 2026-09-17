@@ -1,115 +1,23 @@
-"""Transactional state machine for progressive component exploration."""
+"""Range-based component exploration with durable branch work and atomic submissions."""
 from __future__ import annotations
 
 from functools import lru_cache
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from .common import SCHEMAS_DIR, canonical_json, normalize_location, normalize_text, now, read_json, run_paths, stable_id, write_json
-from .semantic_results import step_coverage_gaps, validate_exploration_step_semantics
+from .common import SCHEMAS_DIR, canonical_json, now, read_json, run_paths, stable_id, write_json
 from .store import append_event, database, row_json, transaction
 
-
-ROUND_FUNCTION_BUDGET = 64
-STEP_SYMBOL_BUDGET = 8
-MAX_COMPONENT_WORK_NODES = 64
-MAX_COMPONENT_ROUNDS = 8
+ROUND_LINE_BUDGET = 2000
+MAX_COMPONENT_ANALYZED_LINES = 200000
 STEP_SCHEMA = "component-exploration-step.schema.json"
 
 
-@lru_cache(maxsize=None)
-def _validator(schema_name):
-    schema = read_json(SCHEMAS_DIR / schema_name)
-    if not isinstance(schema, dict):
-        raise ValueError(f"missing_schema:{schema_name}")
-    return Draft202012Validator(schema)
-
-
-def _schema_errors(schema_name, document):
-    errors = []
-    for error in _validator(schema_name).iter_errors(document):
-        path = "$" + "".join(
-            f"[{part}]" if isinstance(part, int) else f".{part}"
-            for part in error.absolute_path
-        )
-        errors.append(f"schema:{path}:{error.message}")
-    return sorted(errors)
-
-
-def _normalize_symbol(symbol):
-    return {
-        "qualified_name": str(symbol.get("qualified_name") or "").strip(),
-        "file_path": str(symbol["file_path"]).replace("\\", "/") if symbol.get("file_path") else None,
-        "line": symbol.get("line"),
-        "kind": str(symbol.get("kind") or "function").strip().lower(),
-    }
-
-
-def _symbol_key(symbol, resume_location=None):
-    normalized = _normalize_symbol(symbol)
-    key = [
-        normalize_text(normalized["qualified_name"]),
-        normalize_text(normalized["file_path"]),
-        normalized["line"],
-        normalized["kind"],
-    ]
-    if resume_location:
-        key.append(normalize_location(resume_location))
-    return canonical_json(key)
-
-
-def _successor_identity(exploration_id, successor):
-    symbol_key = _symbol_key(successor["symbol"], successor.get("resume", {}).get("location"))
-    state_key = canonical_json(_normalize_state(successor["state"]))
-    return stable_id("XNODE", [exploration_id, symbol_key, state_key]), symbol_key, state_key
-
-
-def _step_successors(step, node):
-    successors = list(step["successors"])
-    if step["resume"]:
-        resume = step["resume"]
-        successors.append({
-            "symbol": row_json(node, "symbol_json", {}),
-            "relation": "resume", "condition": resume["remaining_work"],
-            "stop_reason": None, "state": resume["state"],
-            "resume": {key: resume[key] for key in ("location", "remaining_work")},
-        })
-    return successors
-
-
-def _check_reference(check):
-    return {
-        "location": str(check.get("location") or "").strip().replace("\\", "/"),
-        "subject_kind": check.get("subject_kind"),
-        "validated_property": " ".join(str(check.get("validated_property") or "").split()),
-    }
-
-
-def _normalize_state(state):
-    properties = {}
-    for item in state.get("controlled_properties", []):
-        name = normalize_text(item.get("name"))
-        if name:
-            properties[name] = item.get("control_state")
-    principal = state.get("principal", {})
-    checks = {}
-    for check in state["security_checks"]:
-        reference = _check_reference(check)
-        checks[stable_id("CHECK", reference)] = reference
-    return {
-        "controlled_properties": [
-            {"name": name, "control_state": properties[name]}
-            for name in sorted(properties)
-        ],
-        "principal": {
-            "origin": normalize_text(principal.get("origin")),
-            "immediate": normalize_text(principal.get("immediate")),
-            "origin_binding": principal.get("origin_binding"),
-            "authority": principal.get("authority"),
-        },
-        "security_checks": [checks[key] for key in sorted(checks)],
-    }
+@lru_cache(maxsize=1)
+def _validator():
+    return Draft202012Validator(read_json(SCHEMAS_DIR / STEP_SCHEMA))
 
 
 def _task(conn, task_id, attempt):
@@ -120,645 +28,470 @@ def _task(conn, task_id, attempt):
         raise ValueError("task_not_component_semantic_analysis")
     if task["status"] != "running":
         raise ValueError(f"task_not_running:{task['status']}")
-    if int(attempt) != task["attempts"]:
+    if task["attempts"] != int(attempt):
         raise ValueError(f"stale_attempt:expected={task['attempts']}:actual={attempt}")
-    if not task["subject_id"]:
-        raise ValueError("task_entry_missing")
     return task
 
 
-def release_exploration_leases(conn, task_id, attempt):
-    """Return only the unfinished nodes owned by one failed task attempt."""
-    released = conn.execute(
-        """UPDATE exploration_nodes SET status='queued',lease_task_id=NULL,lease_attempt=NULL,
-           updated_at=? WHERE status='leased' AND lease_task_id=? AND lease_attempt=?""",
-        (now(), task_id, int(attempt)),
-    ).rowcount
-    if released:
-        append_event(conn, "exploration_leases_released", task_id, {
-            "attempt": int(attempt), "nodes": released,
-        })
-    return released
+def work_rows(conn, exploration_id):
+    return conn.execute(
+        """SELECT w.*,n.scope_json FROM exploration_work_items w
+           JOIN exploration_nodes n ON n.node_id=w.node_id
+           WHERE w.exploration_id=? ORDER BY w.discovered_order,w.work_id""",
+        (exploration_id,),
+    ).fetchall()
+
+
+def _normalize_scope(scope):
+    scope = dict(scope)
+    scope.setdefault("start_column", 1)
+    scope.setdefault("end_column", 1)
+    symbol = dict(scope["symbol"])
+    if symbol.get("file_path"):
+        symbol["file_path"] = symbol["file_path"].replace("\\", "/")
+    scope["symbol"] = symbol
+    return scope
+
+
+def _normalize_state(state):
+    state = dict(state)
+    for key in ("controlled_properties", "security_checks"):
+        state[key] = sorted(state.get(key, []), key=canonical_json)
+    return state
+
+
+def _identity(exploration_id, scope, state, conditions, dependencies=()):
+    node_id = stable_id("XNODE", [exploration_id, _normalize_scope(scope)])
+    work_id = stable_id("XWORK", [node_id, _normalize_state(state), sorted(set(conditions)), sorted(dependencies)])
+    return node_id, work_id
+
+
+def _insert_work(conn, exploration_id, scope, state, conditions, depth, result=None, dependencies=()):
+    scope = _normalize_scope(scope)
+    node_id, work_id = _identity(exploration_id, scope, state, conditions, dependencies)
+    stamp = now()
+    conn.execute("INSERT OR IGNORE INTO exploration_nodes VALUES (?,?,?,?)",
+                 (node_id, exploration_id, canonical_json(scope), stamp))
+    order = conn.execute(
+        "SELECT COALESCE(MAX(discovered_order),-1)+1 FROM exploration_work_items WHERE exploration_id=?",
+        (exploration_id,),
+    ).fetchone()[0]
+    conn.execute(
+        """INSERT OR IGNORE INTO exploration_work_items
+           (work_id,node_id,exploration_id,state_json,conditions_json,status,depth,
+            discovered_order,result_json,dependencies_json,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (work_id, node_id, exploration_id, canonical_json(_normalize_state(state)),
+         canonical_json(sorted(set(conditions))), "completed" if result else "queued",
+         depth, order, canonical_json(result) if result else None,
+         canonical_json(sorted(dependencies)), stamp, stamp),
+    )
+    return work_id
 
 
 def ensure_component_exploration(conn, entry_id):
-    """Create the component state and its entry-discovery root once."""
-    if not conn.execute("SELECT 1 FROM entries WHERE entry_id=?", (entry_id,)).fetchone():
-        raise ValueError(f"entry_not_found:{entry_id}")
     exploration_id = stable_id("EXPLORE", entry_id)
     stamp = now()
-    created = conn.execute(
-        """INSERT OR IGNORE INTO component_explorations
-           (exploration_id,entry_id,status,entry_status,external_entry_status,
-            confirmed_candidates_json,round_no,created_at,updated_at)
-           VALUES (?,?,'pending','uncertain','uncertain','[]',0,?,?)""",
-        (exploration_id, entry_id, stamp, stamp),
-    ).rowcount
-    root_symbol = {
-        "qualified_name": "$entry_discovery", "file_path": None, "line": None, "kind": "entry",
-    }
-    root_state = {
-        "controlled_properties": [],
-        "principal": {
-            "origin": "unknown", "immediate": "unknown",
-            "origin_binding": "unknown", "authority": "unknown",
-        },
-        "security_checks": [],
-    }
-    node_id = stable_id("XNODE", [exploration_id, _symbol_key(root_symbol), canonical_json(root_state)])
     conn.execute(
-        """INSERT OR IGNORE INTO exploration_nodes
-           (node_id,exploration_id,parent_node_id,work_type,symbol_key,state_key,symbol_json,
-            state_json,depth,discovered_order,status,created_at,updated_at)
-           VALUES (?,?,NULL,'entry_discovery',?,?,?,?,0,0,'queued',?,?)""",
-        (node_id, exploration_id, _symbol_key(root_symbol), canonical_json(root_state),
-         canonical_json(root_symbol), canonical_json(root_state), stamp, stamp),
+        """INSERT OR IGNORE INTO component_explorations
+           (exploration_id,entry_id,created_at,updated_at) VALUES (?,?,?,?)""",
+        (exploration_id, entry_id, stamp, stamp),
     )
-    if created:
-        append_event(conn, "component_exploration_created", exploration_id, {"entry_id": entry_id})
+    scope = {"symbol": {"qualified_name": "$entry_discovery", "file_path": None,
+                        "line": None, "kind": "entry"}, "start": 0, "end": 0, "kind": "entry"}
+    state = {"controlled_properties": [], "security_checks": [],
+             "principal": {"origin": "unknown", "immediate": "unknown",
+                           "origin_binding": "unknown", "authority": "unknown"}}
+    _insert_work(conn, exploration_id, scope, state, [], 0)
     return exploration_id
 
 
-def _path_context(conn, node):
-    path = []
-    current = node
-    seen = set()
-    while current and current["node_id"] not in seen:
-        seen.add(current["node_id"])
-        observation = row_json(current, "observation_json", {})
-        relevant = (
-            current["work_type"] == "entry_discovery"
-            or observation.get("pause_requested")
-            or observation.get("resume")
-            or observation.get("entry_assessment")
-            or any(observation.get(key) for key in (
-                "facts", "security_checks", "operation_groups", "component_calls", "gaps"
-            ))
-        )
-        if relevant:
-            path.append({
-                "node_id": current["node_id"],
-                "symbol": row_json(current, "symbol_json", {}),
-                "summary": observation.get("summary"),
-                "node_status": current["status"],
-                "resume_from": row_json(current, "resume_json", {}),
-                "pause_requested": observation.get("pause_requested", False),
-            })
-        parent_id = current["parent_node_id"]
-        current = conn.execute(
-            "SELECT * FROM exploration_nodes WHERE node_id=?", (parent_id,)
-        ).fetchone() if parent_id else None
-    return list(reversed(path))
+def release_exploration_leases(conn, task_id, attempt):
+    count = conn.execute(
+        """UPDATE exploration_work_items SET status='queued',lease_task_id=NULL,
+           lease_attempt=NULL,updated_at=? WHERE status='leased' AND lease_task_id=?
+           AND lease_attempt=?""", (now(), task_id, int(attempt)),
+    ).rowcount
+    if count:
+        append_event(conn, "exploration_leases_released", task_id, {"work_items": count})
+    return count
 
 
-def _attempt_progress(conn, exploration_id, task_id, attempt):
-    rows = conn.execute(
-        """SELECT * FROM exploration_nodes
-           WHERE exploration_id=? AND lease_task_id=? AND lease_attempt=?
-           AND status='completed'""",
-        (exploration_id, task_id, int(attempt)),
-    ).fetchall()
-    function_count = sum(
-        1 + len(row_json(row, "observation_json", {}).get("analyzed_symbols", []))
-        for row in rows if row["work_type"] == "function_analysis"
-    )
-    last_node = max(
-        rows, key=lambda row: (row["updated_at"], row["discovered_order"]),
-        default=None,
-    )
-    return len(rows), function_count, last_node
+def closed_work_ids(conn, exploration_id):
+    rows = {row["work_id"]: row for row in work_rows(conn, exploration_id)}
+    children = {key: set() for key in rows}
+    for edge in conn.execute("SELECT * FROM exploration_edges WHERE exploration_id=?", (exploration_id,)):
+        if edge["relation"] not in {"reuse", "loop"}:
+            children[edge["source_work_id"]].add(edge["target_work_id"])
+    closed = set()
+    for key in TopologicalSorter(children).static_order():
+        if rows[key]["status"] == "completed" and children[key] <= closed:
+            closed.add(key)
+    return closed
 
 
-def _queued_continuation(conn, exploration_id, source_node_id):
-    return conn.execute(
-        """SELECT n.* FROM exploration_edges e
-           JOIN exploration_nodes n ON n.node_id=e.target_node_id
-           WHERE e.exploration_id=? AND e.source_node_id=? AND e.decision='follow'
-           AND n.status='queued'
-           ORDER BY n.depth DESC,n.discovered_order DESC,n.node_id LIMIT 1""",
-        (exploration_id, source_node_id),
-    ).fetchone()
+def _line_count(result):
+    return max(1, sum(span["end"] - span["start"] + 1 for span in (result or {}).get("checked", [])))
 
 
-def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_FUNCTION_BUDGET):
-    budget = int(budget)
-    if budget <= 0:
-        raise ValueError("round_function_budget_must_be_positive")
+def next_exploration_node(run_dir, task_id, attempt, budget=ROUND_LINE_BUDGET):
+    if int(budget) <= 0:
+        raise ValueError("round_line_budget_must_be_positive")
+    from .exploration_context import work_context
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn, transaction(conn):
         task = _task(conn, task_id, attempt)
-        exploration_id = ensure_component_exploration(conn, task["subject_id"])
-        conn.execute(
-            """UPDATE exploration_nodes SET status='queued',lease_task_id=NULL,lease_attempt=NULL,
-               updated_at=? WHERE exploration_id=? AND status='leased' AND lease_task_id=?
-               AND lease_attempt<>?""",
-            (now(), exploration_id, task_id, int(attempt)),
-        )
-        processed, processed_functions, last_node = _attempt_progress(
-            conn, exploration_id, task_id, attempt,
-        )
-        starting_new_path = False
-        node = conn.execute(
-            """SELECT * FROM exploration_nodes WHERE exploration_id=? AND status='leased'
-               AND lease_task_id=? AND lease_attempt=? ORDER BY depth DESC,discovered_order DESC LIMIT 1""",
-            (exploration_id, task_id, int(attempt)),
-        ).fetchone()
-        if not node:
-            continuation = _queued_continuation(
-                conn, exploration_id, last_node["node_id"],
-            ) if last_node else None
-            paused = bool(last_node and row_json(
-                last_node, "observation_json", {},
-            ).get("pause_requested"))
-            if paused or processed_functions >= budget:
-                pending = conn.execute(
-                    "SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=? AND status='queued'",
-                    (exploration_id,),
-                ).fetchone()["n"]
-                if paused:
-                    reason = "pause_requested" if pending else "no_open_nodes"
-                else:
-                    reason = (
-                        "function_budget_reached_mid_path" if continuation
-                        else "function_budget_reached_at_path_boundary"
-                    )
-                return {
-                    "ok": True, "exploration_id": exploration_id, "work": None,
-                    "round_complete": True,
-                    "reason": reason,
-                    "continuation_saved": bool(continuation),
-                    "pending_nodes": pending,
-                    "processed_nodes": processed,
-                    "processed_functions": processed_functions,
-                    "round_function_budget": budget,
-                }
-            node = continuation
-            starting_new_path = False
-            if not node:
-                node = conn.execute(
-                    """SELECT * FROM exploration_nodes WHERE exploration_id=? AND status='queued'
-                       ORDER BY depth DESC,discovered_order DESC,node_id LIMIT 1""",
-                    (exploration_id,),
-                ).fetchone()
-                starting_new_path = bool(last_node and node)
-            if node:
-                conn.execute(
-                    """UPDATE exploration_nodes SET status='leased',lease_task_id=?,lease_attempt=?,updated_at=?
-                       WHERE node_id=?""",
-                    (task_id, int(attempt), now(), node["node_id"]),
-                )
-                node = conn.execute(
-                    "SELECT * FROM exploration_nodes WHERE node_id=?", (node["node_id"],)
-                ).fetchone()
-                conn.execute(
-                    "UPDATE component_explorations SET status='running',updated_at=? WHERE exploration_id=?",
-                    (now(), exploration_id),
-                )
-                append_event(conn, "exploration_node_leased", node["node_id"], {
-                    "task_id": task_id, "attempt": int(attempt),
-                })
-        if not node:
-            return {
-                "ok": True, "exploration_id": exploration_id, "work": None,
-                "round_complete": True, "reason": "no_open_nodes",
-                "processed_nodes": processed,
-                "processed_functions": processed_functions,
-                "round_function_budget": budget,
-            }
-        exploration = conn.execute(
-            "SELECT * FROM component_explorations WHERE exploration_id=?", (exploration_id,),
-        ).fetchone()
-        return {
-            "ok": True, "exploration_id": exploration_id,
-            "work": {
-                "node_id": node["node_id"], "work_type": node["work_type"],
-                "symbol": row_json(node, "symbol_json", {}),
-                "security_state": _normalize_state(row_json(node, "state_json", {})),
-                "resume_from": row_json(node, "resume_json", {}),
-                "path_context": _path_context(conn, node),
-            },
-            "entry_assessment": {
-                "entry_status": exploration["entry_status"],
-                "external_entry_status": exploration["external_entry_status"],
-                "confirmed_external_candidate_ids": row_json(exploration, "confirmed_candidates_json", []),
-                "component_summary": exploration["component_summary"],
-            },
-            "round_complete": False, "processed_nodes": processed,
-            "processed_functions": processed_functions,
-            "round_function_budget": budget,
-            "starting_new_path": starting_new_path,
-            "step_schema_file": str(SCHEMAS_DIR / STEP_SCHEMA),
-        }
-
-
-def _business_errors(step, node):
-    errors = []
-    if step.get("node_id") != node["node_id"]:
-        errors.append("node_id_mismatch")
-    if step.get("work_type") != node["work_type"]:
-        errors.append("work_type_mismatch")
-    assessment = step.get("entry_assessment", {})
-    if node["work_type"] == "entry_discovery":
-        if step.get("analyzed_symbols"):
-            errors.append("entry_discovery_cannot_inline_function_analysis")
-    if assessment:
-        if assessment.get("entry_status") == "excluded":
-            if assessment.get("external_entry_status") != "excluded":
-                errors.append("excluded_entry_requires_excluded_external_entry")
-            if step.get("successors") or step["resume"]:
-                errors.append("excluded_entry_cannot_have_successors")
-        if assessment.get("external_entry_status") == "confirmed":
-            if assessment.get("entry_status") != "confirmed":
-                errors.append("confirmed_external_entry_requires_confirmed_entry")
-            if not assessment.get("confirmed_external_candidate_ids"):
-                errors.append("confirmed_external_entry_requires_candidate")
-        elif assessment.get("confirmed_external_candidate_ids"):
-            errors.append("unconfirmed_external_entry_cannot_list_candidates")
-    observed = {
-        symbol for query in step.get("atlas_queries", [])
-        for symbol in query.get("target_symbols", [])
-    }
-    atlas_unresolved = {
-        symbol for query in step.get("atlas_queries", [])
-        for symbol in query.get("unresolved_targets", [])
-    }
-    analyzed = {
-        symbol.get("qualified_name") for symbol in step.get("analyzed_symbols", [])
-        if symbol.get("qualified_name")
-    }
-    decided = {
-        successor.get("symbol", {}).get("qualified_name")
-        for successor in step.get("successors", [])
-    }
-    if analyzed & decided:
-        errors.append("symbol_cannot_be_analyzed_and_successor:" + ",".join(sorted(analyzed & decided)))
-    covered = analyzed | decided
-    relations = step.get("resolved_relations", [])
-    resolved = {relation.get("target_symbol") for relation in relations}
-    if observed - covered:
-        errors.append("atlas_targets_without_decision:" + ",".join(sorted(observed - covered)))
-    if covered - resolved:
-        errors.append("targets_without_resolution:" + ",".join(sorted(covered - resolved)))
-    if resolved - covered:
-        errors.append("resolutions_without_target:" + ",".join(sorted(resolved - covered)))
-    relation_pairs = [
-        (relation.get("target_symbol"), relation.get("relation"))
-        for relation in relations
-    ]
-    duplicate_pairs = sorted({
-        f"{target}:{relation}" for target, relation in relation_pairs
-        if relation_pairs.count((target, relation)) > 1
-    })
-    if duplicate_pairs:
-        errors.append("duplicate_target_resolution:" + ",".join(duplicate_pairs))
-    for index, relation in enumerate(relations):
-        target = relation.get("target_symbol")
-        if relation.get("resolved_by") == "atlas_index" and target not in observed:
-            errors.append(f"resolved_relations[{index}]:atlas_target_not_observed:{target}")
-        if relation.get("resolved_by") == "source_evidence":
-            unresolved_ref = relation.get("unresolved_ref")
-            if unresolved_ref and unresolved_ref not in atlas_unresolved:
-                errors.append(
-                    f"resolved_relations[{index}]:unresolved_ref_not_reported:{unresolved_ref}"
-                )
-            locations = {
-                evidence.get("location") for evidence in relation.get("evidence", [])
-                if evidence.get("location")
-            }
-            if len(locations) < 2:
-                errors.append(
-                    f"resolved_relations[{index}]:source_resolution_requires_two_locations"
-                )
-    if len(analyzed) > STEP_SYMBOL_BUDGET:
-        errors.append(f"step_symbol_budget_exceeded:{len(analyzed)}>{STEP_SYMBOL_BUDGET}")
-    for index, successor in enumerate(step.get("successors", [])):
-        pair = (
-            successor.get("symbol", {}).get("qualified_name"),
-            successor.get("relation"),
-        )
-        if pair not in relation_pairs:
-            errors.append(f"successors[{index}]:relation_resolution_missing")
-        if (successor.get("relation") == "component_boundary"
-                and successor.get("stop_reason") != "component_boundary"):
-            errors.append(f"successors[{index}]:component_boundary_must_stop")
-    unresolved = step_coverage_gaps(step)
-    source_resolved = {
-        relation.get("unresolved_ref") for relation in relations
-        if relation.get("resolved_by") == "source_evidence"
-    }
-    unaccounted = atlas_unresolved - source_resolved - unresolved
-    if unaccounted:
-        errors.append("unresolved_query_requires_gap_or_source_resolution:" + ",".join(sorted(unaccounted)))
-    inherited = row_json(node, "state_json", {}).get("security_checks", [])
-    known_checks = {stable_id("CHECK", _check_reference(check)) for check in inherited}
-    declared_checks = list(step["security_checks"])
-    for owner in step["operation_groups"] + step["component_calls"]:
-        checks = owner.get("security_checks", [])
-        if isinstance(checks, list):
-            declared_checks.extend(check for check in checks if isinstance(check, dict))
-    known_checks.update(
-        stable_id("CHECK", _check_reference(check))
-        for check in declared_checks if check.get("location") and check.get("evidence")
-    )
-    for index, successor in enumerate(_step_successors(step, node)):
-        label = f"successors[{index}]" if index < len(step["successors"]) else "resume"
-        for check in successor["state"]["security_checks"]:
-            if stable_id("CHECK", _check_reference(check)) not in known_checks:
-                errors.append(f"{label}:security_check_not_evidenced:{check['location']}")
-    return errors
-
-
-def _apply_component_work_budget(conn, exploration_id, successors):
-    """Turn overflow frontier work into explicit gaps instead of unbounded continuation."""
-    used = conn.execute(
-        """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
-           AND status IN ('queued','leased','completed')""",
-        (exploration_id,),
-    ).fetchone()["n"]
-    remaining = max(0, MAX_COMPONENT_WORK_NODES - used)
-    truncated = []
-    normalized = []
-    for successor in successors:
-        successor = dict(successor)
-        if successor.get("stop_reason"):
-            normalized.append(successor)
-            continue
-        symbol = _normalize_symbol(successor["symbol"])
-        node_id, _, _ = _successor_identity(exploration_id, successor)
-        exists = conn.execute(
-            "SELECT 1 FROM exploration_nodes WHERE node_id=?", (node_id,),
-        ).fetchone()
-        if exists or remaining > 0:
-            normalized.append(successor)
-            if not exists:
-                remaining -= 1
-            continue
-        successor["stop_reason"] = "resource_limit"
-        normalized.append(successor)
-        truncated.append(symbol["qualified_name"])
-    return normalized, truncated
-
-
-def _insert_successor(conn, exploration_id, source, successor):
-    symbol = _normalize_symbol(successor["symbol"])
-    state = _normalize_state(successor["state"])
-    node_id, symbol_key, state_key = _successor_identity(exploration_id, successor)
-    existing = conn.execute(
-        "SELECT * FROM exploration_nodes WHERE node_id=?", (node_id,)
-    ).fetchone()
-    decision = "stop" if successor.get("stop_reason") else "follow"
-    stamp = now()
-    if not existing:
-        order = conn.execute(
-            "SELECT COALESCE(MAX(discovered_order),-1)+1 n FROM exploration_nodes WHERE exploration_id=?",
-            (exploration_id,),
-        ).fetchone()["n"]
-        status = "queued" if decision == "follow" else (
-            "gap" if successor.get("stop_reason") == "resource_limit" else "stopped"
-        )
-        conn.execute(
-            """INSERT INTO exploration_nodes
-               (node_id,exploration_id,parent_node_id,work_type,symbol_key,state_key,symbol_json,
-                state_json,resume_json,depth,discovered_order,status,stop_reason,observation_json,created_at,updated_at)
-               VALUES (?,?,?,'function_analysis',?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (node_id, exploration_id, source["node_id"], symbol_key, state_key,
-             canonical_json(symbol), canonical_json(state), canonical_json(successor.get("resume", {})),
-             source["depth"] + 1, order, status,
-             successor.get("stop_reason"), canonical_json({"terminal_successor": successor}), stamp, stamp),
-        )
-        created = True
-    else:
-        created = False
-        # Only an unexpanded boundary can be reopened by newly discovered work.
-        # Submitted analysis is always completed; runtime-limited work stays a gap.
-        if decision == "follow" and existing["status"] == "stopped":
+        exp_id = ensure_component_exploration(conn, task["subject_id"])
+        exp = conn.execute("SELECT * FROM component_explorations WHERE exploration_id=?", (exp_id,)).fetchone()
+        rows = work_rows(conn, exp_id)
+        for row in rows:
+            if row["status"] == "leased" and row["lease_attempt"] != int(attempt):
+                conn.execute("UPDATE exploration_work_items SET status='queued' WHERE work_id=?", (row["work_id"],))
+        rows = work_rows(conn, exp_id)
+        completed = [r for r in rows if r["round_no"] == exp["round_no"] + 1 and r["status"] == "completed"]
+        lines = sum(_line_count(row_json(r, "result_json", {})) for r in completed)
+        paused = any(row_json(r, "submission_json", {}).get("pause_requested") for r in completed)
+        node = next((r for r in rows if r["status"] == "leased"), None)
+        pending = [r for r in rows if r["status"] == "queued"]
+        closed = closed_work_ids(conn, exp_id)
+        eligible = [r for r in pending if set(row_json(r, "dependencies_json", [])) <= closed]
+        if not node and not (paused or lines >= int(budget)):
+            node = max(eligible, key=lambda r: (r["depth"], -r["discovered_order"]), default=None)
+        if node:
             conn.execute(
-                "UPDATE exploration_nodes SET status='queued',stop_reason=NULL,updated_at=? WHERE node_id=?",
-                (stamp, node_id),
+                """UPDATE exploration_work_items SET status='leased',lease_task_id=?,lease_attempt=?,
+                   round_no=?,updated_at=? WHERE work_id=?""",
+                (task_id, int(attempt), exp["round_no"] + 1, now(), node["work_id"]),
             )
-    identity = canonical_json([
-        exploration_id, source["node_id"], node_id, successor["relation"],
-        normalize_text(successor["condition"]), decision,
-    ])
-    edge_id = stable_id("XEDGE", identity)
-    conn.execute(
-        """INSERT OR IGNORE INTO exploration_edges
-           (edge_id,identity_key,exploration_id,source_node_id,target_node_id,relation,decision,
-            condition,payload_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (edge_id, identity, exploration_id, source["node_id"], node_id,
-         successor["relation"], decision, successor["condition"], canonical_json(successor), stamp),
-    )
-    return node_id, created
+            conn.execute("UPDATE component_explorations SET status='running' WHERE exploration_id=?", (exp_id,))
+            context = work_context(conn, exp_id, node["work_id"])
+            return {"ok": True, "round_complete": False, "work": context,
+                    "entry_assessment": {k: exp[k] for k in ("entry_status", "external_entry_status", "component_summary")} |
+                    {"confirmed_external_candidate_ids": row_json(exp, "confirmed_candidates_json", [])},
+                    "processed_lines": lines, "round_line_budget": int(budget),
+                    "component_work_budget": MAX_COMPONENT_ANALYZED_LINES,
+                    "step_schema_file": str(SCHEMAS_DIR / STEP_SCHEMA)}
+        blocked = bool(pending and not eligible and not (paused or lines >= int(budget)))
+        return {"ok": not blocked, "round_complete": True, "work": None,
+                "reason": "dependency_blocked" if blocked else
+                ("pause_requested" if paused else "line_budget_reached" if lines >= int(budget) else "no_open_work"),
+                "pending_work": len(pending), "processed_lines": lines,
+                "round_line_budget": int(budget)}
+
+
+def _located(evidence):
+    return any(e.get("location") or e.get("content_ref") for e in evidence)
+
+
+def _span_covered(scope, spans):
+    cursor = scope["start"]
+    for span in sorted(spans, key=lambda s: (s["start"], s["end"])):
+        if span["start"] > cursor:
+            return False
+        cursor = max(cursor, span["end"] + 1)
+    return cursor > scope["end"]
+
+
+def _validate_step(conn, task, row, step):
+    errors = []
+    scope = row_json(row, "scope_json", {})
+    is_entry = scope["kind"] == "entry"
+    ranges = step["ranges"]
+    refs = [r["ref"] for r in ranges]
+    if len(set(refs)) != len(refs) or "$current" in refs:
+        errors.append("range_refs_must_be_unique")
+    known = {r["work_id"]: r for r in work_rows(conn, row["exploration_id"])}
+    if set(refs) & known.keys():
+        errors.append("local_range_ref_conflicts_with_existing_work")
+    endpoints = {"$current", *refs, *known}
+    closed = closed_work_ids(conn, row["exploration_id"])
+    scopes = {"$current": scope, **{r["ref"]: r["scope"] for r in ranges}}
+    results = {"$current": step["result"], **{r["ref"]: r["result"] for r in ranges}}
+    outgoing = {}
+    for edge in step["transitions"]:
+        if edge["from"] not in {"$current", *refs} or edge["to"] not in endpoints:
+            errors.append("transition_reference_unknown")
+        outgoing.setdefault(edge["from"], []).append(edge)
+        if not _located(edge["evidence"]):
+            errors.append("transition_requires_located_evidence")
+        if edge["relation"] == "reuse" and edge["to"] not in closed:
+            errors.append("reuse_requires_closed_existing_work")
+        if edge["from"] == edge["to"] and edge["relation"] not in {"reuse", "loop"}:
+            errors.append("self_transition_requires_proven_reuse")
+    reached = {"$current"}
+    for _ in range(len(refs) + 1):
+        reached |= {e["to"] for e in step["transitions"] if e["from"] in reached}
+    if set(refs) - reached:
+        errors.append("ranges_without_incoming_transition")
+    for item in ranges:
+        if not set(item["wait_for"]) <= endpoints - {"$current", item["ref"]}:
+            errors.append(f"invalid_dependencies:{item['ref']}")
+        if item["scope"]["end"] < item["scope"]["start"] or not item["scope"]["symbol"].get("file_path"):
+            errors.append(f"invalid_scope:{item['ref']}")
+        if item["result"] and item["wait_for"]:
+            errors.append("inline_result_cannot_wait_for_unfinished_work")
+    for ref, result in results.items():
+        if result is None:
+            continue
+        here = scopes[ref]
+        edges = outgoing.get(ref, [])
+        for span in result["checked"]:
+            if span["end"] < span["start"] or span["start"] < here["start"] or span["end"] > here["end"]:
+                errors.append(f"checked_span_outside_scope:{ref}")
+        if here["kind"] != "entry":
+            delegated = [scopes[e["to"]] for e in edges if e["to"] in scopes
+                         and scopes[e["to"]]["symbol"] == here["symbol"]
+                         and scopes[e["to"]]["start"] >= here["start"]
+                         and scopes[e["to"]]["end"] <= here["end"]]
+            if not _span_covered(here, result["checked"] + delegated) and not result["gaps"]:
+                errors.append(f"unexamined_scope_requires_work_or_gap:{ref}")
+        term = result["termination"]
+        if term and not _located(term["evidence"]):
+            errors.append(f"termination_requires_located_evidence:{ref}")
+        if term and term["kind"] in {"return", "throw"} and any(e["relation"] == "sequence" for e in edges):
+            errors.append(f"exit_cannot_fall_through:{ref}")
+        if here["kind"] == "choice" and len([e for e in edges if e["relation"] == "branch"]) < 2:
+            errors.append(f"choice_requires_all_exits:{ref}")
+        if any(e["relation"] == "call" for e in edges) and not (
+                any(e["relation"] in {"return", "exception"} for e in edges)
+                or (term and term["kind"] in {"return", "throw"})):
+            errors.append(f"call_requires_caller_continuation:{ref}")
+        if term and term["kind"] in {"component_boundary", "platform_boundary", "third_party_boundary"}:
+            callers = [e["from"] for e in step["transitions"] if e["to"] == ref and e["relation"] == "call"]
+            continuation = any(e["relation"] in {"return", "exception"} for e in edges)
+            continuation |= any(any(e["relation"] in {"return", "exception"} for e in outgoing.get(caller, []))
+                                for caller in callers)
+            if ref == "$current":
+                continuation |= conn.execute(
+                    """SELECT 1 FROM exploration_edges incoming
+                       JOIN exploration_edges followup
+                         ON followup.source_work_id=incoming.source_work_id
+                        AND followup.exploration_id=incoming.exploration_id
+                       WHERE incoming.exploration_id=? AND incoming.target_work_id=?
+                         AND incoming.relation='call'
+                         AND followup.relation IN ('return','exception') LIMIT 1""",
+                    (row["exploration_id"], row["work_id"]),
+                ).fetchone() is not None
+            if not continuation:
+                errors.append(f"boundary_requires_caller_continuation:{ref}")
+        if not edges and not term and not result["gaps"] and here["kind"] != "entry":
+            errors.append(f"range_requires_exit_or_continuation:{ref}")
+        for gap in result["gaps"]:
+            if not _located(gap["evidence"]):
+                errors.append("gap_requires_located_evidence")
+    assessment = step.get("entry_assessment")
+    if is_entry and not assessment:
+        errors.append("entry_assessment_required")
+    if assessment:
+        if not is_entry and not _located(assessment.get("evidence", [])):
+            errors.append("entry_update_requires_evidence")
+        if assessment["entry_status"] == "excluded" and (
+                assessment["external_entry_status"] != "excluded" or ranges):
+            errors.append("excluded_entry_cannot_have_work")
+        if assessment["external_entry_status"] == "confirmed":
+            if assessment["entry_status"] != "confirmed" or not assessment["confirmed_external_candidate_ids"]:
+                errors.append("confirmed_external_entry_requires_candidate")
+        elif assessment["confirmed_external_candidate_ids"]:
+            errors.append("unconfirmed_external_entry_cannot_list_candidates")
+        if is_entry and assessment["entry_status"] == "confirmed" and not ranges:
+            errors.append("confirmed_entry_requires_ranges")
+        if assessment["entry_status"] == "excluded" and any(
+                row_json(r, "result_json", {}).get(key)
+                for r in known.values() for key in ("operation_groups", "component_calls")):
+            errors.append("excluded_entry_conflicts_with_recorded_operations")
+    # State references must resolve to retained or newly declared source facts.
+    checks = list(row_json(row, "state_json", {}).get("security_checks", []))
+    for prior in known.values():
+        checks.extend(row_json(prior, "result_json", {}).get("security_checks", []))
+    for result in results.values():
+        if result:
+            checks.extend(result["security_checks"])
+            for owner in result["operation_groups"] + result["component_calls"]:
+                checks.extend(owner.get("security_checks", []))
+    def check_key(check):
+        return canonical_json({k: check.get(k) for k in ("location", "subject_kind", "validated_property")})
+    check_keys = {check_key(c) for c in checks}
+    for item in ranges:
+        if any(check_key(c) not in check_keys for c in item["state"]["security_checks"]):
+            errors.append(f"security_check_not_evidenced:{item['ref']}")
+    # Reuse is exact-context only; branches may share code structure but not analysis.
+    for edge in step["transitions"]:
+        if edge["relation"] == "reuse" and edge["to"] in known:
+            source = next((r for r in ranges if r["ref"] == edge["from"]), None)
+            state = source["state"] if source else row_json(row, "state_json", {})
+            conditions = source["conditions"] if source else row_json(row, "conditions_json", [])
+            target = known[edge["to"]]
+            if (_normalize_state(state) != row_json(target, "state_json", {})
+                    or sorted(set(conditions)) != row_json(target, "conditions_json", [])):
+                errors.append("reuse_context_mismatch")
+        if edge["relation"] == "loop":
+            local = {r["ref"]: r for r in ranges}
+            def edge_context(ref):
+                if ref in local:
+                    return _normalize_state(local[ref]["state"]), sorted(set(local[ref]["conditions"]))
+                target = row if ref == "$current" else known.get(ref)
+                return (row_json(target, "state_json", {}), row_json(target, "conditions_json", [])) if target else None
+            if edge_context(edge["from"]) != edge_context(edge["to"]):
+                errors.append("loop_requires_same_relevant_state")
+    if not errors:
+        from .semantic_results import validate_exploration_step_semantics
+        for ref, result in results.items():
+            if result is not None:
+                errors.extend(validate_exploration_step_semantics(conn, task, scopes[ref], step.get("entry_assessment"), result))
+    return errors
 
 
 def record_exploration_step(run_dir, task_id, attempt, input_path):
     step = read_json(input_path)
     if not isinstance(step, dict):
         return {"ok": True, "accepted": False, "errors": ["invalid_step_json"]}
-    errors = _schema_errors(STEP_SCHEMA, step)
+    errors = [f"schema:{e.json_path}:{e.message}" for e in _validator().iter_errors(step)]
     if errors:
-        return {"ok": True, "accepted": False, "errors": errors}
+        return {"ok": True, "accepted": False, "errors": sorted(errors)}
     paths = run_paths(run_dir)
     with database(paths["db"]) as conn, transaction(conn):
         task = _task(conn, task_id, attempt)
-        exploration_id = ensure_component_exploration(conn, task["subject_id"])
-        exploration = conn.execute(
-            "SELECT * FROM component_explorations WHERE exploration_id=?", (exploration_id,)
-        ).fetchone()
-        node = conn.execute(
-            "SELECT * FROM exploration_nodes WHERE node_id=? AND exploration_id=?",
-            (step["node_id"], exploration_id),
-        ).fetchone()
-        if not node:
-            raise ValueError("exploration_node_not_found")
-        if node["status"] == "completed":
-            if row_json(node, "observation_json", {}) == step:
-                return {
-                    "ok": True, "accepted": True, "idempotent": True,
-                    "node_id": node["node_id"], "node_status": node["status"],
-                    "pause_requested": step["pause_requested"],
-                }
-            raise ValueError("exploration_node_already_recorded")
-        if not (
-            node["status"] == "leased" and node["lease_task_id"] == task_id
-            and node["lease_attempt"] == int(attempt)
-        ):
-            raise ValueError("exploration_node_not_leased_by_task")
-        errors = _business_errors(step, node)
-        successors = _step_successors(step, node)
-        if step["resume"]:
-            resume_id, _, _ = _successor_identity(exploration_id, successors[-1])
-            existing = conn.execute(
-                "SELECT status FROM exploration_nodes WHERE node_id=?", (resume_id,),
-            ).fetchone()
-            if existing and existing["status"] != "queued":
-                errors.append("resume_position_already_processed:save_the_next_unexamined_position")
-        if step.get("entry_assessment", {}).get("entry_status") == "excluded":
-            previous = conn.execute(
-                "SELECT observation_json FROM exploration_nodes WHERE exploration_id=?", (exploration_id,),
-            ).fetchall()
-            if any(row_json(row, "observation_json", {}).get(key)
-                   for row in previous for key in ("operation_groups", "component_calls")):
-                errors.append("excluded_entry_conflicts_with_recorded_semantic_outputs")
-        if not errors:
-            errors.extend(validate_exploration_step_semantics(
-                conn, task, node, exploration, step,
-            ))
+        exp_id = ensure_component_exploration(conn, task["subject_id"])
+        rows = {r["work_id"]: r for r in work_rows(conn, exp_id)}
+        row = rows.get(step["work_id"])
+        if not row:
+            raise ValueError("exploration_work_not_found")
+        if row["status"] == "completed":
+            if row_json(row, "submission_json", {}) == step:
+                return {"ok": True, "accepted": True, "idempotent": True, "work_id": row["work_id"]}
+            raise ValueError("exploration_work_already_recorded")
+        if row["status"] != "leased" or row["lease_task_id"] != task_id or row["lease_attempt"] != int(attempt):
+            raise ValueError("exploration_work_not_leased_by_task")
+        errors = _validate_step(conn, task, row, step)
         if errors:
             return {"ok": True, "accepted": False, "errors": errors}
-        successors, truncated = _apply_component_work_budget(
-            conn, exploration_id, successors,
+        refs = {"$current": row["work_id"], **{key: key for key in rows}}
+        identities = set()
+        local = {item["ref"]: item for item in step["ranges"]}
+        try:
+            order = list(TopologicalSorter({key: item["wait_for"] for key, item in local.items()}).static_order())
+        except CycleError:
+            return {"ok": True, "accepted": False, "errors": ["dependency_cycle"]}
+        for key in order:
+            if key not in local:
+                continue
+            item = local[key]
+            dependencies = [refs[dependency] for dependency in item["wait_for"]]
+            _, identity = _identity(exp_id, item["scope"], item["state"], item["conditions"], dependencies)
+            if identity in identities:
+                return {"ok": True, "accepted": False, "errors": ["duplicate_range_use_one_ref"]}
+            identities.add(identity)
+            if identity == row["work_id"]:
+                return {"ok": True, "accepted": False, "errors": ["new_range_must_advance_or_use_existing_reference"]}
+            if identity in rows and item["result"] and row_json(rows[identity], "result_json", {}) != item["result"]:
+                return {"ok": True, "accepted": False, "errors": ["existing_range_result_conflict"]}
+            refs[item["ref"]] = identity
+        # Include coverage descendants when checking waiting dependencies.
+        deps = {key: set(row_json(value, "dependencies_json", [])) for key, value in rows.items()}
+        for item in step["ranges"]:
+            deps[refs[item["ref"]]] = {refs[x] for x in item["wait_for"]}
+        graph = {key: set(value) for key, value in deps.items()}
+        for edge in conn.execute("SELECT * FROM exploration_edges WHERE exploration_id=?", (exp_id,)):
+            if edge["relation"] not in {"reuse", "loop"}:
+                graph.setdefault(edge["source_work_id"], set()).add(edge["target_work_id"])
+        for edge in step["transitions"]:
+            if edge["relation"] not in {"reuse", "loop"}:
+                graph.setdefault(refs[edge["from"]], set()).add(refs[edge["to"]])
+        try:
+            TopologicalSorter(graph).prepare()
+        except CycleError:
+            return {"ok": True, "accepted": False, "errors": ["dependency_cycle"]}
+        for item in step["ranges"]:
+            work_id = _insert_work(conn, exp_id, item["scope"], item["state"],
+                                   item["conditions"], row["depth"] + 1, item["result"],
+                                   deps[refs[item["ref"]]])
+            if item["result"] and work_id not in rows:
+                conn.execute("UPDATE exploration_work_items SET round_no=? WHERE work_id=?", (row["round_no"], work_id))
+        for edge in step["transitions"]:
+            source, target = refs[edge["from"]], refs[edge["to"]]
+            identity = [exp_id, source, target, edge["relation"], edge["condition"]]
+            conn.execute("INSERT OR IGNORE INTO exploration_edges VALUES (?,?,?,?,?,?,?,?)",
+                         (stable_id("XEDGE", identity), exp_id, source, target, edge["relation"],
+                          edge["condition"], canonical_json(edge["evidence"]), now()))
+        conn.execute(
+            """UPDATE exploration_work_items SET status='completed',result_json=?,submission_json=?,
+               updated_at=? WHERE work_id=?""",
+            (canonical_json(step["result"]), canonical_json(step), now(), row["work_id"]),
         )
         assessment = step.get("entry_assessment")
         if assessment:
             conn.execute(
                 """UPDATE component_explorations SET entry_status=?,external_entry_status=?,
-                   confirmed_candidates_json=?,component_summary=?,status='running',updated_at=?
-                   WHERE exploration_id=?""",
+                   confirmed_candidates_json=?,component_summary=?,updated_at=? WHERE exploration_id=?""",
                 (assessment["entry_status"], assessment["external_entry_status"],
                  canonical_json(assessment["confirmed_external_candidate_ids"]),
-                 assessment["component_summary"], now(), exploration_id),
+                 assessment["component_summary"], now(), exp_id),
             )
-        created = 0
-        successor_ids = []
-        for successor in successors:
-            successor_id, was_created = _insert_successor(conn, exploration_id, node, successor)
-            successor_ids.append(successor_id)
-            created += int(was_created)
-        conn.execute(
-            """UPDATE exploration_nodes SET status='completed',stop_reason=?,observation_json=?,updated_at=?
-               WHERE node_id=?""",
-            (step.get("stop_reason"), canonical_json(step), now(), node["node_id"]),
-        )
-        append_event(conn, "exploration_node_recorded", node["node_id"], {
-            "task_id": task_id, "attempt": int(attempt), "node_status": "completed",
-            "pause_requested": step["pause_requested"],
-            "successors": len(successor_ids), "created_successors": created,
-        })
-        return {
-            "ok": True, "accepted": True, "idempotent": False,
-            "node_id": node["node_id"], "node_status": "completed",
-            "pause_requested": step["pause_requested"],
-            "successor_ids": successor_ids, "created_successors": created,
-            "budget_truncated": truncated,
-        }
+        append_event(conn, "exploration_work_recorded", row["work_id"],
+                     {"task_id": task_id, "ranges": len(step["ranges"]), "pause_requested": step["pause_requested"]})
+        return {"ok": True, "accepted": True, "work_id": row["work_id"], "range_refs": refs,
+                "work_status": "completed", "scope_complete": row["work_id"] in closed_work_ids(conn, exp_id)}
 
 
 def finish_exploration_round(run_dir, task_id, attempt):
-    """Atomically continue the exploration or commit its final semantic result."""
     from .semantic_results import build_exploration_semantic_result, materialize_semantic_result
-
     paths = run_paths(run_dir)
     result_ref = None
+    summary = {}
     try:
         with database(paths["db"]) as conn, transaction(conn):
             task = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-            if not task:
-                raise ValueError("task_not_found")
-            if task["status"] == "completed" and task["attempts"] == int(attempt):
-                return {
-                    "ok": True, "accepted": True, "task_id": task_id,
-                    "task_status": "completed", "result_ref": task["result_ref"],
-                    "continuation": False, "idempotent": True,
-                }
+            if task and task["status"] == "completed" and task["attempts"] == int(attempt):
+                return {"ok": True, "accepted": True, "task_status": "completed",
+                        "task_id": task_id, "result_ref": task["result_ref"], "idempotent": True}
             task = _task(conn, task_id, attempt)
-            exploration_id = ensure_component_exploration(conn, task["subject_id"])
-            leased = conn.execute(
-                """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=? AND status='leased'
-                   AND lease_task_id=? AND lease_attempt=?""",
-                (exploration_id, task_id, int(attempt)),
-            ).fetchone()["n"]
-            if leased:
-                return {
-                    "ok": True, "accepted": False, "task_id": task_id,
-                    "task_status": "running", "errors": [f"leased_nodes_must_be_recorded:{leased}"],
-                }
-            processed_nodes = conn.execute(
-                """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
-                   AND lease_task_id=? AND lease_attempt=?
-                   AND status='completed'""",
-                (exploration_id, task_id, int(attempt)),
-            ).fetchone()["n"]
-            open_nodes = conn.execute(
-                """SELECT COUNT(*) n FROM exploration_nodes WHERE exploration_id=?
-                   AND status IN ('queued','leased')""", (exploration_id,),
-            ).fetchone()["n"]
-            gap_rows = conn.execute(
-                """SELECT status,stop_reason,observation_json FROM exploration_nodes
-                   WHERE exploration_id=?""", (exploration_id,),
-            ).fetchall()
-            has_gaps = any(
-                row["status"] == "gap"
-                or bool(step_coverage_gaps(row_json(row, "observation_json", {})))
-                for row in gap_rows
-            )
-            exploration = conn.execute(
-                "SELECT * FROM component_explorations WHERE exploration_id=?", (exploration_id,)
-            ).fetchone()
-            next_round_no = exploration["round_no"] + 1
-            if open_nodes and next_round_no >= MAX_COMPONENT_ROUNDS:
-                conn.execute(
-                    """UPDATE exploration_nodes SET status='gap',stop_reason='resource_limit',updated_at=?
-                       WHERE exploration_id=? AND status='queued'""", (now(), exploration_id),
-                )
-                open_nodes = 0
-                has_gaps = True
-            if open_nodes:
-                exploration_status = "running"
-            elif (has_gaps or exploration["entry_status"] == "uncertain"
-                  or exploration["external_entry_status"] == "uncertain"):
-                exploration_status = "partial"
-            else:
-                exploration_status = "complete"
-            round_no = next_round_no
-            conn.execute(
-                """UPDATE component_explorations SET status=?,round_no=?,updated_at=?
-                   WHERE exploration_id=?""",
-                (exploration_status, round_no, now(), exploration_id),
-            )
-            if open_nodes:
-                # A successful round gets a fresh retry budget. Detach its terminal
-                # nodes so they are not counted against the next round's work budget.
-                conn.execute(
-                    """UPDATE exploration_nodes SET lease_task_id=NULL,lease_attempt=NULL,updated_at=?
-                       WHERE exploration_id=? AND lease_task_id=? AND lease_attempt=?
-                       AND status='completed'""",
-                    (now(), exploration_id, task_id, int(attempt)),
-                )
-                conn.execute(
-                    """UPDATE tasks SET status='queued',attempts=0,error=NULL,result_ref=NULL,updated_at=?
-                       WHERE task_id=?""", (now(), task_id),
-                )
-                summary = {
-                    "entry_id": task["subject_id"], "exploration_status": exploration_status,
-                    "round_no": round_no, "open_nodes": open_nodes,
-                    "processed_nodes": processed_nodes, "continuation": True,
-                }
-                append_event(conn, "exploration_round_continued", task_id, summary)
+            exp_id = ensure_component_exploration(conn, task["subject_id"])
+            rows = work_rows(conn, exp_id)
+            if any(r["status"] == "leased" for r in rows):
+                return {"ok": True, "accepted": False, "errors": ["leased_work_must_be_recorded"]}
+            pending = [r for r in rows if r["status"] == "queued"]
+            closed = closed_work_ids(conn, exp_id)
+            if pending and not any(set(row_json(r, "dependencies_json", [])) <= closed for r in pending):
+                return {"ok": True, "accepted": False, "errors": ["dependency_blocked"]}
+            lines = sum(_line_count(row_json(r, "result_json", {})) for r in rows)
+            if pending and lines >= MAX_COMPONENT_ANALYZED_LINES:
+                for row in pending:
+                    scope = row_json(row, "scope_json", {})
+                    result = {"summary": "组件总工作量保护截断", "checked": [], "termination": None,
+                              "facts": [], "security_checks": [], "operation_groups": [], "component_calls": [],
+                              "gaps": [{"target": f"{scope['symbol']['file_path']}:{scope['start']}-{scope['end']}",
+                                        "reason": "已达到组件分析行数预算，范围尚未分析", "evidence": []}]}
+                    conn.execute("UPDATE exploration_work_items SET status='completed',result_json=? WHERE work_id=?",
+                                 (canonical_json(result), row["work_id"]))
+                pending = []
+                rows = work_rows(conn, exp_id)
+            exp = conn.execute("SELECT * FROM component_explorations WHERE exploration_id=?", (exp_id,)).fetchone()
+            has_gap = any(row_json(r, "result_json", {}).get("gaps") for r in rows)
+            status = "running" if pending else (
+                "partial" if has_gap or exp["entry_status"] == "uncertain"
+                or exp["external_entry_status"] == "uncertain" else "complete")
+            if not pending and len(closed_work_ids(conn, exp_id)) != len(rows):
+                return {"ok": True, "accepted": False, "errors": ["coverage_graph_not_closed"]}
+            conn.execute("UPDATE component_explorations SET status=?,round_no=round_no+1,updated_at=? WHERE exploration_id=?",
+                         (status, now(), exp_id))
+            if pending:
+                conn.execute("UPDATE tasks SET status='queued',attempts=0,error=NULL WHERE task_id=?", (task_id,))
                 final_status = "queued"
             else:
                 result = build_exploration_semantic_result(conn, task)
                 summary = materialize_semantic_result(conn, task, result)
-                summary.update({
-                    "exploration_status": exploration_status,
-                    "round_no": round_no, "open_nodes": 0,
-                    "processed_nodes": processed_nodes, "continuation": False,
-                })
                 result_ref = paths["tasks"] / f"{task_id}.result.json"
                 write_json(result_ref, result)
-                conn.execute(
-                    """UPDATE tasks SET status='completed',result_ref=?,error=NULL,updated_at=?
-                       WHERE task_id=?""", (str(result_ref), now(), task_id),
-                )
-                append_event(conn, "task_completed", task_id, summary)
+                conn.execute("UPDATE tasks SET status='completed',result_ref=?,updated_at=? WHERE task_id=?",
+                             (str(result_ref), now(), task_id))
                 final_status = "completed"
+            append_event(conn, "exploration_round_finished", task_id,
+                         {"status": final_status, "pending_work": len(pending), "coverage": status})
     except Exception:
         if result_ref:
             Path(result_ref).unlink(missing_ok=True)
         raise
     from .reporting import refresh_live_report
-    return {
-        "ok": True, "accepted": True, "task_id": task_id,
-        "task_status": final_status, "result_ref": str(result_ref) if result_ref else None,
-        "live_report": refresh_live_report(run_dir), "idempotent": False, **summary,
-    }
+    return {"ok": True, "accepted": True, "task_id": task_id, "task_status": final_status,
+            "exploration_status": status, "result_ref": str(result_ref) if result_ref else None,
+            "live_report": refresh_live_report(run_dir), "continuation": bool(pending), **summary}

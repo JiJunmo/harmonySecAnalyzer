@@ -1,139 +1,52 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": [
-    "node_id",
-    "work_type",
-    "pause_requested",
-    "resume",
-    "summary",
-    "atlas_queries",
-    "resolved_relations",
-    "analyzed_symbols",
-    "facts",
-    "security_checks",
-    "operation_groups",
-    "component_calls",
-    "successors",
-    "gaps"
-  ],
+  "required": ["work_id","pause_requested","result","ranges","transitions"],
   "properties": {
-    "node_id": {"type": "string", "minLength": 1},
-    "work_type": {"enum": ["entry_discovery", "function_analysis"]},
-    "pause_requested": {
-      "type": "boolean",
-      "description": "Request a fresh context after saving this segment. Not a coverage or node status. Known unfinished targets must already be saved in successors; the runtime continues any queued work next round."
-    },
-    "resume": {
-      "description": "Unfinished work inside the current function, not a call or a gap. Save its exact source position, remaining work and security state. null means this segment has no unfinished local work beyond the declared successors/gaps.",
-      "oneOf": [
-        {"type": "null"},
-        {
-          "type": "object",
-          "required": ["location", "remaining_work", "state"],
-          "properties": {
-            "location": {"type": "string", "minLength": 1, "description": "Source-relative file:line[:column] of the next unexamined statement or branch. Do not change the function symbol's declaration location."},
-            "remaining_work": {"type": "string", "minLength": 1, "description": "What has been checked and which statements/branches remain. Must let the next round resume without restarting the function."},
-            "state": {"$ref": "#/$defs/securityState"}
-          },
-          "additionalProperties": false
-        }
-      ]
-    },
-    "summary": {"type": "string", "minLength": 1},
-    "stop_reason": {
-      "type": ["string", "null"],
-      "enum": [
-        null,
-        "return_or_throw",
-        "component_boundary",
-        "platform_boundary",
-        "third_party_boundary",
-        "security_influence_ended"
-      ],
-      "description": "Optional explanation of the current segment's normal terminal boundary. Does not control node/task status or stop other successors. Analysis failures belong only in gaps."
-    },
-    "entry_assessment": {"$ref": "#/$defs/entryAssessment"},
-    "atlas_queries": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/atlasQuery"}
-    },
-    "resolved_relations": {
-      "type": "array",
-      "description": "Call/data relations accepted for this step, proven by Atlas or bounded source inspection.",
-      "items": {"$ref": "#/$defs/resolvedRelation"},
-      "uniqueItems": true
-    },
-    "analyzed_symbols": {
-      "type": "array",
-      "description": "Ordinary call targets fully analyzed inside this step; they do not become persisted frontier nodes.",
-      "items": {"$ref": "#/$defs/symbol"},
-      "maxItems": 8,
-      "uniqueItems": true
-    },
-    "facts": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/fact"}
-    },
-    "security_checks": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/securityCheck"}
-    },
-    "operation_groups": {
-      "type": "array",
-      "items": {"type": "object"}
-    },
-    "component_calls": {
-      "type": "array",
-      "items": {"type": "object"}
-    },
-    "successors": {
-      "type": "array",
-      "description": "Known targets: stop_reason=null means unfinished work to queue; a normal boundary reason means do not expand. No separate decision/status field. Unknown targets belong in gaps.",
-      "items": {"$ref": "#/$defs/successor"},
-      "maxItems": 32
-    },
-    "gaps": {
-      "type": "array",
-      "description": "The only place to declare final analysis failures after bounded source inspection. An Atlas miss alone is not a gap. A complete source-proven target set continues without a gap; a partially proven set continues proven targets and records the unresolved remainder here; no proven target records only the exact evidenced gap. Unexamined work belongs in successors.",
-      "items": {"$ref": "#/$defs/gap"},
-      "uniqueItems": true
-    }
+    "work_id": {"type":"string","minLength":1},
+    "pause_requested": {"type":"boolean"},
+    "result": {"$ref":"#/$defs/result"},
+    "ranges": {"type":"array","items":{"$ref":"#/$defs/range"}},
+    "transitions": {"type":"array","items":{"$ref":"#/$defs/transition"}},
+    "entry_assessment": {"$ref":"#/$defs/entryAssessment"}
   },
-  "allOf": [
-    {
-      "if": {"properties": {"work_type": {"const": "entry_discovery"}}},
-      "then": {"required": ["entry_assessment"], "properties": {"resume": {"type": "null"}}},
-      "else": {"properties": {"entry_assessment": {"required": ["evidence"]}}}
-    }
-  ],
+  "additionalProperties": false,
   "$defs": {
     "evidence": {
       "type": "object",
-      "required": ["kind", "source", "summary"],
+      "required": ["kind","source","summary"],
       "properties": {
-        "kind": {"type": "string", "minLength": 1},
-        "source": {"type": "string", "minLength": 1},
-        "summary": {"type": "string", "minLength": 1},
-        "location": {"type": ["string", "null"]},
-        "content_ref": {"type": ["string", "null"]},
-        "sha256": {"type": ["string", "null"]}
+        "kind": {"type":"string","minLength":1},
+        "source": {"type":"string","minLength":1},
+        "summary": {"type":"string","minLength":1},
+        "location": {"type":["string","null"]},
+        "content_ref": {"type":["string","null"]},
+        "sha256": {"type":["string","null"]}
       },
       "additionalProperties": false
     },
     "gap": {
       "type": "object",
-      "required": ["target", "reason", "evidence"],
+      "required": ["target","reason","evidence"],
       "properties": {
-        "target": {"type": "string", "minLength": 1, "description": "Exact unresolved expression from Atlas, or a source-located target when source inspection fails."},
-        "reason": {"type": "string", "minLength": 1, "description": "Which anchored call and binding/dispatch source locations were inspected and why they still did not resolve the target. Atlas failure or capacity limits alone are not source failures."},
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact unresolved expression from Atlas, or a source-located target when source inspection fails."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Which anchored call and binding/dispatch source locations were inspected and why they still did not resolve the target. Atlas failure or capacity limits alone are not source failures."
+        },
         "evidence": {
-          "type": "array", "minItems": 1,
-          "items": {"$ref": "#/$defs/evidence"},
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref":"#/$defs/evidence"},
           "contains": {
             "anyOf": [
-              {"required": ["location"], "properties": {"location": {"type": "string", "minLength": 1}}},
-              {"required": ["content_ref"], "properties": {"content_ref": {"type": "string", "minLength": 1}}}
+              {"required":["location"],"properties":{"location":{"type":"string","minLength":1}}},
+              {"required":["content_ref"],"properties":{"content_ref":{"type":"string","minLength":1}}}
             ]
           }
         }
@@ -142,161 +55,62 @@
     },
     "entryAssessment": {
       "type": "object",
-      "required": [
-        "entry_status",
-        "external_entry_status",
-        "confirmed_external_candidate_ids",
-        "component_summary"
-      ],
+      "required": ["entry_status","external_entry_status","confirmed_external_candidate_ids","component_summary"],
       "properties": {
         "entry_status": {
-          "enum": ["confirmed", "excluded", "uncertain"],
+          "enum": ["confirmed","excluded","uncertain"],
           "description": "confirmed: a real executable component input exists, including internal input; excluded: evidence rules out all candidates; uncertain: evidence is insufficient. Not a vulnerability verdict."
         },
         "external_entry_status": {
-          "enum": ["confirmed", "excluded", "uncertain"],
+          "enum": ["confirmed","excluded","uncertain"],
           "description": "Whether non-component_scope candidates establish a real external input: proven, ruled out, or not established. An internal-only component can be confirmed/excluded across the two entry fields."
         },
-        "confirmed_external_candidate_ids": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1},
-          "uniqueItems": true
-        },
-        "component_summary": {"type": "string", "minLength": 1},
+        "confirmed_external_candidate_ids": {"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true},
+        "component_summary": {"type":"string","minLength":1},
         "evidence": {
-          "type": "array", "minItems": 1,
+          "type": "array",
+          "minItems": 1,
           "description": "New source evidence supporting the updated component-wide assessment; required for updates after entry discovery.",
-          "items": {"$ref": "#/$defs/evidence"},
+          "items": {"$ref":"#/$defs/evidence"},
           "contains": {
             "anyOf": [
-              {"required": ["location"], "properties": {"location": {"type": "string", "minLength": 1}}},
-              {"required": ["content_ref"], "properties": {"content_ref": {"type": "string", "minLength": 1}}}
+              {"required":["location"],"properties":{"location":{"type":"string","minLength":1}}},
+              {"required":["content_ref"],"properties":{"content_ref":{"type":"string","minLength":1}}}
             ]
           }
         }
       },
       "additionalProperties": false
     },
-    "atlasQuery": {
-      "type": "object",
-      "required": ["tool", "source_symbol", "target_symbols", "unresolved_targets"],
-      "properties": {
-        "tool": {"enum": ["search", "symbol", "calls", "explore", "path", "trace"]},
-        "source_symbol": {"type": ["string", "null"]},
-        "target_symbols": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 1},
-          "uniqueItems": true
-        },
-        "unresolved_targets": {
-          "type": "array",
-          "description": "Only targets this Atlas query actually failed to resolve, not calls left unexamined because of budget or context capacity.",
-          "items": {"type": "string", "minLength": 1},
-          "uniqueItems": true
-        }
-      },
-      "additionalProperties": false
-    },
-    "resolvedRelation": {
-      "type": "object",
-      "required": [
-        "source_symbol",
-        "target_symbol",
-        "relation",
-        "resolved_by",
-        "mechanism",
-        "unresolved_ref",
-        "reason",
-        "evidence"
-      ],
-      "properties": {
-        "source_symbol": {"type": ["string", "null"], "minLength": 1},
-        "target_symbol": {"type": "string", "minLength": 1},
-        "relation": {
-          "enum": ["call", "callback", "async_continuation", "branch", "data_flow", "component_boundary"]
-        },
-        "resolved_by": {"enum": ["atlas_index", "source_evidence"]},
-        "mechanism": {
-          "enum": [
-            "atlas_index",
-            "direct_source_call",
-            "callback_binding",
-            "function_assignment",
-            "polymorphic_dispatch",
-            "registry_dispatch",
-            "name_dispatch",
-            "inheritance_dispatch",
-            "other_source_dispatch"
-          ]
-        },
-        "unresolved_ref": {"type": ["string", "null"], "minLength": 1},
-        "reason": {"type": "string", "minLength": 1},
-        "evidence": {
-          "type": "array",
-          "items": {"$ref": "#/$defs/evidence"}
-        }
-      },
-      "allOf": [
-        {
-          "if": {"properties": {"resolved_by": {"const": "source_evidence"}}},
-          "then": {
-            "properties": {
-              "evidence": {"minItems": 2},
-              "mechanism": {"not": {"const": "atlas_index"}}
-            }
-          },
-          "else": {
-            "properties": {
-              "mechanism": {"const": "atlas_index"},
-              "unresolved_ref": {"type": "null"}
-            }
-          }
-        }
-      ],
-      "additionalProperties": false
-    },
     "fact": {
       "type": "object",
-      "required": ["type", "body", "evidence"],
+      "required": ["type","body","evidence"],
       "properties": {
-        "type": {
-          "enum": [
-            "entrypoint",
-            "reachability",
-            "control",
-            "transform",
-            "security_check",
-            "operation",
-            "dead_end"
-          ]
-        },
-        "body": {"type": "string", "minLength": 1},
-        "location": {"type": ["string", "null"]},
-        "evidence": {
-          "type": "array",
-          "items": {"$ref": "#/$defs/evidence"}
-        }
+        "type": {"enum":["entrypoint","reachability","control","transform","security_check","operation","dead_end"]},
+        "body": {"type":"string","minLength":1},
+        "location": {"type":["string","null"]},
+        "evidence": {"type":"array","items":{"$ref":"#/$defs/evidence"}}
       },
       "additionalProperties": false
     },
     "symbol": {
       "type": "object",
-      "required": ["qualified_name", "file_path", "line", "kind"],
+      "required": ["qualified_name","file_path","line","kind"],
       "properties": {
-        "qualified_name": {"type": "string", "minLength": 1},
-        "file_path": {"type": ["string", "null"]},
-        "line": {"type": ["integer", "null"], "minimum": 1},
-        "kind": {"type": "string", "minLength": 1}
+        "qualified_name": {"type":"string","minLength":1},
+        "file_path": {"type":["string","null"]},
+        "line": {"type":["integer","null"],"minimum":1},
+        "kind": {"type":"string","minLength":1}
       },
       "additionalProperties": false
     },
     "controlledProperty": {
       "type": "object",
-      "required": ["name", "control_state"],
+      "required": ["name","control_state"],
       "properties": {
-        "name": {"type": "string", "minLength": 1},
+        "name": {"type":"string","minLength":1},
         "control_state": {
-          "enum": ["preserved", "constrained", "constant", "unknown"],
+          "enum": ["preserved","constrained","constant","unknown"],
           "description": "Select constant if independence from attacker input is proven; otherwise constrained if an explicit restriction on the input's security-relevant values is proven; otherwise preserved if influence is proven without such restriction; unknown if not established. Copying preserves upstream constraints. Constrained does not imply safe."
         }
       },
@@ -304,16 +118,16 @@
     },
     "principal": {
       "type": "object",
-      "required": ["origin", "immediate", "origin_binding", "authority"],
+      "required": ["origin","immediate","origin_binding","authority"],
       "properties": {
-        "origin": {"type": "string", "minLength": 1},
-        "immediate": {"type": "string", "minLength": 1},
+        "origin": {"type":"string","minLength":1},
+        "immediate": {"type":"string","minLength":1},
         "origin_binding": {
-          "enum": ["preserved", "replaced_by_caller", "not_observable", "unknown"],
+          "enum": ["preserved","replaced_by_caller","not_observable","unknown"],
           "description": "Select preserved if the original identity is verifiably available; otherwise replaced_by_caller if only the immediate caller's identity is verifiably available; otherwise not_observable if the channel is proven to expose neither identity reliably; unknown if not established."
         },
         "authority": {
-          "enum": ["origin", "source_component", "system", "none", "unknown"],
+          "enum": ["origin","source_component","system","none","unknown"],
           "description": "Actual authority used: original actor, current intermediary component, proven system authority, proven no relevant authority, or insufficient evidence. Calling a system API alone does not imply system authority."
         }
       },
@@ -321,17 +135,14 @@
     },
     "securityState": {
       "type": "object",
-      "required": ["controlled_properties", "principal", "security_checks"],
+      "required": ["controlled_properties","principal","security_checks"],
       "properties": {
-        "controlled_properties": {
-          "type": "array",
-          "items": {"$ref": "#/$defs/controlledProperty"}
-        },
-        "principal": {"$ref": "#/$defs/principal"},
+        "controlled_properties": {"type":"array","items":{"$ref":"#/$defs/controlledProperty"}},
+        "principal": {"$ref":"#/$defs/principal"},
         "security_checks": {
           "type": "array",
           "description": "Checks already traversed on this branch. Inherit existing references or reference evidenced checks from this step. The runtime derives stable identities; do not invent IDs.",
-          "items": {"$ref": "#/$defs/securityCheckReference"},
+          "items": {"$ref":"#/$defs/securityCheckReference"},
           "uniqueItems": true
         }
       },
@@ -339,55 +150,110 @@
     },
     "securityCheckReference": {
       "type": "object",
-      "required": ["location", "subject_kind", "validated_property"],
+      "required": ["location","subject_kind","validated_property"],
       "properties": {
-        "location": {"type": "string", "minLength": 1},
+        "location": {"type":"string","minLength":1},
         "subject_kind": {
-          "enum": ["origin_principal", "immediate_caller", "transferred_property", "resource_owner", "security_boundary", "unknown"],
+          "enum": ["origin_principal","immediate_caller","transferred_property","resource_owner","security_boundary","unknown"],
           "description": "Classify by the checked value's provenance, not coincidental identity equality: caller-identity APIs use immediate_caller even for direct external calls; independently authenticated original identity uses origin_principal; unverified transferred claims use transferred_property. Resource ownership uses resource_owner; other boundary policy uses security_boundary; unknown means not established."
         },
-        "validated_property": {"type": "string", "minLength": 1, "description": "Use the checked source expression/property, not a paraphrased label."}
+        "validated_property": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Use the checked source expression/property, not a paraphrased label."
+        }
       },
       "additionalProperties": false
     },
     "securityCheck": {
       "type": "object",
-      "required": ["type", "location", "protects", "subject_kind", "validated_property", "behavior", "evidence"],
+      "required": ["type","location","protects","subject_kind","validated_property","behavior","evidence"],
       "properties": {
-        "type": {"type": "string", "minLength": 1},
-        "location": {"type": "string", "minLength": 1},
-        "protects": {"type": "string", "minLength": 1},
-        "subject_kind": {"$ref": "#/$defs/securityCheckReference/properties/subject_kind"},
-        "validated_property": {"$ref": "#/$defs/securityCheckReference/properties/validated_property"},
-        "behavior": {"type": "string", "minLength": 1},
-        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}}
+        "type": {"type":"string","minLength":1},
+        "location": {"type":"string","minLength":1},
+        "protects": {"type":"string","minLength":1},
+        "subject_kind": {"$ref":"#/$defs/securityCheckReference/properties/subject_kind"},
+        "validated_property": {"$ref":"#/$defs/securityCheckReference/properties/validated_property"},
+        "behavior": {"type":"string","minLength":1},
+        "evidence": {"type":"array","minItems":1,"items":{"$ref":"#/$defs/evidence"}}
       },
       "additionalProperties": false
     },
-    "successor": {
+    "span": {
       "type": "object",
-      "required": ["symbol", "relation", "condition", "stop_reason", "state"],
+      "required": ["start","end"],
+      "properties": {"start":{"type":"integer","minimum":1},"end":{"type":"integer","minimum":1}},
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "required": ["symbol","start","end","kind"],
       "properties": {
-        "symbol": {"$ref": "#/$defs/symbol"},
-        "relation": {
-          "enum": ["call", "callback", "async_continuation", "branch", "data_flow", "component_boundary"]
+        "symbol": {"$ref":"#/$defs/symbol"},
+        "start": {"type":"integer","minimum":1},
+        "end": {"type":"integer","minimum":1},
+        "kind": {"enum":["function","block","choice","call","join","exit"]},
+        "start_column": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Column anchor for distinct blocks on the same source line; omitted means 1."
         },
-        "condition": {"type": "string", "minLength": 1},
-        "stop_reason": {
-          "type": ["string", "null"],
-          "description": "null: queue for analysis. A named boundary: record the target but do not expand. This is the sole routing input.",
-          "enum": [
-            null,
-            "component_boundary",
-            "platform_boundary",
-            "third_party_boundary",
-            "security_influence_ended"
-          ]
+        "end_column": {"type":"integer","minimum":1}
+      },
+      "additionalProperties": false
+    },
+    "termination": {
+      "type": "object",
+      "required": ["kind","reason","evidence"],
+      "properties": {
+        "kind": {
+          "enum": ["return","throw","component_boundary","platform_boundary","third_party_boundary","security_influence_ended"]
         },
-        "state": {"$ref": "#/$defs/securityState"}
+        "reason": {"type":"string","minLength":1},
+        "evidence": {"type":"array","items":{"$ref":"#/$defs/evidence"},"minItems":1}
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["summary","checked","termination","facts","security_checks","operation_groups","component_calls","gaps"],
+      "properties": {
+        "summary": {"type":"string","minLength":1},
+        "checked": {"type":"array","items":{"$ref":"#/$defs/span"}},
+        "termination": {"anyOf":[{"type":"null"},{"$ref":"#/$defs/termination"}]},
+        "facts": {"type":"array","items":{"$ref":"#/$defs/fact"}},
+        "security_checks": {"type":"array","items":{"$ref":"#/$defs/securityCheck"}},
+        "operation_groups": {"type":"array","items":{"type":"object"}},
+        "component_calls": {"type":"array","items":{"type":"object"}},
+        "gaps": {"type":"array","items":{"$ref":"#/$defs/gap"}}
+      },
+      "additionalProperties": false
+    },
+    "range": {
+      "type": "object",
+      "required": ["ref","scope","state","conditions","wait_for","result"],
+      "properties": {
+        "ref": {"type":"string","minLength":1},
+        "scope": {"$ref":"#/$defs/scope"},
+        "state": {"$ref":"#/$defs/securityState"},
+        "conditions": {"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true},
+        "wait_for": {"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true},
+        "result": {"anyOf":[{"type":"null"},{"$ref":"#/$defs/result"}]}
+      },
+      "additionalProperties": false
+    },
+    "transition": {
+      "type": "object",
+      "required": ["from","to","relation","condition","evidence"],
+      "properties": {
+        "from": {"type":"string","minLength":1},
+        "to": {"type":"string","minLength":1},
+        "relation": {"enum":["sequence","branch","call","callback","return","exception","reuse","loop"]},
+        "condition": {"type":"string","minLength":1},
+        "evidence": {"type":"array","items":{"$ref":"#/$defs/evidence"},"minItems":1}
       },
       "additionalProperties": false
     }
   },
-  "additionalProperties": false
+  "description": "Range-based exploration. $current refers to the leased work. Local range refs or existing work IDs identify transition endpoints. Record all local branches and call continuations; result=null queues work. Checked spans plus delegated local ranges must cover the current scope. Only the runtime owns work status."
 }

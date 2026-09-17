@@ -28,6 +28,12 @@ def parser():
         cmd.add_argument("run_dir")
         cmd.add_argument("--task-id", required=True)
         cmd.add_argument("--attempt", required=True, type=int)
+    cmd = sub.add_parser("explore-context")
+    cmd.add_argument("run_dir")
+    cmd.add_argument("--task-id", required=True)
+    cmd.add_argument("--attempt", required=True, type=int)
+    cmd.add_argument("--work-id", required=True)
+    cmd.add_argument("--offset", type=int, default=0)
     cmd = sub.add_parser("explore-record")
     cmd.add_argument("run_dir")
     cmd.add_argument("--task-id", required=True)
@@ -50,6 +56,9 @@ def dispatch(args):
     if args.command == "explore-next":
         from .semantic_exploration import next_exploration_node
         return next_exploration_node(args.run_dir, args.task_id, args.attempt)
+    if args.command == "explore-context":
+        from .exploration_context import read_exploration_context
+        return read_exploration_context(args.run_dir, args.task_id, args.attempt, args.work_id, args.offset)
     if args.command == "explore-record":
         from .semantic_exploration import record_exploration_step
         return record_exploration_step(args.run_dir, args.task_id, args.attempt, args.input)

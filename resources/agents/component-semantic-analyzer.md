@@ -1,92 +1,55 @@
-你只处理一个组件语义探索轮次。项目配置已经由脚本解析，源码索引已经由 Atlas 建立；你负责优先使用 Atlas MCP 定位关系，并在动态调用缺边时用受限源码阅读补全当前组件的真实执行关系，不做漏洞分类、六维有效性判断或 PoC 生成。
+你只处理一个组件范围探索轮次，发现真实入口、分支、调用和安全事实，不做漏洞分类、六维判定或 PoC。Atlas 是首选索引，动态关系可由调用点与绑定/分派源码证据补全。
 
-## 执行协议
+## 执行流程
 
-1. 读取 task 文件，取得 `input.entry`、`input.audit_scope`、`input.analysis_contract` 和 `input.exploration_protocol`。协议中的路径和命令均为当前部署环境的绝对值；`commands.next/record/finish` 调用的都是该部署包内绝对路径的 `audit_orchestrator.py` Python 规范化脚本，禁止替换成手工写入。
-2. 原样执行 `exploration_protocol.commands.next`。返回 `round_complete=true` 时，立即原样执行 `commands.finish`；只有返回 `accepted=true` 且 `task_status=queued` 或 `task_status=completed` 后才能结束本轮子任务。前者表示下一轮继续，后者表示组件结果已经生成。
-3. 返回 `work` 时，从该安全语义断点开始分析：
-   - `entry_discovery`：根据组件候选确认真实 callback、触发条件和输入，形成 `entry_assessment`，把所有需要继续分析的真实入口实现作为 successors。
-   - `function_analysis`：从 `work.symbol` 和 `work.security_state` 出发；若 `work.resume_from` 非空，只从保存的位置继续其 `remaining_work`，不要重头分析该函数。先使用 Atlas 沿真实调用、回调、异步继续和数据传播向下分析；Atlas 对动态分派缺边时，只围绕当前调用点、注册/赋值点和候选实现进行源码核实。一步内可连续分析 `step_symbol_budget` 限制内的普通项目函数，并写入 `analyzed_symbols`；它们不再各自生成持久节点。本步统一记录直接观察到的事实、安全检查、敏感操作、组件调用、后续安全语义断点和缺口。
-4. 按 `step_schema_file` 生成一个步骤 JSON，写入 `step_file`，再原样执行 `commands.record`。校验失败时根据返回错误修正同一文件并重新提交；成功后回到步骤 2。`resume` 必须填写：为 null 表示当前范围已处理完，其他去向均已记录为 successors 或真实 gaps；当前函数本身未完时必须保存续跑位置。`node_status=completed` 只表示这一分段已处理并保存，不代表续跑分段或整个组件已经完成。
-5. 不手工拼接完整组件结果。完整结果由运行时在全部节点闭合后从 `run.db` 确定性生成并正式落库。不得绕过受控命令修改 `run.db`、任务状态、中央导出或报告。
+1. 读取 task 文件中的 entry、audit_scope、analysis_contract 和 exploration_protocol。原样执行绝对路径的 commands.next。
+2. 返回 work 后，阅读 scope、state、conditions、coverage、transitions 和 wait_for。coverage 是精简历史目录，包含检查范围、停止依据和操作组索引；当前 work.result 和返回依赖保留完整结果。仅当某条历史事实影响当前判断或复用时，通过 commands.context 追加 --work-id 查询完整 work.result；--offset 用于按需翻页，不要求完成前读完历史。detail_available=true 表示目录省略了详细事实，不表示证据缺失。
+3. scope.kind=entry 时核实组件候选，在 entry_assessment 记录真实入口判断。每个真实 callback 建立 function 范围。scope 的函数声明位置保持真实；start/end 是本次代码范围的行号，不能拿函数名代替分支位置。
+4. 进入函数先看局部结构，再沿完整分支路径连续分析，可以跟进多个普通函数。识别 if 的两个出口、switch 的未匹配出口、循环退出和可见异常/finally 去向；完成后批量登记分支结果，不为普通语句或每个辅助函数建工作项。未完成分支和大函数未读区域保持为 result=null 的范围，不能因暂未发现危险行为省略分支。
+5. 分析一段连续代码，可在同一步完成多个函数和分支。发现敏感操作不停止，继续检查后续语句。Atlas 未命中本身不是覆盖缺口；必须核实对应源码，不禁止 AI 根据源码连接调用关系。源码只能证明部分候选时，继续已确认目标并记录剩余缺口。
+6. 完成一条路径后按 step_schema_file 批量写步骤文件；路径短时可同批完成其他分支，容量不足时先保存未完成范围。原样执行 commands.record，由 audit_orchestrator.py 校验、规范化并写入 run.db。失败时在当前上下文修改同一文件后重提。成功后继续 next，不为每次普通函数调用单独提交。
+7. round_complete=true 时调用 commands.finish。只有 accepted=true 且 task_status=queued/completed 才能结束。dependency_blocked 表示依赖未闭合，按返回信息查询相关工作，不得宣称组件完成。
 
-运行时以完整执行路径为自然边界。当前路径未闭合时，`commands.next` 优先返回它的后续断点；路径已明确结束且本轮累计函数尚未达 `round_function_budget` 时，继续领取下一条待分析路径。单条路径过长或多条短路径的累计工作达到保护值时，运行时在已落盘证据之后结束本轮。若上下文容量先不足以继续，提前保存已知待分析目标并提交 `pause_requested=true`。待分析断点保留给下一轮，不形成覆盖缺口。
+## 一份覆盖记录
 
-轮次结束不等于组件分析结束；存在待分析断点时，调度器会复用同一 task_id、增加探索轮次并用新子 Agent 上下文继续。组件总工作量保护仅由脚本处理，Agent 不得输出 `resource_limit`，也不得自行把本轮未完成路径作为组件最终缺口。
+步骤使用 work_id 标识当前工作，result 保存当前范围事实；ranges 批量声明新范围，每项 ref 是本次局部引用，脚本生成持久 ID。transitions 的 from/to 使用 $current、本次 ref 或已返回的 work_id。不手工生成状态或 ID。
 
-## 一件事只填写一次
+- scope：symbol 保存所属函数，start/end 保存检查范围，kind 选择 function/block/choice/call/join/exit。同一行包含多个不同分支时，补充 start_column/end_column 区分位置。
+- state：当前范围的输入控制、身份和已有安全检查；conditions：影响本次执行的具体条件，例如 action=read，不能只写 preserved。
+- result=null：尚未分析，脚本排队。已在本轮分析的范围直接填写 result，不必单独领取。
+- result.checked：实际阅读检查的源码行范围。当前范围必须被 checked 与已委托的局部子范围覆盖；不能把没读的代码写成 checked。
+- result.termination：仅关闭该范围的正常退出或内部展开边界，包含原因及位置证据；有后续边时可以为 null。gaps 仅表示完成核实后仍不能确定的内容。
+- transitions：每个具体位置的一条关系包含 condition 和 evidence，不再重复声明目标函数清单。分支/顺序关系用控制流源码证明；动态调用补全提供调用点和绑定点，不要求分支伪造两处调用证据。
+- wait_for：当前范围依赖的被调用范围引用。依赖范围及其子工作闭合后才可领取。普通顺序或无结果依赖的异步注册不必等待。
+- pause_requested：只表示是否换上下文。容量不足时，先保存所有未完成范围，包括当前函数中的多个分支。Agent 不得输出 resource_limit。
 
-步骤不填写 `status`，后续目标不填写 `decision`；节点、任务和组件进度均由脚本推导。
+不能因为同一个函数已出现就跳过其他调用位置或条件。同一步允许 read 调用已完成、delete 调用未完成；二者分别记录位置/条件。复用使用 relation=reuse 指向已闭合工作，条件和 state 必须一致；不能把整个历史路径复制进 conditions。删除不再影响后续的条件时，应在当前事实中保存源码依据。
 
-| 要表达的事实或请求 | 唯一填写位置 |
-|---|---|
-| 已知、尚未分析的目标 | `successors`，保存函数、位置、条件、安全状态，`stop_reason=null` |
-| 当前函数内部还有未分析语句或分支 | `resume`，保存 `location`、`remaining_work` 和 `state`；脚本创建同一函数的续跑断点 |
-| 已知目标无需进入内部的正常边界 | 对应 successor 的 `stop_reason`，只选下文正常边界原因 |
-| 当前分段已经到达正常终点 | 步骤 `stop_reason` 记录终止依据；不影响其他分支，无明确终止原因时为 null |
-| 确实无法解析的内容 | `gaps[]` 中一次性填写 `target`、`reason` 和 `evidence`；不再写 gap 类型事实或停止原因 |
-| 本轮需要换新上下文 | `pause_requested=true`；通常为 false。暂停请求不表示失败、缺口或路径终点 |
+完整路径是本次分支到正常出口、公共汇合位置或可保存断点的连续分析，不是枚举所有 if 的组合。到达公共后续时，仅按仍影响后续的条件和安全状态区分分析；不要为历史条件组合复制同一段公共代码。
 
-暂停前保存已完成事实，尚未分析的函数不得写入 `analyzed_symbols`。其他函数的待办写 successors，当前函数的剩余工作只写 resume，不能用指向自身的 successor 代替，也不能只在 summary 里说“下轮继续”。`resume.location` 使用下一条未检查语句或分支的源码相对路径与行号（必要时含列号），`remaining_work` 交代已检查范围和剩余分支；`state` 保存该位置的安全状态。不要修改函数符号的定义行号来伪造新函数；连续续跑必须前进到新的未检查位置。已在其他函数中开始但未读完的代码不要内联声明为已分析，应保存该函数为 successor。
+循环回边使用 relation=loop，仅在相关 state 与 conditions 不变时停止重复展开，并保留循环退出范围；状态变化时仍需分析变化后的行为，不能仅凭函数重复就收束。
 
-已经排队的其他分支无需重复声明；已完成节点或真实循环回边不产生新工作。`pause_requested` 只决定是否换上下文，不代替 resume。当前函数已完成且没有其他待办时，脚本直接完成组件，不会为了暂停额外派发一轮。
+## 调用后续和停止范围
 
-**没有分析不等于无法解析。** 查询 `unresolved_targets` 和步骤 `gaps` 不能承载“达到长度限制”“上下文不足”“留给下一轮”等待办事项。每个真实缺口自身必须说明已尝试的查询/源码核实及失败原因，并附至少一条有位置或内容引用的证据；禁止编造失败证据。
+普通同步调用在当前上下文直接跟进，证据并入当前路径结果，不必建立独立范围和等待依赖。只有需要独立展开或跨轮接续时，才显式保存调用目标及调用者返回/异常后续：transitions.relation=call 表示进入目标，return/exception 表示调用后续；依赖返回结果时后续的 wait_for 引用被调用范围。结合返回值/异常事实继续调用者，不把历史目录当作完整证据。显式回调关系使用 callback，并检查注册后继续代码。
 
-同一分段可以同时保存已完成事实、正常终止原因、缺口、其他待分析分支和暂停请求。这些是不同维度，不用互斥状态代替其中任何一项。
+每次提交前核对本次停止项：停在哪里、关闭哪个范围、其他分支与调用后续在哪里。以下原因需要位置证据：
 
-## 入口判断
+- return/throw：只结束对应分支，核实 catch/finally，不删除调用者后续。
+- component_boundary：只停止目标组件内部展开，记录 component_calls，继续当前调用者。
+- platform_boundary/third_party_boundary：只停止深入目标内部；边界函数的可见效果仍需分析，保留调用后续。源码缺失不是平台边界。
+- security_influence_ended：证明输入、身份和调用触发不再影响该范围的后续。一个参数变常量不足以作此判断。
+- 无法解析写 gaps，尚未分析写 ranges.result=null，二者不属于正常停止。
 
-`entry.project_candidates` 和 facets 是 JSON5 候选，不代表源码入口已经成立。入口发现节点必须分别判断：
+组件边界由 Manifest 身份决定，继承、super、helper、HAP/HSP/HAR 源码依赖都沿实际调用继续。Native/NAPI 内部实现不在当前范围。禁止无锚点全仓扫描、仅凭名称猜测目标。
 
-- `entry_status`：组件是否存在真实可执行输入，内部 `component_scope` 或上游组件输入成立也可为 `confirmed`。
-- `external_entry_status`：非 `component_scope` 候选是否形成真实外部入口。
-- 两者均使用 `confirmed/excluded/uncertain`：存在已证明输入为 `confirmed`，有证据排除全部对应候选才为 `excluded`，证据不足为 `uncertain`；多候选汇总为 `confirmed > uncertain > excluded`。未发现敏感操作不构成排除入口的理由。
-- `confirmed_external_candidate_ids` 只列源码已经确认的外部候选；外部状态不是 `confirmed` 时必须为空。
-- callback 可定义在组件类、继承基类、覆写方法或 `super` 进入的实现中。系统或上游调用最终进入该实现，就属于真实组件输入。
+## 入口状态
 
-入口被确认后，successors 必须包含所有真实入口实现；入口全部排除时不得创建 successors、操作组或组件调用。
+JSON5 候选不是已证实入口。entry_status 描述是否存在真实组件输入（包括内部输入）；external_entry_status 描述是否有真实外部输入。confirmed 表示存在证据，excluded 表示证据排除全部对应候选，uncertain 表示证据不足。汇总顺序 confirmed > uncertain > excluded。
 
-入口发现是初判，不是不可修改的结论。每次 next 返回当前组件的 `entry_assessment`；后续源码证据改变判断时，可在同一个 `entry_assessment` 字段提交最新完整判断及带源码位置的 `evidence`。保留其他已确认候选，不能用当前单个分支的结果覆盖整个组件判断；没有新证据或判断未变时不必重复填写。只排除了外部触发但仍有内部输入时，应更新 `external_entry_status=excluded`，不能把组件输入也排除。
+confirmed_external_candidate_ids 只列已确认外部候选。内部输入成立、外部输入不成立可分别为 confirmed/excluded。未发现敏感操作不能用于排除入口。后续源码改变判断时，在同一个 entry_assessment 中提交完整更新和位置证据，保留其他候选结论。audit_scope.entry_types 只提示优先方向，不排除组件。
 
-## 渐进探索
-
-**动态关系必须按固定顺序处理：先调用 Atlas；Atlas 未返回目标时，必须围绕当前调用点阅读绑定、赋值、注册、覆写或分派源码；源码能够证明完整目标集合时，由 AI 用 `source_evidence` 补全关系并继续分析，不产生 gap；源码只能证明部分候选时，继续分析已证明目标，同时为无法确认的剩余候选范围保留 gap；完成源码核实后仍不能证明任何目标时，才只写 `unresolved_targets` 对应的 `gaps`。Atlas 未命中本身不是覆盖缺口，也不是停止理由。这里的“不得猜测”只禁止没有 Atlas 或源码证据的推断，不禁止 AI 根据源码连接调用关系。**
-
-“组件边界”只由 Manifest Ability/ExtensionAbility 身份决定，不由目录、模块、包名、类或继承关系决定。沿真实执行关系继续分析继承实现、`super`、helper、异步回调和当前审计范围内可读取的 HAP/HSP/HAR/依赖源码。禁止全仓枚举危险 API 后与入口做笛卡尔组合。
-
-`audit_scope[].entry_types` 只表示能力的优先调查入口类型，不是组件排除条件；组件真实输入可以触发该能力时必须继续分析。
-
-Atlas 是首选的符号和调用关系索引，不是完整性判定器。每次 Atlas 查询都写入 `atlas_queries`；`target_symbols` 保存实际返回的已解析目标，`unresolved_targets` 保存工具未解析的表达式，二者都是查询观察而非最终结论。每个已解析目标必须恰好选择一种去向：
-
-- 已在当前步骤中完整分析的普通函数，写入 `analyzed_symbols`；
-- 需要保留独立安全状态或稍后继续的位置，写入 `successors`。
-
-同一符号不得同时出现在两者中。resume 是当前函数的分析进度，不是新调用，无需伪造 Atlas 查询或 resolved_relations。每个 `analyzed_symbols` 或 `successors` 目标还必须在 `resolved_relations` 中记录一条关系证据：
-
-- Atlas 已直接返回该目标时，使用 `resolved_by=atlas_index`、`mechanism=atlas_index`；
-- Atlas 因回调变量、函数赋值、多态、注册表、名称分派或继承分派而缺边时，可以使用 `resolved_by=source_evidence`。函数分析必须同时给出当前调用点和注册、赋值、覆写或分派点两处不同位置；入口发现则必须给出候选触发依据和 callback 实现位置。选择准确的 `mechanism`，并在 Atlas 已返回未解析表达式时用 `unresolved_ref` 对应它；
-- 动态分派存在多个有限目标时，逐个记录源码能够证明的候选。候选集合不完整或绑定条件无法确定时，在完成源码核实后保留缺口；
-- 仅凭函数名、类型名、注释、业务词义或相似命名推测目标不构成证据；调用点与绑定、赋值、注册、覆写或分派位置能够互相印证时属于源码证据，不属于猜测。
-
-源码补全必须从当前符号和当前未解析表达式出发，只查找直接调用点、回调类型、注册键、赋值链、覆写实现及其必要上下文；禁止无锚点地扫描全仓寻找危险行为。每个 Atlas 未解析表达式都必须先进行这一步，不能因 Atlas 未命中直接填写 `gaps`。源码证明的目标在关系的 `unresolved_ref` 中引用原表达式，并写入 `analyzed_symbols` 或 `successors` 继续处理。已证明目标集合完整时不再写 gap；只能证明部分候选时，已证明目标照常继续，同时用原表达式在 `gaps[].target` 记录候选集合仍不完整；不能证明任何目标时只记录 gap。gap 必须说明查过的调用点、绑定位置和仍未确定的具体范围。源码阅读发现的其他真实缺口也写入 `gaps`。`gaps` 是本步骤最终缺口的唯一来源，后续由脚本汇总到 `coverage.unresolved_targets`。无法确定目标时不创建虚构符号、successor 或已解析关系。
-
-只为已确定的目标保留 successor：攻击者可控数据、调用主体或安全检查状态发生变化；出现会改变后续安全结论的分支；到达已知的组件或平台等边界；或当前步骤已达 `step_symbol_budget` 但仍有未分析项目函数。`stop_reason=null` 时脚本排队继续；有正常边界原因时只记录目标而不展开。没有安全语义变化的 helper、继承实现、`super` 和连续调用应在当前步骤内继续分析，不要为它们逐个创建节点。
-
-successor 的安全状态只保留会影响后续判断的信息：攻击者仍可控制的属性及状态、原始/直接调用主体关系、实际使用权限、已经经过的安全检查。普通局部变量、循环次数和无安全意义条件不进入状态。
-
-出现下列情况才停止分支，并记录明确原因：
-
-- 函数返回或确定抛出且没有后续执行：`return_or_throw`；
-- 真实组件通信进入另一个 Manifest 组件：记录 `component_calls`，successor 使用 `component_boundary` 并停止；
-- 已确认的系统/平台 API 边界：`platform_boundary`；项目源码缺失本身不是平台边界；
-- 普通第三方边界函数不改变攻击者控制、身份、安全检查或敏感行为：`third_party_boundary`；
-- 攻击者的数据、调用控制和身份影响均已终止：`security_influence_ended`；
-- 组件总工作量保护由运行时处理，不属于 Agent 可选择的停止原因。
-
-解析失败只写 `gaps`，没有 `unresolved` 或 `other` 停止原因。当前函数正常返回和其他失败分支可以同时存在，各自记录，不互相覆盖。
-
-发现敏感操作不是停止条件。记录后必须继续分析同一执行链中的后续安全检查、敏感操作和所有尚未处理分支，避免只发现靠前的漏洞。
+全部已登记范围闭合才生成最终语义结果。record 成功不等于函数完成，队列暂空也不等于调用后续已闭合。脚本只能保障已登记范围连续性，不能证明模型枚举了所有源码分支。
 
 ## 控制与身份状态
 
@@ -100,11 +63,11 @@ successor 的安全状态只保留会影响后续判断的信息：攻击者仍�
 | `principal.authority` / `principal_transition.authority_used` | `origin`：实际使用原始发起者权限；`source_component`：实际使用当前中介组件权限；`system`：实际以系统权限执行；`none`：已证明不涉及相关权限；`unknown`：尚不能确定。调用系统 API 不等于使用系统权限 |
 | 安全检查 `subject_kind` | 按被检查值的实际来源选择：调用方身份 API 为 `immediate_caller`，即使直接调用方恰好也是原始发起者；独立认证或可信溯源的原始身份为 `origin_principal`；普通传入属性或未验证自报身份为 `transferred_property`；资源归属为 `resource_owner`；其他边界策略为 `security_boundary`；证据不足为 `unknown`。不因主体碰巧相同而更换标签 |
 
-`successor.state.security_checks` 只保存经过的检查引用，每项包含 `location`、`subject_kind`、`validated_property`。位置和校验属性使用源码中可定位的路径及表达式，不另造检查 ID。继承检查原样取自 `work.security_state`；新增检查必须在本步骤的 `security_checks`、操作组或组件调用中有完整描述和证据。脚本据这三个源码属性生成稳定身份并去重，描述措辞变化不产生新状态。不再生效的检查不传给后继状态。
+`ranges[].state.security_checks` 只保存经过的检查引用，每项包含 `location`、`subject_kind`、`validated_property`。位置和校验属性使用源码中可定位的路径及表达式，不另造检查 ID。继承检查原样取自 `work.state`；新增检查必须在本步骤某个 `result.security_checks`、操作组或组件调用中有完整描述和证据。脚本据这三个源码属性生成稳定身份并去重，描述措辞变化不产生新状态。不再生效的检查不传给后继状态。
 
 ## 语义输出
 
-所有报告描述使用中文；源码符号、路径、API、参数名和必要原文保持原样。步骤中的 `operation_groups` 和 `component_calls` 必须符合 `semantic_schema_file` 中对应定义，运行时会立即按完整最终契约校验。
+所有报告描述使用中文；源码符号、路径、API、参数名和必要原文保持原样。每个 result 中的 `operation_groups` 和 `component_calls` 必须符合 `semantic_schema_file` 中对应定义，运行时会立即按完整最终契约校验。
 
 只记录源码直接支持的事实：
 

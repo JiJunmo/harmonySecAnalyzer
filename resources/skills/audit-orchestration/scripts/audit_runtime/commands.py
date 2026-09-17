@@ -278,7 +278,7 @@ def status(run_dir):
         run["correlation"] = json.loads(run.pop("correlation_json"))
         task_counts = {row["status"]: row["n"] for row in conn.execute("SELECT status,COUNT(*) n FROM tasks GROUP BY status")}
         counts = {table: conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"]
-                  for table in ("entries", "component_explorations", "exploration_nodes",
+                  for table in ("entries", "component_explorations", "exploration_nodes", "exploration_work_items",
                                 "semantic_analyses", "component_calls", "operation_groups",
                                 "validation_results", "group_facts", "findings")}
         retry_categories = {}

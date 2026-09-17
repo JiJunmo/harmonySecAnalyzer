@@ -37,7 +37,7 @@ ORCHESTRATION_RUNTIME_FILES = [
     for name in (
         "__init__.py", "common.py", "store.py", "contracts.py", "evidence.py", "reporting.py",
         "commands.py", "initialization.py", "lifecycle.py", "correlation.py", "scheduler.py", "task_context.py",
-        "semantic_exploration.py", "semantic_results.py", "result_writer.py", "cli.py",
+        "semantic_exploration.py", "exploration_context.py", "semantic_results.py", "result_writer.py", "cli.py",
     )
 ]
 
@@ -77,7 +77,7 @@ LEGACY_SKILLS = ["attack-patterns"]
 
 AGENT_DESCRIPTIONS = {
     "harmony-auditor.md": "鸿蒙 ArkTS 白盒安全审计编排者。负责确定性初始化、任务调度和报告准入，不直接分析源码。",
-    "component-semantic-analyzer.md": "按受控节点渐进探索单个组件，优先使用 Atlas 并以源码证据补全动态调用关系。只处理 component_semantic_analysis 任务。",
+    "component-semantic-analyzer.md": "按代码范围和分支覆盖渐进探索单个组件，优先使用 Atlas 并以源码证据补全动态调用关系。只处理 component_semantic_analysis 任务。",
     "exploitability-validator.md": "根据已落盘语义事实执行有界的六维漏洞有效性验证。只处理 exploitability_validation 任务。",
     "poc-generator.md": "为已确认漏洞生成结构化、可人工复现的 PoC 触发套件，产出 ArkTS/Shell 等可执行片段。只处理 poc_generation 任务。",
 }
@@ -94,7 +94,7 @@ COMMAND_DESCRIPTION = "对 HarmonyOS ArkTS 项目执行组件驱动的白盒安�
 ARGUMENT_HINT = "<repo-path> [--incremental] [--resume <run-dir>] [--capability <CAP-ID>] [--component <Name>]"
 
 SKILL_DESCRIPTIONS = {
-    "audit-orchestration": "基于 SQLite 的组件级安全分析运行时调用协议。当需要执行 prepare/claim-batch/explore-next/explore-record/explore-finish/task-submit/reconcile-batch/finalize/resume/status，或确认 run 状态机、结果规范化、准入条件、审计模式行为与目录结构时使用。",
+    "audit-orchestration": "基于 SQLite 的组件级安全分析运行时调用协议。当需要执行 prepare/claim-batch/explore-next/explore-context/explore-record/explore-finish/task-submit/reconcile-batch/finalize/resume/status，或确认 run 状态机、结果规范化、准入条件、审计模式行为与目录结构时使用。",
     "audit-workflow": "以组件渐进探索为语义单位、以实际敏感操作组为判断单位的审计流程。当需要确认节点探索、停止条件、跨组件连接、六维验证、根因归并与 Atlas 使用边界时使用。",
     "project-modeling": "确定性解析 HarmonyOS JSON5 工程配置，为组件探索生成项目事实与入口候选。当需要了解项目模型生成过程、Profiler 输出边界或 Atlas 索引准入条件时使用。",
 }
@@ -586,9 +586,49 @@ def smoke_flow_runtime(orch, python, atlas):
             if (status_payload["tasks"].get("running") != len(tasks)
                     or not (Path(first["run_dir"]) / "run.db").is_file()):
                 return False, "SQLite 任务状态不正确"
+            task = tasks[0]
+            args = (first["run_dir"], "--task-id", task["task_id"], "--attempt", task["attempt"])
+            work = invoke("explore-next", *args)["work"]
+            if work["scope"]["kind"] != "entry":
+                return False, "入口范围未正确生成"
+            invoke("explore-context", *args, "--work-id", work["work_id"])
+            evidence = [{"kind": "source", "source": "smoke", "summary": "测试入口实现",
+                         "location": "entry/src/main/ets/EntryAbility.ets:1"}]
+            empty = {"summary": "smoke 范围已检查", "checked": [], "termination": None,
+                     "facts": [], "security_checks": [], "operation_groups": [],
+                     "component_calls": [], "gaps": []}
+            state = {"controlled_properties": [], "security_checks": [],
+                     "principal": {"origin": "internal", "immediate": "internal",
+                                   "origin_binding": "unknown", "authority": "none"}}
+            scope = {"symbol": {"qualified_name": "EntryAbility.onCreate",
+                                "file_path": "entry/src/main/ets/EntryAbility.ets", "line": 1, "kind": "method"},
+                     "start": 1, "end": 1, "kind": "function"}
+            step = {"work_id": work["work_id"], "pause_requested": False, "result": empty,
+                    "ranges": [{"ref": "callback", "scope": scope, "state": state,
+                                "conditions": [], "wait_for": [], "result": None}],
+                    "transitions": [{"from": "$current", "to": "callback", "relation": "callback",
+                                     "condition": "组件回调", "evidence": evidence}],
+                    "entry_assessment": {"entry_status": "confirmed", "external_entry_status": "uncertain",
+                                         "confirmed_external_candidate_ids": [], "component_summary": "smoke 组件"}}
+            step_path = Path(first["run_dir"]) / "tasks" / "smoke-step.json"
+            step_path.write_text(json.dumps(step, ensure_ascii=False), encoding="utf-8")
+            if not invoke("explore-record", *args, "--input", step_path).get("accepted"):
+                return False, "入口范围提交失败"
+            work = invoke("explore-next", *args)["work"]
+            result = {**empty, "checked": [{"start": 1, "end": 1}],
+                      "termination": {"kind": "return", "reason": "空回调返回", "evidence": evidence}}
+            step = {"work_id": work["work_id"], "pause_requested": False,
+                    "result": result, "ranges": [], "transitions": []}
+            step_path.write_text(json.dumps(step, ensure_ascii=False), encoding="utf-8")
+            if not invoke("explore-record", *args, "--input", step_path).get("accepted"):
+                return False, "函数范围提交失败"
+            finished = invoke("explore-finish", *args)
+            if not finished.get("accepted") or finished.get("task_status") != "completed":
+                return False, "范围闭合与语义汇总失败"
+
         except Exception as exc:
             return False, str(exc)
-        return True, "确定性 prepare + 隔离 run + Component Semantics 批量领取通过"
+        return True, "prepare + 批量领取 + 范围读取/提交/闭合 + 语义汇总通过"
 
 
 def smoke_project_model(profiler, python):

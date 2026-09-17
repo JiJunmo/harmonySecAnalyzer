@@ -162,46 +162,19 @@ def task_context(conn, task, paths=None):
             "analysis_scope": row.get("analysis_scope", "component"),
         } for row in load_capabilities() if row["capability_id"] in profile_ids]
         analysis_contract = {
-            "task_unit": "one bounded round of a persistent component exploration",
-            "phases": ["claim_node", "resolve_code_relations", "record_step", "repeat_until_round_complete", "finish_round"],
-            "exploration_unit": "a security-semantic checkpoint, not every ordinary function",
-            "inline_analysis": "continue through ordinary project functions inside one step until security semantics change or the step budget is exhausted",
-            "checkpoint_when": ["security_state_changes", "security_relevant_branch", "known_boundary", "step_budget_exhausted"],
-            "round_policy": "finish the active path first; continue with another short path while the cumulative function budget remains",
-            "long_path_policy": "persist the current segment and resume the queued continuation in the next round without creating a coverage gap",
-            "pause_submission": "save other unfinished functions in successors; if the current function is unfinished, fill resume with its source location, remaining_work and state instead of a self-successor; use pause_requested=true for fresh context, then next and finish",
-            "resume_policy": "resume=null declares no unfinished local work beyond the recorded successors/gaps; otherwise the runtime queues a separate segment of the same function and returns work.resume_from; do not change the function declaration location or repeat an already processed resume position",
-            "entry_assessment_updates": "next returns the current component-wide entry_assessment; later source evidence may update the same assessment, with located evidence and a complete candidate list; never replace it with a single-branch verdict",
-            "gap_policy": "Atlas failure alone is never a gap: first inspect anchored call and binding/dispatch source; a complete source-proven target set continues without a gap, a partially proven set continues proven targets and records the unresolved remainder as a gap, and no proven target records only the evidenced gap; unexamined work is not a gap; resource_limit is runtime-owned",
-            "state_ownership": "agents do not write step status or successor decision; the runtime derives scheduling and coverage from accepted facts, gaps, normal stop reasons and pause requests",
-            "security_check_identity": "inherit state.security_checks references or cite evidenced checks declared in this step; each reference uses source location, subject_kind and validated_property, never agent-generated IDs",
-            "group_by": ["capability", "operation_location", "controlled_properties", "security_semantics"],
-            "component_completion": "all discovered nodes are completed, stopped with a reason, or recorded as coverage gaps",
-            "sensitive_operation_is_not_a_stop_condition": True,
-            "stop_at": ["component_boundary", "platform_boundary", "ordinary_third_party_boundary", "security_influence_ended", "return_or_throw"],
-            "component_call_control": {
-                "invocation_control": "whether the current component input controls reaching the component call",
-                "parameter_mappings": "data mappings only; may be empty",
-            },
+            "task_unit": "one round of component range exploration",
             "capability_entry_types": "priority hints for investigation, never component exclusion rules",
-            "minimum_evidence_chain": "omit only irrelevant nodes; retain every branch, transform and security check that can change later validation",
-            "relation_resolution": {
-                "atlas_role": "preferred symbol and call index, not a completeness oracle",
-                "source_fallback": "when Atlas misses dynamic dispatch, inspect only the current call site and its binding, assignment, override or registry chain",
-                "required_order": ["query_atlas", "inspect_anchored_source_if_unresolved", "continue_complete_source_targets_without_gap_or_continue_partial_targets_with_residual_gap_or_declare_gap"],
-                "no_guessing_meaning": "forbid relations without Atlas or source evidence; a relation proven by call-site plus binding/dispatch source is evidence, not guessing",
-                "required_source_proof": {
-                    "function_analysis": ["call_site", "binding_or_dispatch_site"],
-                    "entry_discovery": ["candidate_trigger", "callback_implementation"],
-                },
-                "forbidden": ["name_only_inference", "comment_only_inference", "unanchored_repository_scan"],
-            },
+            "protocol_version": 25,
+            "coverage": "identify local branch exits, then analyze complete paths and batch their records; only unfinished ranges enter the queue",
+            "progress": "result.checked records inspected spans; ranges with result=null are unfinished work; inline completed ranges carry their result",
+            "context": "coverage is a compact history index; current work and return dependencies contain full results; query referenced work IDs only when their evidence affects the current analysis, without rereading every page",
+            "calls": "follow ordinary calls inline without creating work per function; explicitly expanded calls retain return/exception continuations, especially across rounds; wait_for delays dependent work until the called scope closes",
+            "termination": "close only the evidenced range; a platform or library boundary does not close caller code",
+            "reuse": "only completed scope with exactly matching conditions and state; keep distinct call sites and caller continuations",
+            "source_resolution": "Atlas first, then anchored source inspection for missing dynamic edges; continue proven targets and preserve any unresolved remainder as gaps",
+            "budget": "pause only after all known unfinished ranges are saved; nodes are coverage records, not separate agent tasks",
+            "submission": "batch complete branch paths and evidence; ordinary statements and helper calls need no separate graph nodes; runtime owns IDs, work status and completion",
             "forbidden_outputs": ["classification", "exploitability", "severity", "cwe", "poc"],
-            "evidence_model": {
-                "facts": "only directly observed source facts",
-                "effect_hypotheses": "untrusted search leads with explicit missing proofs",
-                "forbidden_as_fact": ["name_based_effect_inference", "comment_based_effect_inference", "unverified_runtime_effect"],
-            },
         }
         if "CAP-DOS-001" in profile_ids:
             analysis_contract["availability_requirements"] = [
@@ -218,14 +191,14 @@ def task_context(conn, task, paths=None):
             "analysis_contract": analysis_contract,
         }
         if paths:
-            from .semantic_exploration import ROUND_FUNCTION_BUDGET, STEP_SYMBOL_BUDGET
+            from .semantic_exploration import ROUND_LINE_BUDGET
 
             exploration = conn.execute(
                 "SELECT * FROM component_explorations WHERE entry_id=?", (task["subject_id"],)
             ).fetchone()
             node_counts = {
                 row["status"]: row["n"] for row in conn.execute(
-                    """SELECT n.status,COUNT(*) n FROM exploration_nodes n
+                    """SELECT n.status,COUNT(*) n FROM exploration_work_items n
                        JOIN component_explorations x ON x.exploration_id=n.exploration_id
                        WHERE x.entry_id=? GROUP BY n.status""", (task["subject_id"],)
                 )
@@ -243,14 +216,15 @@ def task_context(conn, task, paths=None):
                 "round_no": (exploration["round_no"] + 1) if exploration else 1,
                 "current_status": exploration["status"] if exploration else "pending",
                 "node_counts": node_counts,
-                "round_function_budget": ROUND_FUNCTION_BUDGET,
-                "step_symbol_budget": STEP_SYMBOL_BUDGET,
+                "round_line_budget": ROUND_LINE_BUDGET,
                 "step_file": step_file,
                 "step_schema_file": str(SCHEMAS_DIR / "component-exploration-step.schema.json"),
                 "semantic_schema_file": str(SCHEMAS_DIR / "component-semantic-result.schema.json"),
                 "commands": {
                     "next": ["python3", *common, "explore-next", run_dir, "--task-id",
                              task["task_id"], "--attempt", str(task["attempts"])],
+                    "context": ["python3", *common, "explore-context", run_dir, "--task-id",
+                                task["task_id"], "--attempt", str(task["attempts"])],
                     "record": ["python3", *common, "explore-record", run_dir, "--task-id",
                                task["task_id"], "--attempt", str(task["attempts"]),
                                "--input", step_file],

@@ -8,6 +8,7 @@ python3 "{{audit_orchestrator_path}}" prepare --target-repo "<repo>" --mode full
 python3 "{{audit_orchestrator_path}}" prepare --target-repo "<repo>" --mode capability --capability CAP-XXX --component <module/ExtensionAbilityName>
 python3 "{{audit_orchestrator_path}}" claim-batch "<run_dir>"
 python3 "{{audit_orchestrator_path}}" explore-next "<run_dir>" --task-id "<task_id>" --attempt <attempt>
+python3 "{{audit_orchestrator_path}}" explore-context "<run_dir>" --task-id "<task_id>" --attempt <attempt> --work-id "<work_id>" --offset 0
 python3 "{{audit_orchestrator_path}}" explore-record "<run_dir>" --task-id "<task_id>" --attempt <attempt> --input "<step_file>"
 python3 "{{audit_orchestrator_path}}" explore-finish "<run_dir>" --task-id "<task_id>" --attempt <attempt>
 python3 "{{audit_orchestrator_path}}" task-submit "<run_dir>" --task-id "<task_id>" --attempt <attempt> --input "<draft_file>"
@@ -23,15 +24,19 @@ python3 "{{audit_orchestrator_path}}" status "<run_dir>"
 
 增量模式必须已有一次无过滤且无未完成任务的成功基线。脚本将 Git 累计提交差异或非 Git 文件快照统一为 `change_set.json`，对比新旧项目模型，再按模块归属、反向模块依赖和历史组件调用计算 `impact_plan.json`。受影响组件进入原有语义任务；未受影响组件的历史结果必须重新通过当前 Schema 和业务不变量才能复用。组件连接使用当前完整语义状态重新计算；同一入口下的操作组集合及安全语义指纹完全一致时复用六维验证结果，否则重新派发验证任务。
 
-AI 任务严格分成 `component_semantic_analysis`、`exploitability_validation` 和 `poc_generation`。语义阶段每个组件只有一个持久任务记录和一个探索状态，但同一任务可按单轮容量多次派发。Agent 通过 `explore-next` 领取安全语义断点，优先使用 Atlas，并在动态调用缺边时以调用点和绑定/分派点源码证据补全关系；每个继续分析的目标都必须声明关系来源。运行时优先返回当前路径的后续断点；路径闭合且本轮累计函数尚有余量时，再领取下一条待分析路径。轮次函数保护只保存证据、重新排队并换新上下文，不生成覆盖缺口；只有组件总工作量异常上限才以可见缺口收口。`explore-record` 即时校验并落盘当前分段事实，`explore-finish` 负责接续轮次或生成最终组件语义结果。
+AI 任务分成组件语义分析、六维验证和 PoC 生成。每个组件的持久语义任务可分轮运行。语义探索使用覆盖节点、关系边和范围工作项，均在 run.db 中；节点表示函数内代码范围，工作项保存特定输入条件下的进度。一轮可批量处理多个分支，只有未完成范围排队，不为每个分支派发 Agent。
 
-全量模式和组件级能力模式初始化全部组件探索；组件过滤模式只初始化指定组件，再按已证明的 `component_calls` 补充尚未分析的下游组件及其探索状态。能力表中的 `entry_types` 只随任务作为优先提示，不参与组件排除。没有新的下游组件后，运行时确定性连接组件，只为真实外部入口可达的本地操作和跨组件操作创建验证任务。
+explore-next 返回 work.scope/state/conditions、coverage、transitions、wait_for。coverage 是精简历史目录，保留检查范围、停止依据和操作组索引；当前 work.result 与返回依赖保留完整结果。仅在历史事实影响当前判断时通过 explore-context 查询完整结果或翻页，不要求重读全部历史。
 
-本轮上下文容量不足时，语义 Agent 通过现有 `explore-record` 保存待分析目标并设置 `pause_requested=true`。后续目标的 `stop_reason=null` 表示待分析，有明确正常边界原因则不展开，不重复填写 decision。下一次 `explore-next` 返回 `round_complete=true`，随后 `explore-finish` 将有待办的同一 task_id 重新排队；没有待办则直接完成组件。已排队的其他分支无需重复声明。record 返回 `node_status=completed` 只表示分段已保存；finish 返回 `task_status=queued/completed` 决定轮次继续或任务完成。
+步骤使用 work_id、result、ranges、transitions 和 pause_requested。result.checked 是实际检查的行范围；ranges 中 result=null 表示待办，填写 result 表示同一步已完成。transitions 使用 $current、本次局部 ref 或已有 work_id 连接具体位置。普通调用在当前路径内连续分析，不必单独建图；显式展开或跨轮保存的同步调用必须保留 return/exception 后续；wait_for 让依赖结果的后续等待目标范围闭合。循环回边使用 loop，必须有相同相关状态和源码依据；复用使用 reuse，只能指向条件与状态相同的已闭合工作。
 
-每步必填 resume：当前函数未完时保存源码位置、剩余工作和安全状态，脚本生成同一函数的续跑分段；已完且其他去向均已登记时为 null。不能用自指 successor 或修改函数定义行号来续跑。next 返回 `work.resume_from`，Agent 从该处继续；它与 `pause_requested` 是否换上下文是两个不同事实。入口初判允许在后续步骤通过同一个 `entry_assessment` 携带新定位证据更新，next 返回当前组件的最新判断。
+先识别局部分支，再沿完整路径分析并批量登记结果，含隐含 else、switch 未匹配出口、循环出口和可见异常/finally。普通连续语句和辅助调用并入路径证据；仅未完成范围进入待办。达到容量时保存未完成范围并设置 pause_requested=true，然后 next/finish 接续。record 仅完成当前提交，scope_complete 才表示对应已登记子范围闭合。没有可领取工作但依赖未完成时返回 dependency_blocked，不能生成完整覆盖结论。
 
-Agent 不填写步骤 status。每个解析缺口只在 `gaps[]` 中填写 target、reason 和 evidence，不再重复声明 gap 类型事实或 unresolved 停止原因。正常终止、真实缺口、其他待分析分支和暂停请求可以同时存在，彼此独立。Atlas 未解析只是中间观察，必须先围绕调用点核实绑定、赋值、注册、覆写或分派源码；源码完整证明目标集合时使用 `source_evidence` 接续且不写 gap，只证明部分候选时接续已证明目标并为剩余候选保留 gap，完全不能证明时只记录 gap。禁止的是没有 Atlas 或源码证据的猜测，不是基于源码连接关系。未知目标不创建虚构 successor。安全检查使用源码位置、检查对象和校验属性引用，不由 Agent 生成 ID。`resource_limit` 仅由脚本产生，且不会伪装成已分析的步骤。格式错误在当前子任务内退回修正，不消耗调度重试。
+停止依据保存在 result.termination。return/throw 只关闭当前范围；组件、系统、第三方边界只结束目标内部展开，必须保留调用后续。源码缺失不能直接视为边界。Atlas 未命中后先做有调用点锚定的源码核实，已确认目标继续，剩余未知范围写 gaps。容量不足不是 gap。动态调用提供调用点和绑定/分派证据，普通控制流用对应源码位置证明。
+
+组件、能力过滤仍使用同一范围协议。全量和能力模式初始化全部适用组件；组件模式从指定组件开始并扩展已证明的下游组件。entry_types 只提示优先方向。入口初判可用带位置证据的 entry_assessment 更新。代码结构按位置共享，工作仅在相同范围、条件和状态下复用，不把整个历史路径作为身份。
+
+协议版本 25 不恢复旧探索数据库；旧语义契约的增量基线需要重新全量分析。部署脚本随 Skill 安装 exploration_context.py，无独立外部脚本或额外数据库。
 
 六维验证和 PoC Agent 只写任务私有草稿。任务文件中的 `result_protocol` 给出绝对草稿路径和 `audit_orchestrator.py task-submit` 命令；Result Writer 确定性补齐任务 ID、对象 ID、缺省字段，规范和过滤证据引用，再以最终严格 Schema 与业务不变量验收，并在同一事务中写入正式结果、完成任务。可修复格式错误不消耗调度重试；此类拒绝仍是命令正常执行，只返回 `accepted=false`，Agent 在本次子任务中修正草稿，只有 `accepted=true` 且 `status=completed` 才允许结束。实质性证据不足、跨组引用后失去有效支持或结论冲突仍会被拒绝。
 
@@ -41,7 +46,7 @@ Operation Group 只有在能力、操作位置、关键受控参数、调用主�
 
 `CAP-DOS-001` 仍使用上述 Operation Group 和六维验证。语义结果必须额外记录受影响资源/失败、输入上限或放大关系、异常隔离、重复触发、影响范围和恢复方式。验证阶段只有在单次触发足以致命或攻击者可重复放大、存在实质可用性损失且没有有效限制/隔离时才允许确认漏洞。
 
-编排者调用一次 `claim-batch` 领取最多 5 个任务，并在同一条 assistant 消息中一次派发全部句柄。正常任务在子 Agent 上下文内通过受控命令即时完成或进入下一轮；整批返回后调用一次 `reconcile-batch`，只将仍停在 `running` 的中止任务重新排队。语义轮次仍有待分析节点时，`explore-finish` 直接重新排队并清零轮次重试次数，已记录节点不回滚；所有节点闭合时直接生成最终语义结果并完成任务。第三次仍未完成时只将该任务标记为 `exhausted`，不终止其他组件。会话中断后使用同一个异常回收命令；已经最终输出但包含 exhausted 任务的 run 使用 `resume` 重新打开，只重试失败任务并释放旧节点租约。
+编排者调用一次 `claim-batch` 领取最多 5 个任务，并在同一条 assistant 消息中一次派发全部句柄。正常任务在子 Agent 上下文内通过受控命令即时完成或进入下一轮；整批返回后调用一次 `reconcile-batch`，只将仍停在 `running` 的中止任务重新排队。语义轮次仍有待分析范围时，`explore-finish` 直接重新排队并清零轮次重试次数，已记录范围不回滚；所有已登记范围闭合时直接生成最终语义结果并完成任务。第三次仍未完成时只将该任务标记为 `exhausted`，不终止其他组件。会话中断后使用同一个异常回收命令；已经最终输出但包含 exhausted 任务的 run 使用 `resume` 重新打开，只重试失败任务并释放旧工作租约。
 
 `prepare` 完成后立即创建动态 `report.html`；`claim-batch`、任务即时提交和 `reconcile-batch` 会按当前 SQLite 状态原子更新文件，用户刷新浏览器即可查看最新进度。中间更新不生成 Markdown、导出文件或最终快照，`finalize` 才生成完整正式产物。
 

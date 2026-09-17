@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from .common import *
 
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -68,34 +68,35 @@ CREATE TABLE IF NOT EXISTS component_explorations(
 CREATE TABLE IF NOT EXISTS exploration_nodes(
   node_id TEXT PRIMARY KEY,
   exploration_id TEXT NOT NULL REFERENCES component_explorations(exploration_id) ON DELETE CASCADE,
-  parent_node_id TEXT REFERENCES exploration_nodes(node_id),
-  work_type TEXT NOT NULL CHECK(work_type IN ('entry_discovery','function_analysis')),
-  symbol_key TEXT NOT NULL,
-  state_key TEXT NOT NULL,
-  symbol_json TEXT NOT NULL,
+  scope_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS exploration_work_items(
+  work_id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL REFERENCES exploration_nodes(node_id) ON DELETE CASCADE,
+  exploration_id TEXT NOT NULL REFERENCES component_explorations(exploration_id) ON DELETE CASCADE,
   state_json TEXT NOT NULL,
-  resume_json TEXT NOT NULL DEFAULT '{}',
-  depth INTEGER NOT NULL CHECK(depth >= 0),
-  discovered_order INTEGER NOT NULL CHECK(discovered_order >= 0),
-  status TEXT NOT NULL CHECK(status IN ('queued','leased','completed','stopped','gap')),
+  conditions_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued','leased','completed')),
+  depth INTEGER NOT NULL,
+  discovered_order INTEGER NOT NULL,
   lease_task_id TEXT REFERENCES tasks(task_id),
   lease_attempt INTEGER,
-  stop_reason TEXT,
-  observation_json TEXT NOT NULL DEFAULT '{}',
+  round_no INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT,
+  submission_json TEXT,
+  dependencies_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(exploration_id,symbol_key,state_key)
+  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS exploration_edges(
   edge_id TEXT PRIMARY KEY,
-  identity_key TEXT NOT NULL UNIQUE,
   exploration_id TEXT NOT NULL REFERENCES component_explorations(exploration_id) ON DELETE CASCADE,
-  source_node_id TEXT NOT NULL REFERENCES exploration_nodes(node_id) ON DELETE CASCADE,
-  target_node_id TEXT NOT NULL REFERENCES exploration_nodes(node_id) ON DELETE CASCADE,
-  relation TEXT NOT NULL CHECK(relation IN ('call','callback','async_continuation','branch','data_flow','component_boundary','resume')),
-  decision TEXT NOT NULL CHECK(decision IN ('follow','stop')),
+  source_work_id TEXT NOT NULL REFERENCES exploration_work_items(work_id),
+  target_work_id TEXT NOT NULL REFERENCES exploration_work_items(work_id),
+  relation TEXT NOT NULL,
   condition TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS evidence(
@@ -228,9 +229,9 @@ CREATE TABLE IF NOT EXISTS events(
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_exploration_nodes_queue ON exploration_nodes(exploration_id,status,depth,discovered_order);
-CREATE INDEX IF NOT EXISTS idx_exploration_nodes_lease ON exploration_nodes(lease_task_id,lease_attempt,status);
-CREATE INDEX IF NOT EXISTS idx_exploration_edges_source ON exploration_edges(exploration_id,source_node_id);
+CREATE INDEX IF NOT EXISTS idx_exploration_work_queue ON exploration_work_items(exploration_id,status,depth,discovered_order);
+CREATE INDEX IF NOT EXISTS idx_exploration_work_lease ON exploration_work_items(lease_task_id,lease_attempt,status);
+CREATE INDEX IF NOT EXISTS idx_exploration_edges_source ON exploration_edges(exploration_id,source_work_id);
 CREATE INDEX IF NOT EXISTS idx_poc_finding ON poc_artifacts(finding_id);
 CREATE INDEX IF NOT EXISTS idx_groups_entry ON operation_groups(entry_id, category);
 CREATE INDEX IF NOT EXISTS idx_component_calls_source ON component_calls(source_entry_id, target_component_id);

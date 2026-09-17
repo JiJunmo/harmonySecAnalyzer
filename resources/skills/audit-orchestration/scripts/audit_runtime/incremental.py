@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 from .common import CAPABILITIES_PATH, SCHEMAS_DIR, SKILL_DIR, canonical_json, now, read_json, run_paths, write_json
-from .store import database, row_json
+from .store import SCHEMA_VERSION, database, row_json
 from .task_context import validation_group_fingerprint
 
 
@@ -50,6 +50,7 @@ def audit_contract_hash():
         SKILL_DIR.parent.parent / "agents" / "poc-generator.md",
     )
     digest = hashlib.sha256()
+    digest.update(f"runtime-schema:{SCHEMA_VERSION}".encode("ascii"))
     for path in files:
         digest.update(str(path.name).encode("utf-8"))
         try:
